@@ -4,7 +4,7 @@ COPY package.json package-lock.json tsconfig.json vitest.config.ts ./
 COPY web ./web
 COPY src ./src
 COPY scripts ./scripts
-RUN npm ci --ignore-scripts
+RUN npm ci --include=optional --ignore-scripts
 RUN npm run build
 RUN find src -name '*.test.ts' -delete
 

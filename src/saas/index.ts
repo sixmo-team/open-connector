@@ -57,7 +57,7 @@ const registryServices = Object.keys(executorModules);
 const catalog = await loadCatalog(undefined, { executableServices: registryServices });
 assertGeneratedCatalog(catalog, registryServices);
 const providerLoader = new ProviderLoader(executorModules);
-const oauthCallbackOrigin = `${config.jwtIssuer.replace(/\/+$/, "")}/integrations`;
+const oauthCallbackOrigin = config.oauthCallbackOrigin;
 const oauthClientConfigService = new OAuthClientConfigService({
   catalog,
   origin: oauthCallbackOrigin,

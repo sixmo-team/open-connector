@@ -8,6 +8,7 @@ const productionEnvironment: NodeJS.ProcessEnv = {
   OPEN_CONNECTOR_INTERNAL_URL: "http://open-connector:3000",
   OPEN_CONNECTOR_JWKS_URL: "http://backend/internal/integrations/.well-known/jwks.json",
   OPEN_CONNECTOR_JWKS_BEARER_TOKEN_FILE: "/run/secrets/open_connector_jwks_bearer_token",
+  OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN: "https://api.example.com/integrations",
   OPEN_CONNECTOR_JWT_ISSUER: "https://backend.example.com",
   OPEN_CONNECTOR_JWT_AUDIENCE: "open-connector-saas",
   OPEN_CONNECTOR_JWT_ACTIVE_KID: "connector-2026-08",
@@ -27,6 +28,7 @@ describe("production SaaS configuration", () => {
       jwtAudience: "open-connector-saas",
       openBaoTokenFile: "/run/secrets/open_connector_openbao_token",
       jwksBearerTokenFile: "/run/secrets/open_connector_jwks_bearer_token",
+      oauthCallbackOrigin: "https://api.example.com/integrations",
       seaweedFsBucket: "open-connector-transit",
     });
   });
@@ -38,6 +40,7 @@ describe("production SaaS configuration", () => {
     "OPEN_CONNECTOR_INTERNAL_URL",
     "OPEN_CONNECTOR_JWKS_URL",
     "OPEN_CONNECTOR_JWKS_BEARER_TOKEN_FILE",
+    "OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN",
     "OPEN_CONNECTOR_JWT_ISSUER",
     "OPEN_CONNECTOR_JWT_AUDIENCE",
     "OPEN_CONNECTOR_JWT_ACTIVE_KID",
@@ -57,6 +60,8 @@ describe("production SaaS configuration", () => {
     ["OPEN_CONNECTOR_OPENBAO_TOKEN_FILE", "/data/root-token"],
     ["OPEN_CONNECTOR_OPENBAO_ADDR", "https://openbao:8200"],
     ["OPEN_CONNECTOR_OPENBAO_ADDR", "https://root:secret@openbao.production.example.com"],
+    ["OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN", "http://api.example.com/integrations"],
+    ["OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN", "https://user:secret@api.example.com/integrations"],
     ["OPEN_CONNECTOR_JWKS_BEARER_TOKEN_FILE", "/data/jwks-token"],
     ["OPEN_CONNECTOR_JWKS_BEARER_TOKEN", "plaintext-internal-token"],
     ["OPEN_CONNECTOR_OPENBAO_TOKEN", "root"],

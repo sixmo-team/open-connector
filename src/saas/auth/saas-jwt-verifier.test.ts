@@ -17,6 +17,7 @@ const completeEnvironment: NodeJS.ProcessEnv = {
   OPEN_CONNECTOR_INTERNAL_URL: "http://open-connector:3000",
   OPEN_CONNECTOR_JWKS_URL: "http://backend/internal/integrations/.well-known/jwks.json",
   OPEN_CONNECTOR_JWKS_BEARER_TOKEN_FILE: "/run/secrets/open_connector_jwks_bearer_token",
+  OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN: "https://api.example.com/integrations",
   OPEN_CONNECTOR_JWT_ISSUER: "integration-backend",
   OPEN_CONNECTOR_JWT_AUDIENCE: "open-connector-saas",
   OPEN_CONNECTOR_JWT_ACTIVE_KID: "current",

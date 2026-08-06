@@ -6,6 +6,7 @@ export interface SaasConfig {
   openBaoMaxRequestBytes: number;
   openBaoMaxResponseBytes: number;
   internalOrigin: string;
+  oauthCallbackOrigin: string;
   jwksUrl: string;
   jwksBearerTokenFile: string;
   jwtIssuer: string;
@@ -29,6 +30,7 @@ const requiredVariables = {
   jwksUrl: "OPEN_CONNECTOR_JWKS_URL",
   jwksBearerTokenFile: "OPEN_CONNECTOR_JWKS_BEARER_TOKEN_FILE",
   internalOrigin: "OPEN_CONNECTOR_INTERNAL_URL",
+  oauthCallbackOrigin: "OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN",
   jwtIssuer: "OPEN_CONNECTOR_JWT_ISSUER",
   jwtAudience: "OPEN_CONNECTOR_JWT_AUDIENCE",
   jwtActiveKid: "OPEN_CONNECTOR_JWT_ACTIVE_KID",
@@ -55,6 +57,7 @@ export function readSaasConfig(environment: NodeJS.ProcessEnv = process.env): Sa
   }
   requirePrivateServiceUrl(values.internalOrigin, "OPEN_CONNECTOR_INTERNAL_URL");
   requirePrivateServiceUrl(values.jwksUrl, "OPEN_CONNECTOR_JWKS_URL");
+  requirePublicCallbackOrigin(values.oauthCallbackOrigin);
   requirePrivateServiceUrl(values.seaweedFsEndpoint, "OPEN_CONNECTOR_SEAWEEDFS_ENDPOINT");
   if (values.openBaoTokenFile !== openBaoTokenPath) {
     throw new Error(`OPEN_CONNECTOR_OPENBAO_TOKEN_FILE must be ${openBaoTokenPath}`);
@@ -128,6 +131,15 @@ function requirePrivateServiceUrl(value: string, name: string): void {
   ) {
     throw new Error(`${name} must use HTTPS unless it targets a private Compose service`);
   }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error(`${name} must not contain credentials, a query, or a fragment`);
+  }
+}
+
+function requirePublicCallbackOrigin(value: string): void {
+  const name = "OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN";
+  requireUrl(value, name, ["https:"]);
+  const url = new URL(value);
   if (url.username || url.password || url.search || url.hash) {
     throw new Error(`${name} must not contain credentials, a query, or a fragment`);
   }
