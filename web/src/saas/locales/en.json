@@ -101,7 +101,14 @@
   },
   "actions": {
     "title": "Action policy",
-    "description": "Global classification and the tenant grant effective for this subject.",
+    "description": "Global classification and the grant effective for the selected subject user.",
+    "providerFilter": "Filter actions by provider",
+    "allProviders": "All providers",
+    "visibleCount": "Visible actions",
+    "grantVisible": "Grant visible",
+    "revokeVisible": "Revoke visible",
+    "confirmGrantVisible": "Grant every visible action to the selected subject user?",
+    "confirmRevokeVisible": "Revoke every visible action from the selected subject user?",
     "emptyTitle": "No actions available",
     "emptyDescription": "No action definitions are authorized for this scope.",
     "grant": "Grant",
@@ -131,7 +138,7 @@
       "action": "Action",
       "provider": "Provider",
       "classification": "Classification",
-      "grant": "Tenant grant"
+      "grant": "Subject grant"
     }
   },
   "connections": {

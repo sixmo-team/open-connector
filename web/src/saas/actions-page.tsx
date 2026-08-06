@@ -3,21 +3,39 @@ import type { ReactNode } from "react";
 
 import { useTranslate } from "@embra/i18n/react";
 import { Loader2, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Badge, EmptyState, InlineError } from "../shared-ui";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 interface AdminActionsPageProps {
   actions: AdminAction[];
   onGrantChange(actionId: string, granted: boolean, approvalOverride: "inherit" | "always"): Promise<void>;
+  onBulkGrantChange(actionIds: string[], granted: boolean): Promise<void>;
 }
 
 export function AdminActionsPage(props: AdminActionsPageProps): ReactNode {
   const t = useTranslate();
+  const providers = useMemo(
+    () => [
+      ...new Map(
+        props.actions.map((action) => [action.providerId, { id: action.providerId, name: action.providerName }]),
+      ).values(),
+    ],
+    [props.actions],
+  );
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [providerId, setProviderId] = useState("all");
+  const [bulkPending, setBulkPending] = useState(false);
+  const selectedProviderId =
+    providerId === "all" || providers.some((provider) => provider.id === providerId) ? providerId : "all";
+  const visibleActions =
+    selectedProviderId === "all"
+      ? props.actions
+      : props.actions.filter((action) => action.providerId === selectedProviderId);
 
   async function updateGrant(action: AdminAction): Promise<void> {
     setPendingAction(action.actionId);
@@ -31,6 +49,31 @@ export function AdminActionsPage(props: AdminActionsPageProps): ReactNode {
     }
   }
 
+  async function updateVisibleGrants(granted: boolean): Promise<void> {
+    if (
+      visibleActions.length === 0 ||
+      !window.confirm(
+        `${t(granted ? "actions.confirmGrantVisible" : "actions.confirmRevokeVisible")} ${t("actions.visibleCount")}: ${
+          visibleActions.length
+        }`,
+      )
+    ) {
+      return;
+    }
+    setBulkPending(true);
+    setError(null);
+    try {
+      await props.onBulkGrantChange(
+        visibleActions.map(({ actionId }) => actionId),
+        granted,
+      );
+    } catch {
+      setError(t("errors.grant"));
+    } finally {
+      setBulkPending(false);
+    }
+  }
+
   return (
     <div className="page-stack">
       <Card className="runtime-strip">
@@ -41,6 +84,40 @@ export function AdminActionsPage(props: AdminActionsPageProps): ReactNode {
         <ShieldCheck size={18} aria-hidden="true" />
       </Card>
       {error ? <InlineError message={error} /> : null}
+      {props.actions.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={selectedProviderId} onValueChange={setProviderId} disabled={bulkPending}>
+            <SelectTrigger className="w-64" aria-label={t("actions.providerFilter")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("actions.allProviders")}</SelectItem>
+              {providers.map((provider) => (
+                <SelectItem key={provider.id} value={provider.id}>
+                  {provider.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="muted-copy mr-auto">
+            {t("actions.visibleCount")}: {visibleActions.length}
+          </span>
+          <Button
+            disabled={bulkPending || Boolean(pendingAction) || visibleActions.every((action) => action.granted)}
+            onClick={() => void updateVisibleGrants(true)}
+          >
+            {bulkPending ? <Loader2 className="spin" size={14} /> : null}
+            {t("actions.grantVisible")}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={bulkPending || Boolean(pendingAction) || visibleActions.every((action) => !action.granted)}
+            onClick={() => void updateVisibleGrants(false)}
+          >
+            {t("actions.revokeVisible")}
+          </Button>
+        </div>
+      ) : null}
       <section className="table-panel">
         {props.actions.length === 0 ? (
           <EmptyState title={t("actions.emptyTitle")} description={t("actions.emptyDescription")} icon={null} />
@@ -55,7 +132,7 @@ export function AdminActionsPage(props: AdminActionsPageProps): ReactNode {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {props.actions.map((action) => {
+              {visibleActions.map((action) => {
                 const pending = pendingAction === action.actionId;
                 return (
                   <TableRow key={action.actionId}>
@@ -97,7 +174,7 @@ export function AdminActionsPage(props: AdminActionsPageProps): ReactNode {
                       <Button
                         variant={action.granted ? "outline" : "default"}
                         size="sm"
-                        disabled={pending}
+                        disabled={bulkPending || pending}
                         aria-busy={pending}
                         onClick={() => void updateGrant(action)}
                       >

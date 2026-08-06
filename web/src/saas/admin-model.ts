@@ -64,6 +64,7 @@ export type AdminMinimumRole = "viewer" | "member" | "admin" | "owner";
 export interface AdminAction {
   actionId: string;
   displayName: string;
+  providerId: string;
   providerName: string;
   risk: AdminActionRisk;
   requiresApproval: boolean;

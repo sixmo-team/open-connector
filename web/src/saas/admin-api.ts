@@ -55,6 +55,7 @@ interface RawProvider {
 
 interface RawAction {
   actionId: string;
+  providerId: string;
   actionDisplayName: string;
   providerDisplayName: string;
   risk: AdminActionRisk;
@@ -232,6 +233,30 @@ export async function putAdminActionGrant(
   await readResponse<void>(response, false);
 }
 
+export async function putAdminActionGrants(
+  actionIds: string[],
+  scope: AdminScope,
+  enabled: boolean,
+  approvalOverride: "inherit" | "always",
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  if (!csrfToken) throw new Error("Admin CSRF token is unavailable");
+  const response = await fetcher(withScope(`${adminRoot}/action-grants`, scope), {
+    method: "PUT",
+    credentials: "same-origin",
+    mode: "same-origin",
+    redirect: "error",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "x-csrf-token": csrfToken,
+    },
+    body: JSON.stringify({ actionIds, enabled, approvalOverride }),
+  });
+  await readResponse<void>(response, false);
+}
+
 function toAdminProvider(provider: RawProvider): AdminProvider {
   return {
     displayName: provider.displayName,
@@ -247,6 +272,7 @@ function toAdminAction(action: RawAction): AdminAction {
     actionId: action.actionId,
     displayName: action.actionDisplayName,
     providerName: action.providerDisplayName,
+    providerId: action.providerId,
     risk: action.risk,
     requiresApproval: action.requiresApproval,
     idempotency: action.idempotency,

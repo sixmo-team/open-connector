@@ -24,7 +24,7 @@ import oomolConnectLogoUrl from "../assets/oomol-connect-logo.png";
 import { EmptyState, InlineError, StatusDot } from "../shared-ui";
 import { useThemeMode } from "../theme";
 import { AdminActionsPage } from "./actions-page";
-import { AdminApiError, getAdminScopes, loadAdminData, putAdminActionGrant } from "./admin-api";
+import { AdminApiError, getAdminScopes, loadAdminData, putAdminActionGrant, putAdminActionGrants } from "./admin-api";
 import { emptyAdminData } from "./admin-model";
 import { AdminConnectionsPage } from "./connections-page";
 import { adminLangs, persistAdminLang } from "./i18n";
@@ -130,6 +130,16 @@ export function AdminApp(): ReactNode {
     }));
   }
 
+  async function updateGrants(actionIds: string[], granted: boolean): Promise<void> {
+    if (!isCompleteAdminScope(scope)) return;
+    await putAdminActionGrants(actionIds, scope, granted, "inherit");
+    const changed = new Set(actionIds);
+    setData((current) => ({
+      ...current,
+      actions: current.actions.map((action) => (changed.has(action.actionId) ? { ...action, granted } : action)),
+    }));
+  }
+
   if (loadingScopes) {
     return (
       <main className="unlock-screen">
@@ -153,6 +163,7 @@ export function AdminApp(): ReactNode {
       onRefresh={() => setRefreshGeneration((value) => value + 1)}
       onThemeChange={setTheme}
       onGrantChange={updateGrant}
+      onBulkGrantChange={updateGrants}
     />
   );
 }
@@ -168,6 +179,7 @@ interface AdminShellProps {
   onRefresh(): void;
   onThemeChange(theme: ThemeMode): void;
   onGrantChange(actionId: string, granted: boolean, approvalOverride: "inherit" | "always"): Promise<void>;
+  onBulkGrantChange(actionIds: string[], granted: boolean): Promise<void>;
 }
 
 function AdminShell(props: AdminShellProps): ReactNode {
@@ -274,7 +286,13 @@ function AdminShell(props: AdminShellProps): ReactNode {
                   <Route path="/providers" element={<AdminProvidersPage providers={props.data.providers} />} />
                   <Route
                     path="/actions"
-                    element={<AdminActionsPage actions={props.data.actions} onGrantChange={props.onGrantChange} />}
+                    element={
+                      <AdminActionsPage
+                        actions={props.data.actions}
+                        onGrantChange={props.onGrantChange}
+                        onBulkGrantChange={props.onBulkGrantChange}
+                      />
+                    }
                   />
                   <Route path="/connections" element={<AdminConnectionsPage connections={props.data.connections} />} />
                   <Route path="/runs" element={<AdminRunsPage runs={props.data.runs} />} />

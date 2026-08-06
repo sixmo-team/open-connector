@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getAdminScopes, loadAdminData, putAdminActionGrant } from "./admin-api";
+import { getAdminScopes, loadAdminData, putAdminActionGrant, putAdminActionGrants } from "./admin-api";
 
 const scope = { tenantId: "tenant A", workspaceId: "workspace/A", subjectId: "user@example.com" };
 
@@ -53,10 +53,11 @@ describe("integration administration API boundary", () => {
     await getAdminScopes(fetcher);
     await loadAdminData(scope, fetcher);
     await putAdminActionGrant("github.create/issue", scope, true, "inherit", fetcher);
+    await putAdminActionGrants(["github.create/issue", "github.list/issues"], scope, false, "inherit", fetcher);
 
     const calls = (fetcher as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit][];
     const urls = calls.map(([url]) => url);
-    expect(urls).toHaveLength(7);
+    expect(urls).toHaveLength(8);
     expect(urls[0]).toBe("/internal/integration-admin/scopes");
     expect(
       urls
@@ -69,6 +70,7 @@ describe("integration administration API boundary", () => {
       ),
     );
     expect(urls[6]).toContain("/internal/integration-admin/action-grants/github.create%2Fissue?");
+    expect(urls[7]).toContain("/internal/integration-admin/action-grants?");
     expect(urls.every((url) => url.startsWith("/internal/integration-admin/"))).toBe(true);
     expect(urls.every((url) => !/^https?:/.test(url))).toBe(true);
     expect(urls.join(" ")).not.toMatch(/\/(?:api|v1|mcp)(?:\/|\?|$)|runtime-token|execute|proxy/i);
@@ -80,5 +82,13 @@ describe("integration administration API boundary", () => {
     }
     expect(calls[6][1].headers).toMatchObject({ "x-csrf-token": "csrf-from-bff" });
     expect(calls[6][1].body).toBe(JSON.stringify({ enabled: true, approvalOverride: "inherit" }));
+    expect(calls[7][1].headers).toMatchObject({ "x-csrf-token": "csrf-from-bff" });
+    expect(calls[7][1].body).toBe(
+      JSON.stringify({
+        actionIds: ["github.create/issue", "github.list/issues"],
+        enabled: false,
+        approvalOverride: "inherit",
+      }),
+    );
   });
 });
