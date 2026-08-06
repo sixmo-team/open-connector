@@ -94,6 +94,24 @@ export const ticktickActionHandlers: Record<TicktickActionName, TicktickHandler>
   async create_task2(input, context) {
     return ticktickActionHandlers.create_task(input, context);
   },
+  async batch_add_tasks(input, context) {
+    const tasks = objectArray(input.tasks, "tasks").map((task) => buildCreateTaskBody(task));
+    const { payload } = await requestTicktickJson<TicktickPayload | TicktickPayload[]>({
+      ...requestContext(context),
+      path: "/open/v1/task/batch",
+      method: "POST",
+      body: { add: tasks },
+      phase: "execute",
+    });
+    const payloadAny = payload as TicktickPayload | TicktickPayload[] | undefined;
+    const add = (payloadAny as { add?: TicktickPayload[] } | undefined)?.add;
+    const nested = (payloadAny as { tasks?: TicktickPayload[] } | undefined)?.tasks;
+    const created = Array.isArray(payloadAny) ? payloadAny : (add ?? nested);
+    return {
+      tasks: created ?? [],
+      createdCount: created?.length ?? tasks.length,
+    };
+  },
   async update_task(input, context) {
     const projectId = resolveProjectId(input);
     const taskId = resolveTaskId(input);
@@ -489,6 +507,7 @@ function buildCreateTaskBody(input: Record<string, unknown>): Record<string, unk
     priority: normalizePriority(input.priority),
     sortOrder: optionalInteger(input.sortOrder),
     items: normalizeChecklistItems(input.items),
+    tags: normalizeStringArray(input.tags, "tags"),
   });
 }
 
@@ -514,6 +533,7 @@ function buildUpdateTaskBody(
     priority: normalizePriority(input.priority),
     sortOrder: optionalInteger(input.sortOrder),
     items: normalizeChecklistItems(input.items),
+    tags: normalizeStringArray(input.tags, "tags"),
   });
 }
 

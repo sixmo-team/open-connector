@@ -280,10 +280,11 @@ async function removeMember(input: Record<string, unknown>, request: FeishuJsonR
 }
 
 function normalizePage(data: Record<string, unknown>) {
+  const hasMore = data.has_more === true;
   return {
     items: recordArray(data.items),
-    hasMore: data.has_more === true,
-    pageToken: optionalString(data.page_token) ?? null,
+    hasMore,
+    pageToken: hasMore ? (optionalString(data.page_token) ?? null) : null,
   };
 }
 

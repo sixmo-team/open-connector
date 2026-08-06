@@ -147,6 +147,8 @@ export interface MailFolderStatus {
 
 export interface MailFetchedMessage {
   summary: MailSummary;
+  /** Message-IDs to seed a reply's `References` header, oldest first. */
+  references: string[];
   cc: MailAddress[];
   replyTo: MailAddress[];
   text: string | null;
@@ -346,6 +348,9 @@ export function createMailProtocol(config: MailProtocolConfig, deps: MailProtoco
             flags: true,
             size: true,
             bodyStructure: true,
+            // The IMAP envelope carries no thread headers, so a reply can only
+            // continue the thread if they are fetched alongside it.
+            headers: ["references", "in-reply-to"],
           },
           { uid: true },
         );
@@ -372,6 +377,7 @@ export function createMailProtocol(config: MailProtocolConfig, deps: MailProtoco
 
         return {
           summary: normalizeSummary(message),
+          references: readReferences(toRecord(message)?.headers),
           cc: normalizeEnvelopeAddresses(message, "cc"),
           replyTo: normalizeEnvelopeAddresses(message, "replyTo"),
           text: parsedBody.text,
@@ -750,6 +756,30 @@ function normalizeMailbox(value: unknown): MailFolder {
     flags: normalizeStringArray(record?.flags),
     specialUse: readString(record?.specialUse),
   };
+}
+
+/**
+ * Read the Message-IDs that seed a reply's `References` header.
+ *
+ * Header fields fold across lines, so continuations are joined before reading
+ * them. RFC 5322 uses a single `In-Reply-To` value when `References` is absent.
+ */
+function readReferences(value: unknown): string[] {
+  const raw =
+    value instanceof Uint8Array ? new TextDecoder().decode(value) : typeof value === "string" ? value : undefined;
+  if (!raw) {
+    return [];
+  }
+
+  const lines = raw.replaceAll(/\r?\n[ \t]+/g, " ").split(/\r?\n/);
+  const referencesLine = lines.find((line) => /^references:/i.test(line));
+  if (referencesLine) {
+    return referencesLine.slice(referencesLine.indexOf(":") + 1).match(/<[^>]+>/g) ?? [];
+  }
+
+  const inReplyToLine = lines.find((line) => /^in-reply-to:/i.test(line));
+  const inReplyTo = inReplyToLine?.slice(inReplyToLine.indexOf(":") + 1).match(/<[^>]+>/g) ?? [];
+  return inReplyTo.length === 1 ? inReplyTo : [];
 }
 
 function normalizeSummary(value: unknown): MailSummary {

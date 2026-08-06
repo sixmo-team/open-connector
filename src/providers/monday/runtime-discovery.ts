@@ -21,6 +21,15 @@ export const mondayDiscoveryActionHandlers: Record<string, MondayActionHandler> 
   list_workspaces(input, fetcher) {
     return mondayListWorkspaces(input, fetcher);
   },
+  create_workspace(input, fetcher) {
+    return mondayCreateWorkspace(input, fetcher);
+  },
+  update_workspace(input, fetcher) {
+    return mondayUpdateWorkspace(input, fetcher);
+  },
+  delete_workspace(input, fetcher) {
+    return mondayDeleteWorkspace(input, fetcher);
+  },
   list_boards(input, fetcher) {
     return mondayListBoards(input, fetcher);
   },
@@ -96,6 +105,103 @@ async function mondayListWorkspaces(input: MondayProviderActionInput, fetcher: t
   return {
     workspaces: asArray(payload.workspaces).map((workspace) => normalizeMondayWorkspace(workspace)),
   };
+}
+
+async function mondayCreateWorkspace(input: MondayProviderActionInput, fetcher: typeof fetch) {
+  const source = input.input;
+  const payload = await mondayGraphqlRequest<{ create_workspace?: Record<string, unknown> }>(
+    input.apiKey,
+    {
+      query: `
+        mutation CreateWorkspace(
+          $name: String!
+          $kind: WorkspaceKind!
+          $description: String
+          $account_product_id: ID
+        ) {
+          create_workspace(
+            name: $name
+            kind: $kind
+            description: $description
+            account_product_id: $account_product_id
+          ) {
+            id
+            name
+            kind
+            state
+            description
+          }
+        }
+      `,
+      variables: compactObject({
+        name: source.name,
+        kind: source.kind,
+        description: typeof source.description === "string" ? source.description : undefined,
+        account_product_id: source.account_product_id,
+      }),
+    },
+    fetcher,
+    "execute",
+  );
+
+  return { workspace: normalizeMondayWorkspace(payload.create_workspace) };
+}
+
+async function mondayUpdateWorkspace(input: MondayProviderActionInput, fetcher: typeof fetch) {
+  const source = input.input;
+  const payload = await mondayGraphqlRequest<{ update_workspace?: Record<string, unknown> }>(
+    input.apiKey,
+    {
+      query: `
+        mutation UpdateWorkspace(
+          $workspace_id: ID!
+          $attributes: UpdateWorkspaceAttributesInput!
+        ) {
+          update_workspace(id: $workspace_id, attributes: $attributes) {
+            id
+            name
+            kind
+            state
+            description
+          }
+        }
+      `,
+      variables: {
+        workspace_id: source.workspace_id,
+        attributes: compactObject({
+          name: typeof source.name === "string" ? source.name : undefined,
+          description: typeof source.description === "string" ? source.description : undefined,
+          kind: typeof source.kind === "string" ? source.kind : undefined,
+          account_product_id: source.account_product_id,
+        }),
+      },
+    },
+    fetcher,
+    "execute",
+  );
+
+  return { workspace: normalizeMondayWorkspace(payload.update_workspace) };
+}
+
+async function mondayDeleteWorkspace(input: MondayProviderActionInput, fetcher: typeof fetch) {
+  const source = input.input;
+  const payload = await mondayGraphqlRequest<{ delete_workspace?: Record<string, unknown> }>(
+    input.apiKey,
+    {
+      query: `
+        mutation DeleteWorkspace($workspace_id: ID!) {
+          delete_workspace(workspace_id: $workspace_id) {
+            id
+          }
+        }
+      `,
+      variables: { workspace_id: source.workspace_id },
+    },
+    fetcher,
+    "execute",
+  );
+
+  return { deletedWorkspaceId: normalizeMondayWorkspace(payload.delete_workspace).id };
 }
 
 async function mondayListBoards(input: MondayProviderActionInput, fetcher: typeof fetch) {

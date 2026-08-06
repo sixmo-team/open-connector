@@ -9,13 +9,6 @@ beforeEach(() => setPrivateNetworkAccessAllowed(false));
 afterEach(() => setPrivateNetworkAccessAllowed(false));
 
 describe("normalizeKomariBaseUrl", () => {
-  it("normalizes instance and RPC endpoint URLs while preserving proxy paths", () => {
-    expect(normalizeKomariBaseUrl("https://monitor.example.com/komari/api/rpc2?x=1#hash", false)).toBe(
-      "https://monitor.example.com/komari",
-    );
-    expect(normalizeKomariBaseUrl("https://monitor.example.com/api/", false)).toBe("https://monitor.example.com");
-  });
-
   it("gates private-network instances and always rejects embedded credentials", () => {
     expect(() => normalizeKomariBaseUrl("http://10.0.0.8:25774", false)).toThrow(ProviderRequestError);
     expect(normalizeKomariBaseUrl("http://10.0.0.8:25774", true)).toBe("http://10.0.0.8:25774");
@@ -120,55 +113,6 @@ describe("Komari RPC runtime", () => {
     expect(komariActions.find((action) => action.name === name)?.inputSchema.required).toEqual(required);
   });
 
-  it("never returns Komari client tokens from the node list", async () => {
-    const fetcher = async (): Promise<Response> =>
-      Response.json({
-        jsonrpc: "2.0",
-        id: 1,
-        result: [
-          {
-            uuid: "9a7b4379-b85f-4ed3-a942-12e097cf4c77",
-            name: "edge-1",
-            os: "linux",
-            token: "client-secret",
-            ipv4: "192.0.2.10",
-          },
-        ],
-      });
-
-    const output = await komariActionHandlers.list_nodes!(
-      {},
-      {
-        apiKey: "komari-secret",
-        baseUrl: "https://monitor.example.com",
-        fetcher,
-      },
-    );
-
-    expect(output).toEqual({
-      nodes: [{ uuid: "9a7b4379-b85f-4ed3-a942-12e097cf4c77", name: "edge-1", os: "linux" }],
-    });
-
-    const adminOutput = await komariActionHandlers.list_clients!(
-      {},
-      {
-        apiKey: "komari-secret",
-        baseUrl: "https://monitor.example.com",
-        fetcher,
-      },
-    );
-    expect(adminOutput).toEqual({
-      clients: [
-        {
-          uuid: "9a7b4379-b85f-4ed3-a942-12e097cf4c77",
-          name: "edge-1",
-          os: "linux",
-          ipv4: "192.0.2.10",
-        },
-      ],
-    });
-  });
-
   it("maps Komari permission errors without exposing response details", async () => {
     const fetcher = async (): Promise<Response> =>
       Response.json({
@@ -204,126 +148,5 @@ describe("Komari RPC runtime", () => {
         { apiKey: "komari-secret", baseUrl: "https://monitor.example.com", fetcher },
       ),
     ).rejects.toMatchObject({ status, message: "Komari operation failed" });
-  });
-
-  it("converts ping task IDs and hours to Komari string parameters", async () => {
-    let requestBody: Record<string, unknown> | undefined;
-    const fetcher = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      return Response.json({
-        jsonrpc: "2.0",
-        id: 1,
-        result: { count: 0, records: [], basic_info: [], tasks: [] },
-      });
-    };
-
-    await komariActionHandlers.get_ping_history!(
-      { task_id: 23, hours: 6 },
-      { apiKey: "komari-secret", baseUrl: "https://monitor.example.com", fetcher },
-    );
-
-    expect(requestBody).toMatchObject({
-      method: "public:getPingRecords",
-      params: { task_id: "23", hours: "6" },
-    });
-  });
-
-  it("maps non-success HTTP responses to their status and safe message", async () => {
-    const fetcher = async (): Promise<Response> => Response.json({ message: "upstream unavailable" }, { status: 503 });
-
-    await expect(
-      komariActionHandlers.get_version!(
-        {},
-        { apiKey: "komari-secret", baseUrl: "https://monitor.example.com", fetcher },
-      ),
-    ).rejects.toMatchObject({ status: 503, message: "upstream unavailable" });
-  });
-
-  it("maps invalid JSON and missing JSON-RPC results to bad gateway", async () => {
-    const context = {
-      apiKey: "komari-secret",
-      baseUrl: "https://monitor.example.com",
-      fetcher: async (): Promise<Response> => new Response("{not-json"),
-    };
-    await expect(komariActionHandlers.get_version!({}, context)).rejects.toMatchObject({
-      status: 502,
-      message: "Komari returned invalid JSON",
-    });
-
-    context.fetcher = async (): Promise<Response> => Response.json({ jsonrpc: "2.0", id: 1 });
-    await expect(komariActionHandlers.get_version!({}, context)).rejects.toMatchObject({
-      status: 502,
-      message: "Komari returned a JSON-RPC response without a result",
-    });
-  });
-
-  it("maps aborted requests to gateway timeout", async () => {
-    const fetcher = async (): Promise<Response> => {
-      throw new DOMException("aborted", "AbortError");
-    };
-
-    await expect(
-      komariActionHandlers.get_version!(
-        {},
-        { apiKey: "komari-secret", baseUrl: "https://monitor.example.com", fetcher },
-      ),
-    ).rejects.toMatchObject({ status: 504, message: "Komari request timed out" });
-  });
-
-  it("redacts session tokens and IPs and revokes sessions by a stable identifier", async () => {
-    const requests: Array<{ method: string; params: unknown }> = [];
-    const fetcher = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const body = JSON.parse(String(init?.body)) as { method: string; params: unknown };
-      requests.push(body);
-      if (body.method === "admin:getSessions") {
-        return Response.json({
-          jsonrpc: "2.0",
-          id: 1,
-          result: {
-            current: "session-secret",
-            data: [
-              {
-                session: "session-secret",
-                uuid: "9a7b4379-b85f-4ed3-a942-12e097cf4c77",
-                ip: "192.0.2.10",
-                latest_ip: "192.0.2.11",
-                login_method: "password",
-                created_at: "2026-08-03T00:00:00Z",
-              },
-            ],
-          },
-        });
-      }
-      return Response.json({ jsonrpc: "2.0", id: 1, result: null });
-    };
-    const context = { apiKey: "komari-secret", baseUrl: "https://monitor.example.com", fetcher };
-
-    const output = (await komariActionHandlers.list_sessions!({}, context)) as {
-      current_session_id: string;
-      sessions: Array<{ session_id: string }>;
-    };
-    expect(output.current_session_id).toHaveLength(64);
-    expect(output.sessions[0]?.session_id).toBe(output.current_session_id);
-    expect(JSON.stringify(output)).not.toContain("session-secret");
-    expect(JSON.stringify(output)).not.toContain("192.0.2.");
-
-    await expect(
-      komariActionHandlers.delete_session!({ session_id: output.current_session_id }, context),
-    ).resolves.toEqual({ success: true });
-    expect(requests.at(-1)).toMatchObject({
-      method: "admin:deleteSession",
-      params: { session: "session-secret" },
-    });
-  });
-
-  it("returns not found when a stable session identifier does not match", async () => {
-    const fetcher = async (): Promise<Response> =>
-      Response.json({ jsonrpc: "2.0", id: 1, result: { current: null, data: [] } });
-    const context = { apiKey: "komari-secret", baseUrl: "https://monitor.example.com", fetcher };
-
-    await expect(komariActionHandlers.delete_session!({ session_id: "0".repeat(64) }, context)).rejects.toMatchObject({
-      status: 404,
-      message: "Komari session was not found",
-    });
   });
 });

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const APPROVED_UPSTREAM_BASE = "8e6d35e9c5f09116ea090e9a5ae0a3cf92fab077";
+export const APPROVED_UPSTREAM_BASE = "bf94ce83e70a62df34140d2b1c7687eda7b49f82";
 
 const lowercaseShaPattern = /^[0-9a-f]{40}$/;
 

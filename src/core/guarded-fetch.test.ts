@@ -1,7 +1,8 @@
 import type { GuardedFetchDnsLookup } from "./guarded-fetch.ts";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGuardedFetch, resolveGuardedEgressTarget, unwrapGuardedFetch } from "./guarded-fetch.ts";
+import { setEgressTrustedHosts } from "./request.ts";
 
 interface RecordedCall {
   url: string;
@@ -317,6 +318,90 @@ describe("createGuardedFetch request URL guard", () => {
   });
 });
 
+describe("createGuardedFetch trusted egress hosts", () => {
+  afterEach(() => setEgressTrustedHosts([]));
+
+  it("lets a trusted host use private and VPN-mapped results while other hosts stay blocked", async () => {
+    setEgressTrustedHosts([".feishu.cn"]);
+    const mappedAddresses = [
+      { address: "198.18.0.196", family: 4 },
+      { address: "10.0.0.5", family: 4 },
+      { address: "fd00::1", family: 6 },
+      { address: "::ffff:198.18.0.196", family: 6 },
+    ];
+    const entries = {
+      "open.feishu.cn": mappedAddresses,
+      "open.other.example": mappedAddresses,
+    };
+
+    const { transport, calls } = createTransport([new Response("ok", { status: 200 })]);
+    const allowed = createGuardedFetch({ fetch: transport, lookup: lookupTable(entries) });
+    await allowed("https://open.feishu.cn/open-apis/authen/v2/oauth/token");
+    expect(calls).toHaveLength(1);
+
+    const blocked = createGuardedFetch({ fetch: createTransport([]).transport, lookup: lookupTable(entries) });
+    await expect(blocked("https://open.other.example/")).rejects.toThrow(/must not resolve/u);
+  });
+
+  it("keeps the URL guard intact for a trusted host", async () => {
+    // The trusted-host setting covers only DNS results. A literal reserved address in the
+    // URL, a non-http scheme, and a redirect into a blocked target are all still
+    // rejected, so trusting a host does not turn off the guard for it.
+    setEgressTrustedHosts([".feishu.cn", "198.18.0.196"]);
+    const guarded = createGuardedFetch({
+      fetch: createTransport([]).transport,
+      lookup: lookupTable({ "open.feishu.cn": [{ address: "198.18.0.196", family: 4 }] }),
+    });
+    await expect(guarded("https://198.18.0.196/")).rejects.toThrow(/must not/u);
+    await expect(guarded("ftp://open.feishu.cn/")).rejects.toThrow(/must use http or https/u);
+
+    const redirecting = createGuardedFetch({
+      fetch: createTransport([redirectTo("http://169.254.169.254/latest/meta-data/")]).transport,
+      lookup: lookupTable({
+        "open.feishu.cn": [{ address: "198.18.0.196", family: 4 }],
+        "169.254.169.254": [{ address: "169.254.169.254", family: 4 }],
+      }),
+    });
+    await expect(redirecting("https://open.feishu.cn/")).rejects.toThrow(/must not/u);
+  });
+
+  it("keeps local and metadata DNS results blocked for a trusted host", async () => {
+    setEgressTrustedHosts(["metadata.attacker.com"]);
+
+    for (const address of [
+      "127.0.0.1",
+      "169.254.169.254",
+      "100.100.100.200",
+      "::1",
+      "fe80::1",
+      "::ffff:169.254.169.254",
+    ]) {
+      const { transport, calls } = createTransport([]);
+      const guarded = createGuardedFetch({
+        fetch: transport,
+        lookup: lookupTable({
+          "metadata.attacker.com": [{ address, family: address.includes(":") ? 6 : 4 }],
+        }),
+      });
+
+      await expect(guarded("https://metadata.attacker.com/latest/meta-data/")).rejects.toThrow(/must not resolve/u);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("is re-read per request so a bootstrap after module load is honored", async () => {
+    const entries = { "open.feishu.cn": [{ address: "198.18.0.196", family: 4 }] };
+    const guarded = createGuardedFetch({
+      fetch: createTransport([new Response("ok", { status: 200 })]).transport,
+      lookup: lookupTable(entries),
+    });
+
+    await expect(guarded("https://open.feishu.cn/")).rejects.toThrow(/must not resolve/u);
+    setEgressTrustedHosts([".feishu.cn"]);
+    await expect(guarded("https://open.feishu.cn/")).resolves.toBeInstanceOf(Response);
+  });
+});
+
 describe("createGuardedFetch resolved-address validation", () => {
   it("blocks hostnames resolving to reserved or metadata addresses", async () => {
     const { transport, calls } = createTransport([]);
@@ -368,6 +453,21 @@ describe("createGuardedFetch resolved-address validation", () => {
     });
 
     await expect(guarded("https://rebind.example.com/")).rejects.toThrow(/must not resolve/u);
+  });
+
+  it("points at the operator opt-out without disclosing the resolved address", async () => {
+    const guarded = createGuardedFetch({
+      fetch: createTransport([]).transport,
+      lookup: lookupTable({ "open.vpn-mapped.example": [{ address: "198.18.0.196", family: 4 }] }),
+    });
+
+    // The rejection happens before any packet leaves the process, so on its own it
+    // is indistinguishable from a network failure; naming the opt-out is what makes
+    // it actionable. The address stays out — see host-pinning.test.ts.
+    await expect(guarded("https://open.vpn-mapped.example/token")).rejects.toThrow(
+      /OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS/u,
+    );
+    await expect(guarded("https://open.vpn-mapped.example/token")).rejects.not.toThrow(/198\.18\.0\.196/u);
   });
 
   it("allows hostnames resolving to public addresses", async () => {

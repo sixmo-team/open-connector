@@ -17,6 +17,7 @@
     "typecheck": "node scripts/typecheck.ts src scripts-all",
     "generate:registry": "node scripts/generate-provider-registry.ts",
     "generate:catalog": "node scripts/generate-catalog.ts",
+    "export:feishu-permissions": "node scripts/export-feishu-permissions.ts",
     "generate:provider": "node scripts/generate-provider.ts",
     "migrate": "node scripts/saas-migrate.ts",
     "backfill-connections": "node scripts/saas-backfill-connections.ts",

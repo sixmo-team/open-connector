@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertPublicHttpUrl,
+  classifyIpAddress,
   isBlockedIpAddress,
+  isEgressTrustedHost,
   isIpAddress,
   isIpv4Address,
   isPrivateNetworkAccessAllowed,
+  parseEgressTrustedHosts,
   parsePrivateNetworkAccessFlag,
+  setEgressTrustedHosts,
   setPrivateNetworkAccessAllowed,
 } from "./request.ts";
 
@@ -101,6 +105,11 @@ describe("isBlockedIpAddress", () => {
       expect(isBlockedIpAddress(address)).toBe(true);
       expect(isBlockedIpAddress(address, true)).toBe(false);
     }
+  });
+
+  it("keeps VPN-mapped IPv4 blocked when only private networks are allowed", () => {
+    expect(isBlockedIpAddress("198.18.0.196")).toBe(true);
+    expect(isBlockedIpAddress("198.18.0.196", true)).toBe(true);
   });
 
   it("allows public IPv4 addresses", () => {
@@ -206,6 +215,29 @@ describe("isIpAddress", () => {
   });
 });
 
+describe("classifyIpAddress", () => {
+  it("classifies local, metadata, and unsafe special-use targets as always blocked", () => {
+    for (const value of ["127.0.0.1", "169.254.169.254", "100.100.100.200", "::1", "fe80::1", "ff02::1"]) {
+      expect(classifyIpAddress(value)).toBe("always-blocked");
+    }
+  });
+
+  it("classifies private, VPN-mapped, and public targets", () => {
+    for (const value of ["10.0.0.5", "100.64.0.1", "fd00::1"]) {
+      expect(classifyIpAddress(value)).toBe("private");
+    }
+    expect(classifyIpAddress("198.18.0.196")).toBe("vpn-mapped");
+    expect(classifyIpAddress("93.184.216.34")).toBe("public");
+  });
+
+  it("inherits the class of IPv4 addresses embedded in IPv6", () => {
+    expect(classifyIpAddress("::ffff:169.254.169.254")).toBe("always-blocked");
+    expect(classifyIpAddress("::ffff:198.18.0.196")).toBe("vpn-mapped");
+    expect(classifyIpAddress("::ffff:10.0.0.5")).toBe("private");
+    expect(classifyIpAddress("::ffff:8.8.8.8")).toBe("public");
+  });
+});
+
 describe("private network access deployment flag", () => {
   afterEach(() => setPrivateNetworkAccessAllowed(false));
 
@@ -237,3 +269,36 @@ function readPublicUrl(value: string, allowPrivateNetwork = false): URL {
     allowPrivateNetwork,
   });
 }
+
+describe("trusted egress hosts", () => {
+  afterEach(() => setEgressTrustedHosts([]));
+
+  it("parses a comma-separated list and drops entries that would match nothing", () => {
+    expect(parseEgressTrustedHosts(" .feishu.cn , API.Example.com ,, . ,")).toEqual([".feishu.cn", "api.example.com"]);
+    expect(parseEgressTrustedHosts(undefined)).toEqual([]);
+    expect(parseEgressTrustedHosts("")).toEqual([]);
+  });
+
+  it("matches a dot-prefixed entry against the domain and its subdomains only", () => {
+    setEgressTrustedHosts([".feishu.cn"]);
+    expect(isEgressTrustedHost("feishu.cn")).toBe(true);
+    expect(isEgressTrustedHost("open.feishu.cn")).toBe(true);
+    expect(isEgressTrustedHost("OPEN.FEISHU.CN")).toBe(true);
+    expect(isEgressTrustedHost("open.feishu.cn.")).toBe(true);
+    // A look-alike registration must not inherit the allowlist.
+    expect(isEgressTrustedHost("evilfeishu.cn")).toBe(false);
+    expect(isEgressTrustedHost("feishu.cn.attacker.example")).toBe(false);
+  });
+
+  it("requires an exact match for an entry without a leading dot", () => {
+    setEgressTrustedHosts(["api.example.com"]);
+    expect(isEgressTrustedHost("api.example.com")).toBe(true);
+    expect(isEgressTrustedHost("sub.api.example.com")).toBe(false);
+    expect(isEgressTrustedHost("example.com")).toBe(false);
+  });
+
+  it("trusts no hosts by default", () => {
+    expect(isEgressTrustedHost("open.feishu.cn")).toBe(false);
+    expect(isEgressTrustedHost("")).toBe(false);
+  });
+});

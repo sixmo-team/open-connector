@@ -25,6 +25,15 @@ function stubTokenResponse(expiresIn: unknown): void {
   );
 }
 
+async function readRejectionMessage(operation: Promise<unknown>): Promise<string> {
+  try {
+    await operation;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error("Expected operation to reject");
+}
+
 describe("OAuth token requests", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -38,7 +47,7 @@ describe("OAuth token requests", () => {
     vi.stubGlobal("fetch", fetcher);
 
     await expect(requestAuthorizationCodeToken({ ...authorizationCodeRequest })).rejects.toThrow(
-      "OAuth token request failed.",
+      "OAuth token request failed without an HTTP response: provider network request failed",
     );
 
     expect(fetcher).toHaveBeenCalledOnce();
@@ -62,10 +71,129 @@ describe("OAuth token requests", () => {
     });
 
     await expect(requestAuthorizationCodeToken({ ...authorizationCodeRequest })).rejects.toThrow(
-      "OAuth token request failed.",
+      "OAuth token request failed (HTTP 302, empty body).",
     );
 
     expect(calls).toEqual(["https://provider.example.com/oauth/token"]);
+  });
+
+  it("names the platform cause when the transport returns no HTTP response", async () => {
+    // The case that motivated this: an SSRF/egress-guard rejection and an
+    // unreachable host both threw the same bare string, and the guard one fails
+    // in tens of milliseconds without touching the network.
+    const refused = new TypeError("fetch failed");
+    (refused as { cause?: unknown }).cause = { code: "ECONNREFUSED" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Promise.reject(refused)),
+    );
+
+    await expect(requestAuthorizationCodeToken({ ...authorizationCodeRequest })).rejects.toThrow(
+      "OAuth token request failed without an HTTP response: provider network request failed (ECONNREFUSED)",
+    );
+  });
+
+  it("reports status without exposing an unstructured provider error body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("<html><head><title>502 Bad Gateway</title></head>\n<body>nginx</body></html>", {
+            status: 502,
+            headers: { "content-type": "text/html" },
+          }),
+      ),
+    );
+
+    await expect(requestAuthorizationCodeToken({ ...authorizationCodeRequest })).rejects.toThrow(
+      "OAuth token request failed (HTTP 502, unrecognized response body).",
+    );
+  });
+
+  it("maps response-stream failures to a sanitized OAuth error", async () => {
+    const platformMessage = "upstream read failed at secret.internal";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new Error(platformMessage));
+              },
+            }),
+            { status: 502 },
+          ),
+      ),
+    );
+
+    const message = await readRejectionMessage(requestAuthorizationCodeToken({ ...authorizationCodeRequest }));
+    expect(message).toBe("OAuth token request failed (HTTP 502, response body could not be read).");
+    expect(message).not.toContain(platformMessage);
+  });
+
+  it("preserves the bounded-response size error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(null, {
+            status: 502,
+            headers: { "content-length": String(1024 * 1024 + 1) },
+          }),
+      ),
+    );
+
+    await expect(requestAuthorizationCodeToken({ ...authorizationCodeRequest })).rejects.toThrow(
+      "OAuth token response exceeds 1048576 bytes",
+    );
+  });
+
+  it("does not expose echoed authorization-code request credentials", async () => {
+    const codeVerifier = "pkce-code-verifier";
+    const body = `client_secret=${authorizationCodeRequest.clientSecret}&code=${authorizationCodeRequest.code}&code_verifier=${codeVerifier}`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status: 400 })),
+    );
+
+    const message = await readRejectionMessage(
+      requestAuthorizationCodeToken({ ...authorizationCodeRequest, extraFields: { code_verifier: codeVerifier } }),
+    );
+    expect(message).toBe("OAuth token request failed (HTTP 400, unrecognized response body).");
+    expect(message).not.toContain(authorizationCodeRequest.clientSecret);
+    expect(message).not.toContain(authorizationCodeRequest.code);
+    expect(message).not.toContain(codeVerifier);
+  });
+
+  it("does not expose tokens from an unrecognized refresh error response", async () => {
+    const refreshToken = "stored-refresh-token";
+    const accessToken = "unexpected-access-token";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ access_token: accessToken, refresh_token: refreshToken }, { status: 400 })),
+    );
+
+    const message = await readRejectionMessage(requestRefreshToken({ ...authorizationCodeRequest, refreshToken }));
+    expect(message).toBe("OAuth token request failed (HTTP 400, unrecognized response body).");
+    expect(message).not.toContain(refreshToken);
+    expect(message).not.toContain(accessToken);
+  });
+
+  it("still prefers the provider's own error message over the fallback", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: "invalid_grant", error_description: "code already redeemed" }), {
+            status: 400,
+          }),
+      ),
+    );
+
+    await expect(requestAuthorizationCodeToken({ ...authorizationCodeRequest })).rejects.toThrow(
+      "code already redeemed",
+    );
   });
 
   it("preserves the token-request timeout error", async () => {

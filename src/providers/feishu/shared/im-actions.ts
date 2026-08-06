@@ -43,7 +43,7 @@ export function createFeishuImActions(input: FeishuImActionOptions): readonly Ac
     input.identity === "user" ? ["im:message.send_as_user", "im:message"] : ["im:message:send_as_bot"];
   const readPermissions =
     input.identity === "user"
-      ? ["im:message.group_msg:get_as_user", "im:message.p2p_msg:get_as_user"]
+      ? ["im:message:readonly", "im:message.group_msg:get_as_user", "im:message.p2p_msg:get_as_user"]
       : ["im:message.group_msg", "im:message.p2p_msg:readonly"];
   const createChatPermissions = input.identity === "user" ? ["im:chat:create_by_user"] : ["im:chat:create"];
   const updateChatPermissions = ["im:chat:update"];

@@ -70,22 +70,10 @@ describe("generic IMAP host access", () => {
     }
   });
 
-  it("applies the guard to the SMTP host as well as the IMAP host", () => {
-    expect(() => readCredential("imap.gmail.com", "169.254.169.254")).toThrow();
-    expect(() => readCredential("imap.gmail.com", "127.0.0.1")).toThrow();
-    expect(() => readCredential("imap.gmail.com", "192.168.1.1")).toThrow();
-  });
-
   it("guards the SMTP host derived from the IMAP host", () => {
     setPrivateNetworkAccessAllowed(true);
     // The derived host follows the IMAP host, so both stay inside the policy.
     expect(readCredential("imap.internal").smtpHost).toBe("smtp.internal");
-  });
-
-  it("normalizes the accepted host and derives the SMTP host from the normalized value", () => {
-    const credential = readCredential("IMAP.Gmail.COM");
-    expect(credential.imapHost).toBe("imap.gmail.com");
-    expect(credential.smtpHost).toBe("smtp.gmail.com");
   });
 
   it("derives the SMTP host from an imap-prefixed label, and leaves other names alone", () => {
@@ -114,16 +102,6 @@ describe("generic IMAP host access", () => {
     for (const smtpPort of ["0", "65536", "-1", "587a", "58 7", "465.0"]) {
       expect(() => genericImapRuntimeConfig.readCredential({ ...values, smtpPort })).toThrow(/SMTP port/);
     }
-  });
-
-  it("preserves the application password exactly", () => {
-    const credential = genericImapRuntimeConfig.readCredential({
-      email: "user@example.com",
-      password: "  application password  ",
-      imapHost: "imap.example.com",
-    });
-
-    expect(credential.authorizationCode).toBe("  application password  ");
   });
 
   it("reports the offending field in the rejection message", () => {

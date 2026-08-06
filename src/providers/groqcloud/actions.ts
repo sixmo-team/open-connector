@@ -88,9 +88,6 @@ const chatCompletionInputSchema = s.object(
       [s.string("A single stop sequence."), s.array("A list of stop sequences.", s.string("A stop sequence."))],
       { description: "One or more sequences where generation should stop." },
     ),
-    stream: s.boolean(
-      "Whether to request a streaming response. This connector only accepts false or an omitted value.",
-    ),
     temperature: s.number("The sampling temperature.", { minimum: 0, maximum: 2 }),
     tool_choice: toolChoiceSchema,
     tools: s.array("Tools available to the model.", jsonObjectSchema),
