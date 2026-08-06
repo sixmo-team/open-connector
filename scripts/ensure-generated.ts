@@ -3,10 +3,7 @@ import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 const rootDir = process.cwd();
-const registryPaths = [
-  join(process.cwd(), "src/providers/registry.generated.ts"),
-  join(process.cwd(), "src/providers/registry.cloudflare.generated.ts"),
-];
+const registryPaths = [join(process.cwd(), "src/providers/registry.generated.ts")];
 const catalogDir = join(process.cwd(), "catalog/apps");
 const sourcePaths = [
   join(rootDir, "src/core"),
@@ -23,7 +20,7 @@ const [registriesPresent, catalogFresh] = await Promise.all([
   Promise.all(registryPaths.map((path) => isFile(path))),
   isFreshCatalog(sourceMtimeMs),
 ]);
-// A fresh catalog proves both registries were generated from the same provider source set.
+// A fresh catalog proves the registry was generated from the same provider source set.
 if (!catalogFresh) {
   runNodeScript("scripts/generate-catalog.ts");
 } else if (registriesPresent.some((present) => !present)) {

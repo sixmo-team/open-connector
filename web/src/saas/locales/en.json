@@ -1,0 +1,189 @@
+{
+  "brand": {
+    "subtitle": "Integration administration"
+  },
+  "common": {
+    "loading": "Loading administration data…",
+    "refresh": "Refresh",
+    "available": "Available",
+    "unavailable": "Unavailable",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "success": "Success",
+    "failed": "Failed",
+    "blocked": "Blocked",
+    "notAvailable": "Not available"
+  },
+  "nav": {
+    "overview": "Overview",
+    "providers": "Providers",
+    "actions": "Actions",
+    "connections": "Connections",
+    "runs": "Runs"
+  },
+  "shell": {
+    "primaryNav": "Administration navigation",
+    "theme": "Theme",
+    "themeMode": {
+      "auto": "System theme",
+      "light": "Light theme",
+      "dark": "Dark theme"
+    },
+    "statusReady": "Admin BFF ready",
+    "statusUnavailable": "Admin BFF unavailable",
+    "refreshData": "Refresh all data",
+    "headings": {
+      "overview": "Overview",
+      "providers": "Provider availability",
+      "actions": "Action grants",
+      "connections": "Safe connection metadata",
+      "runs": "Action runs"
+    }
+  },
+  "language": {
+    "label": "Language",
+    "en": "English",
+    "ru": "Русский"
+  },
+  "actor": {
+    "label": "Administrator actor"
+  },
+  "scope": {
+    "title": "Inspected scope",
+    "tenant": "Tenant",
+    "workspace": "Workspace",
+    "subject": "Subject user",
+    "selectTenant": "Select a tenant",
+    "selectWorkspace": "Select a workspace",
+    "selectSubject": "Select a subject user",
+    "emptyTitle": "No authorized scopes",
+    "emptyDescription": "This administrator has no tenant scope available for inspection.",
+    "incompleteTitle": "Select a complete scope",
+    "incompleteDescription": "Choose a tenant, workspace, and subject user to load administration data."
+  },
+  "errors": {
+    "loadScopes": "Could not load authorized scopes.",
+    "loadData": "Could not load this scope. It may no longer be authorized.",
+    "grant": "Could not update the action grant."
+  },
+  "overview": {
+    "scopeReady": "Scoped administration data",
+    "scopeReadyDescription": "Statistics are reauthorized by the backend for the selected subject.",
+    "metrics": {
+      "connections": "Connections",
+      "activeConnections": "Active connections",
+      "providers": "Providers",
+      "activeProviders": "Active providers",
+      "actions": "Actions",
+      "enabledActions": "Enabled actions",
+      "calls": "Calls",
+      "successes": "Successful",
+      "failures": "Failed",
+      "inputBytes": "Input volume",
+      "outputBytes": "Output volume",
+      "totalDuration": "Total duration",
+      "durationP50": "Duration p50",
+      "durationP95": "Duration p95"
+    },
+    "callOutcome": "Call outcomes",
+    "duration": "Duration percentiles"
+  },
+  "providers": {
+    "title": "Provider catalog",
+    "description": "Catalog availability and enabled connections for the selected scope.",
+    "emptyTitle": "No providers available",
+    "emptyDescription": "No provider catalog entries are authorized for this scope.",
+    "table": {
+      "provider": "Provider",
+      "availability": "Catalog",
+      "connections": "Enabled connections"
+    }
+  },
+  "actions": {
+    "title": "Action policy",
+    "description": "Global classification and the tenant grant effective for this subject.",
+    "emptyTitle": "No actions available",
+    "emptyDescription": "No action definitions are authorized for this scope.",
+    "grant": "Grant",
+    "revoke": "Revoke",
+    "updating": "Updating…",
+    "approval": "Approval required",
+    "inputLimit": "Input limit",
+    "outputLimit": "Output limit",
+    "risk": {
+      "read": "Read",
+      "write": "Write",
+      "destructive": "Destructive",
+      "access_change": "Access change"
+    },
+    "idempotency": {
+      "safe": "Replay safe",
+      "keyed": "Idempotency key",
+      "unsafe": "Not replay safe"
+    },
+    "role": {
+      "viewer": "Viewer",
+      "member": "Member",
+      "admin": "Admin",
+      "owner": "Owner"
+    },
+    "table": {
+      "action": "Action",
+      "provider": "Provider",
+      "classification": "Classification",
+      "grant": "Tenant grant"
+    }
+  },
+  "connections": {
+    "title": "Connections",
+    "description": "Only administrator-safe account and operational metadata is shown.",
+    "emptyTitle": "No connections",
+    "emptyDescription": "No connection metadata is available for this scope.",
+    "visibility": {
+      "user": "User",
+      "workspace": "Workspace"
+    },
+    "status": {
+      "pending": "Pending",
+      "active": "Active",
+      "expired": "Expired",
+      "revoked": "Revoked",
+      "failed": "Failed",
+      "reconnect_required": "Reconnect required"
+    },
+    "table": {
+      "provider": "Provider",
+      "account": "Account",
+      "owner": "Owner",
+      "visibility": "Visibility",
+      "status": "Status",
+      "verified": "Last verified",
+      "calls": "Calls"
+    }
+  },
+  "runs": {
+    "title": "Runs",
+    "description": "Scoped run summaries contain no raw provider input or output.",
+    "emptyTitle": "No runs",
+    "emptyDescription": "No action runs are available for this scope.",
+    "actorSubject": "Actor → subject",
+    "volume": "I/O volume",
+    "status": {
+      "pending": "Pending",
+      "running": "Running",
+      "succeeded": "Succeeded",
+      "failed": "Failed",
+      "unknown": "Unknown"
+    },
+    "table": {
+      "started": "Started",
+      "actorSubject": "Actor → subject",
+      "action": "Provider / action",
+      "connection": "Local connection",
+      "status": "Status",
+      "duration": "Duration",
+      "volume": "I/O volume",
+      "error": "Error code"
+    }
+  }
+}

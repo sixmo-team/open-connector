@@ -1,15 +1,11 @@
-import type { ProviderDefinition } from "./model";
+import type { ProviderDisplay } from "./shared-ui";
 
 import { describe, expect, it } from "vitest";
 import { providerIconSource } from "./shared-ui";
 
-function provider(options: Partial<ProviderDefinition> & Pick<ProviderDefinition, "service">): ProviderDefinition {
+function provider(options: Partial<ProviderDisplay> & Pick<ProviderDisplay, "service">): ProviderDisplay {
   return {
     displayName: options.displayName ?? options.service,
-    categories: [],
-    authTypes: [],
-    auth: [],
-    actions: [],
     ...options,
     service: options.service,
   };

@@ -1,4 +1,9 @@
-import type { ProviderDefinition } from "./model";
+export interface ProviderDisplay {
+  service: string;
+  displayName: string;
+  iconUrl?: string;
+  homepageUrl?: string;
+}
 import type { ReactNode } from "react";
 
 import { CircleAlert, Inbox } from "lucide-react";
@@ -52,7 +57,7 @@ export function TagList(props: { values: string[]; empty: string }): ReactNode {
   );
 }
 
-export function ProviderIcon(props: { provider: ProviderDefinition; large?: boolean }): ReactNode {
+export function ProviderIcon(props: { provider: ProviderDisplay; large?: boolean }): ReactNode {
   const letters = providerInitials(props.provider.displayName);
   const iconSource = providerIconSource(props.provider);
   const [failedIconSource, setFailedIconSource] = useState<string | null>(null);
@@ -87,7 +92,7 @@ export function providerInitials(displayName: string): string {
   );
 }
 
-export function providerIconUrl(provider: ProviderDefinition): string | undefined {
+export function providerIconUrl(provider: ProviderDisplay): string | undefined {
   const source = providerIconSource(provider);
   return source?.kind == "url" ? source.value : undefined;
 }
@@ -98,7 +103,7 @@ interface ProviderIconSource {
 }
 
 export function providerIconSource(
-  provider: ProviderDefinition,
+  provider: ProviderDisplay,
   catalogIconUrls: Readonly<Record<string, string>> = providerIconUrls,
 ): ProviderIconSource | undefined {
   const iconUrl = provider.iconUrl?.trim();

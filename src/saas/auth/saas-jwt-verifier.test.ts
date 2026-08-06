@@ -1,0 +1,302 @@
+import type { SaasJwtVerifier } from "./saas-jwt-verifier.ts";
+import type { AddressInfo } from "node:net";
+
+import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { readSaasConfig } from "../config.ts";
+import { createSaasJwtVerifier, readJwksBearerTokenFile } from "./saas-jwt-verifier.ts";
+
+const completeEnvironment: NodeJS.ProcessEnv = {
+  OPEN_CONNECTOR_POSTGRES_URL: "postgresql://connector@postgres/open_connector",
+  OPEN_CONNECTOR_OPENBAO_ADDR: "https://openbao.production.example.com",
+  OPEN_CONNECTOR_OPENBAO_TOKEN_FILE: "/run/secrets/open_connector_openbao_token",
+  OPEN_CONNECTOR_INTERNAL_URL: "http://open-connector:3000",
+  OPEN_CONNECTOR_JWKS_URL: "http://backend/internal/integrations/.well-known/jwks.json",
+  OPEN_CONNECTOR_JWKS_BEARER_TOKEN_FILE: "/run/secrets/open_connector_jwks_bearer_token",
+  OPEN_CONNECTOR_JWT_ISSUER: "integration-backend",
+  OPEN_CONNECTOR_JWT_AUDIENCE: "open-connector-saas",
+  OPEN_CONNECTOR_JWT_ACTIVE_KID: "current",
+  OPEN_CONNECTOR_SEAWEEDFS_ENDPOINT: "http://seaweedfs:8333",
+  OPEN_CONNECTOR_SEAWEEDFS_BUCKET: "integration-transit",
+  OPEN_CONNECTOR_SEAWEEDFS_ACCESS_KEY_ID: "connector",
+  OPEN_CONNECTOR_SEAWEEDFS_SECRET_ACCESS_KEY: "secret",
+};
+
+const requiredNames = Object.keys(completeEnvironment);
+const temporaryDirectories: string[] = [];
+
+describe("readSaasConfig", () => {
+  it.each(requiredNames)("rejects missing %s", (name) => {
+    const environment = { ...completeEnvironment };
+    delete environment[name];
+    expect(() => readSaasConfig(environment)).toThrow(`${name} is required`);
+  });
+
+  it("rejects a raw JWKS bearer token environment override", () => {
+    expect(() => readSaasConfig({ ...completeEnvironment, OPEN_CONNECTOR_JWKS_BEARER_TOKEN: "raw-secret" })).toThrow(
+      "OPEN_CONNECTOR_JWKS_BEARER_TOKEN is not supported",
+    );
+  });
+});
+
+describe("readJwksBearerTokenFile", () => {
+  afterEach(async () => {
+    await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  });
+
+  it("reads one nonempty token and trims a secret-file newline", async () => {
+    const path = await tokenFile("jwks-secret\n");
+    await expect(readJwksBearerTokenFile(path)).resolves.toBe("jwks-secret");
+  });
+
+  it.each([
+    ["empty", ""],
+    ["whitespace-only", " \n"],
+    ["multiple tokens", "first second"],
+    ["oversized", "x".repeat(16_385)],
+  ])("rejects %s content", async (_label, content) => {
+    await expect(readJwksBearerTokenFile(await tokenFile(content))).rejects.toThrow();
+  });
+});
+
+let privateKey: CryptoKey;
+let oldPrivateKey: CryptoKey;
+let jwksUrl: string;
+let closeJwksServer: () => Promise<void>;
+
+beforeAll(async () => {
+  const current = await generateKeyPair("EdDSA");
+  const old = await generateKeyPair("EdDSA");
+  privateKey = current.privateKey;
+  oldPrivateKey = old.privateKey;
+  const keys = [
+    { ...(await exportJWK(current.publicKey)), alg: "EdDSA", kid: "current", use: "sig" },
+    { ...(await exportJWK(old.publicKey)), alg: "EdDSA", kid: "old", use: "sig" },
+  ];
+  const server = createServer((request, response) => {
+    if (request.headers.authorization !== "Bearer jwks-secret") {
+      response.statusCode = 401;
+      response.end();
+      return;
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ keys }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  jwksUrl = `http://127.0.0.1:${address.port}/jwks.json`;
+  closeJwksServer = () =>
+    new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+});
+
+afterAll(async () => closeJwksServer());
+
+describe("createSaasJwtVerifier", () => {
+  it("accepts a current EdDSA token and returns a deeply immutable scope", async () => {
+    const scope = await verifier()(header(await token()));
+    expect(scope).toMatchObject({ tenantId: "tenant-1", purpose: "catalog:read" });
+    expect(Object.isFrozen(scope)).toBe(true);
+    expect(Object.isFrozen(scope.permissions)).toBe(true);
+  });
+
+  it("retains the signed reviewed output bound on action execution scopes", async () => {
+    const scope = await verifier()(
+      header(
+        await token({
+          purpose: "action:execute",
+          permissions: ["action:execute"],
+          local_connection_id: "local-1",
+          connector_connection_id: "connector-1",
+          action_id: "gmail.messages_list",
+          max_output_bytes: 8_388_608,
+          request_hash: "a".repeat(43),
+        }),
+      ),
+    );
+
+    expect(scope).toMatchObject({ purpose: "action:execute", maxOutputBytes: 8_388_608 });
+  });
+
+  it("retains the signed file binding on file read scopes", async () => {
+    const fileId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const scope = await verifier()(
+      header(await token({ purpose: "file:read", permissions: ["file:read"], file_id: fileId })),
+    );
+
+    expect(scope).toMatchObject({ purpose: "file:read", fileId });
+  });
+
+  it("returns a distinct catalog service principal without tenant scope fields", async () => {
+    const principal = await verifier()(
+      header(
+        await token({
+          sub: "open-connector-catalog",
+          subject_kind: "service",
+          tenant_id: undefined,
+          workspace_id: undefined,
+          actor_user_id: undefined,
+          subject_user_id: undefined,
+          workspace_role: undefined,
+        }),
+      ),
+    );
+    expect(principal).toEqual({
+      subjectKind: "service",
+      subject: "open-connector-catalog",
+      purpose: "catalog:read",
+      permissions: ["catalog:read"],
+    });
+    expect(Object.isFrozen(principal)).toBe(true);
+    expect(Object.isFrozen(principal.permissions)).toBe(true);
+    expect(principal).not.toHaveProperty("tenantId");
+  });
+
+  it.each([
+    ["tenant claim", { tenant_id: "tenant-1" }],
+    ["wrong purpose", { purpose: "connection:read", permissions: ["connection:read"] }],
+    ["wildcard permission", { permissions: ["*"] }],
+    ["mixed permissions", { permissions: ["catalog:read", "connection:read"] }],
+  ])("rejects a catalog service token with a %s", async (_label, serviceOverrides) => {
+    await expect(
+      verifier()(
+        header(
+          await token({
+            sub: "open-connector-catalog",
+            subject_kind: "service",
+            tenant_id: undefined,
+            workspace_id: undefined,
+            actor_user_id: undefined,
+            subject_user_id: undefined,
+            workspace_role: undefined,
+            ...serviceOverrides,
+          }),
+        ),
+      ),
+    ).rejects.toThrow("unauthorized");
+  });
+
+  it("rejects when the remote JWKS bearer credential is wrong", async () => {
+    const badVerifier = createSaasJwtVerifier(
+      {
+        jwksUrl,
+        jwtIssuer: "integration-backend",
+        jwtAudience: "open-connector-saas",
+        jwtActiveKid: "current",
+      },
+      "wrong-secret",
+    );
+    await expect(badVerifier(header(await token()))).rejects.toThrow("unauthorized");
+  });
+
+  it("rejects an OAuth completion token exceeding 60 seconds", async () => {
+    const issuedAt = now();
+    await expect(
+      verifier()(
+        header(
+          await token({
+            purpose: "oauth:complete",
+            permissions: ["oauth:complete"],
+            oauth_session_id: "oauth-1",
+            local_connection_id: "local-1",
+            iat: issuedAt,
+            nbf: issuedAt,
+            exp: issuedAt + 120,
+          }),
+        ),
+      ),
+    ).rejects.toThrow("unauthorized");
+  });
+
+  it.each([
+    ["issuer", { iss: "other-issuer" }],
+    ["audience", { aud: "other-audience" }],
+    ["expiry", { iat: now() - 61, nbf: now() - 61, exp: now() - 1 }],
+    ["not-before", { nbf: now() + 30, exp: now() + 60 }],
+    ["issued-at", { iat: now() + 3_600, nbf: now(), exp: now() + 3_660 }],
+    ["lifetime", { iat: now(), nbf: now(), exp: now() + 61 }],
+  ])("rejects a token with the wrong %s", async (_label, overrides) => {
+    await expect(verifier()(header(await token(overrides)))).rejects.toThrow("unauthorized");
+  });
+
+  it("rejects a token using a non-EdDSA algorithm", async () => {
+    const jwt = await new SignJWT(claims())
+      .setProtectedHeader({ alg: "HS256", kid: "current" })
+      .sign(new TextEncoder().encode("a-secret-that-is-long-enough"));
+    await expect(verifier()(header(jwt))).rejects.toThrow("unauthorized");
+  });
+
+  it("rejects a valid signature from a non-current kid", async () => {
+    const jwt = await token({}, "old", oldPrivateKey);
+    await expect(verifier()(header(jwt))).rejects.toThrow("unauthorized");
+  });
+
+  it("rejects incomplete purpose-specific bindings", async () => {
+    const jwt = await token({ purpose: "action:execute", permissions: ["action:execute"], request_hash: undefined });
+    await expect(verifier()(header(jwt))).rejects.toThrow("unauthorized");
+  });
+
+  it("rejects missing and malformed bearer authorization generically", async () => {
+    await expect(verifier()(undefined)).rejects.toThrow("unauthorized");
+    await expect(verifier()("Bearer static-runtime-token")).rejects.toThrow("unauthorized");
+  });
+});
+
+function verifier(): SaasJwtVerifier {
+  return createSaasJwtVerifier(
+    {
+      jwksUrl,
+      jwtIssuer: "integration-backend",
+      jwtAudience: "open-connector-saas",
+      jwtActiveKid: "current",
+    },
+    "jwks-secret",
+  );
+}
+
+async function tokenFile(content: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "saas-jwks-"));
+  temporaryDirectories.push(directory);
+  const path = join(directory, "token");
+  await writeFile(path, content);
+  return path;
+}
+
+function now(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function claims(): Record<string, unknown> {
+  const issuedAt = now();
+  return {
+    iss: "integration-backend",
+    aud: "open-connector-saas",
+    sub: "subject-1",
+    jti: crypto.randomUUID(),
+    iat: issuedAt,
+    nbf: issuedAt,
+    exp: issuedAt + 60,
+    tenant_id: "tenant-1",
+    workspace_id: "workspace-1",
+    actor_user_id: "actor-1",
+    subject_user_id: "subject-1",
+    workspace_role: "member",
+    purpose: "catalog:read",
+    permissions: ["catalog:read"],
+  };
+}
+
+async function token(
+  overrides: Record<string, unknown> = {},
+  kid = "current",
+  signingKey: CryptoKey = privateKey,
+): Promise<string> {
+  return new SignJWT({ ...claims(), ...overrides }).setProtectedHeader({ alg: "EdDSA", kid }).sign(signingKey);
+}
+
+function header(jwt: string): string {
+  return `Bearer ${jwt}`;
+}

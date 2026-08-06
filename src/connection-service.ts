@@ -267,30 +267,7 @@ export class ConnectionService {
 
   async connectWithApiKey(service: string, input: ConnectWithCredentialInput): Promise<ConnectionSummary> {
     const provider = this.getAvailableProvider(service);
-    if (!this.supportsAuth(provider, "api_key")) {
-      throw new ConnectionError("unsupported_auth_type", `${service} does not support api_key.`);
-    }
-
-    const auth = this.getApiKeyDefinition(provider);
-    const values = normalizeCredentialValues({
-      fields: createApiKeyFields(auth),
-      values: input.values ?? {},
-      createError: (message) => new ConnectionError("invalid_input", message),
-    });
-    const apiKey = values.apiKey;
-
-    const credential: ResolvedCredential = {
-      authType: "api_key",
-      apiKey,
-      values,
-      ...this.buildCredentialRuntimeData(
-        provider,
-        "api_key",
-        createApiKeyFields(auth),
-        values,
-        await this.validateApiKeyCredential(service, { apiKey, values }),
-      ),
-    };
+    const credential = await this.createApiKeyCredential(provider, input.values ?? {});
     const connectionName = normalizeConnectionName(input.connectionName);
     const stored = await this.store.set(service, connectionName, credential);
 
@@ -299,31 +276,40 @@ export class ConnectionService {
 
   async connectWithCustomCredential(service: string, input: ConnectWithCredentialInput): Promise<ConnectionSummary> {
     const provider = this.getAvailableProvider(service);
-    if (!this.supportsAuth(provider, "custom_credential")) {
-      throw new ConnectionError("unsupported_auth_type", `${service} does not support custom_credential.`);
-    }
-
-    const auth = this.getCustomCredentialDefinition(provider);
-    const values = normalizeCredentialValues({
-      fields: auth.fields,
-      values: input.values ?? {},
-      createError: (message) => new ConnectionError("invalid_input", message),
-    });
-    const credential: ResolvedCredential = {
-      authType: "custom_credential",
-      values,
-      ...this.buildCredentialRuntimeData(
-        provider,
-        "custom_credential",
-        auth.fields,
-        values,
-        await this.validateCustomCredential(service, { values }),
-      ),
-    };
+    const credential = await this.createCustomCredential(provider, input.values ?? {});
     const connectionName = normalizeConnectionName(input.connectionName);
     const stored = await this.store.set(service, connectionName, credential);
 
     return this.createStoredConnectionSummary(provider, stored.id, connectionName, credential);
+  }
+
+  async replaceWithApiKey(target: StoredConnection, input: ConnectWithCredentialInput): Promise<ConnectionSummary> {
+    const provider = this.getAvailableProvider(target.service);
+    const connectionName = normalizeConnectionName(input.connectionName);
+    if (target.connectionName !== connectionName || target.credential.authType !== "api_key") {
+      throw new ConnectionError("connection_mismatch", "Credential replacement target does not match.");
+    }
+    const credential = await this.createApiKeyCredential(provider, input.values ?? {});
+    if (!(await this.store.updateCredential({ ...target, credential }))) {
+      throw new ConnectionError("connection_conflict", "Connection changed while its credential was replaced.");
+    }
+    return this.createStoredConnectionSummary(provider, target.id, connectionName, credential);
+  }
+
+  async replaceWithCustomCredential(
+    target: StoredConnection,
+    input: ConnectWithCredentialInput,
+  ): Promise<ConnectionSummary> {
+    const provider = this.getAvailableProvider(target.service);
+    const connectionName = normalizeConnectionName(input.connectionName);
+    if (target.connectionName !== connectionName || target.credential.authType !== "custom_credential") {
+      throw new ConnectionError("connection_mismatch", "Credential replacement target does not match.");
+    }
+    const credential = await this.createCustomCredential(provider, input.values ?? {});
+    if (!(await this.store.updateCredential({ ...target, credential }))) {
+      throw new ConnectionError("connection_conflict", "Connection changed while its credential was replaced.");
+    }
+    return this.createStoredConnectionSummary(provider, target.id, connectionName, credential);
   }
 
   async setOAuthCredential(
@@ -458,6 +444,59 @@ export class ConnectionService {
     }
 
     return auth;
+  }
+  private async createApiKeyCredential(
+    provider: RuntimeProviderDefinition,
+    input: Record<string, unknown>,
+  ): Promise<Extract<ResolvedCredential, { authType: "api_key" }>> {
+    if (!this.supportsAuth(provider, "api_key")) {
+      throw new ConnectionError("unsupported_auth_type", `${provider.service} does not support api_key.`);
+    }
+    const fields = createApiKeyFields(this.getApiKeyDefinition(provider));
+    const values = normalizeCredentialValues({
+      fields,
+      values: input,
+      createError: (message) => new ConnectionError("invalid_input", message),
+    });
+    const apiKey = values.apiKey;
+    return {
+      authType: "api_key",
+      apiKey,
+      values,
+      ...this.buildCredentialRuntimeData(
+        provider,
+        "api_key",
+        fields,
+        values,
+        await this.validateApiKeyCredential(provider.service, { apiKey, values }),
+      ),
+    };
+  }
+
+  private async createCustomCredential(
+    provider: RuntimeProviderDefinition,
+    input: Record<string, unknown>,
+  ): Promise<Extract<ResolvedCredential, { authType: "custom_credential" }>> {
+    if (!this.supportsAuth(provider, "custom_credential")) {
+      throw new ConnectionError("unsupported_auth_type", `${provider.service} does not support custom_credential.`);
+    }
+    const fields = this.getCustomCredentialDefinition(provider).fields;
+    const values = normalizeCredentialValues({
+      fields,
+      values: input,
+      createError: (message) => new ConnectionError("invalid_input", message),
+    });
+    return {
+      authType: "custom_credential",
+      values,
+      ...this.buildCredentialRuntimeData(
+        provider,
+        "custom_credential",
+        fields,
+        values,
+        await this.validateCustomCredential(provider.service, { values }),
+      ),
+    };
   }
 
   private async validateApiKeyCredential(

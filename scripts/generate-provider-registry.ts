@@ -10,13 +10,7 @@ const providersDir = join(process.cwd(), "src/providers");
  * Generate provider registries from definitions already loaded by the caller.
  */
 export async function generateProviderRegistries(providerSources: ProviderSource[]): Promise<void> {
-  await Promise.all([
-    writeRegistry("registry.generated.ts", providerSources),
-    writeRegistry(
-      "registry.cloudflare.generated.ts",
-      providerSources.filter((source) => !source.nodeOnly),
-    ),
-  ]);
+  await writeRegistry("registry.generated.ts", providerSources);
 }
 
 if (import.meta.main) {
