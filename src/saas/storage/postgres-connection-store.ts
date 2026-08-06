@@ -5,7 +5,10 @@ import type { SaasRequestScope } from "../contracts.ts";
 import type { Pool } from "pg";
 
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { withScopedClient } from "./scoped-query.ts";
+
+const connectionIdSchema = z.uuid();
 
 interface ConnectionSecretBase {
   provider: string;
@@ -709,6 +712,7 @@ export class PostgresConnectionStore implements IConnectionStore {
   }
 
   async blockForRevocation(connectionId: string): Promise<StoredConnection | undefined> {
+    if (!connectionIdSchema.safeParse(connectionId).success) return undefined;
     const localConnectionId = this.requiredLocalConnectionId();
     const row = await withScopedClient(this.pool, this.scope, async (client) => {
       return (
@@ -728,6 +732,7 @@ export class PostgresConnectionStore implements IConnectionStore {
     return row ? await this.readStoredConnection(row) : undefined;
   }
   async hasRevocationReceipt(connectionId: string): Promise<boolean> {
+    if (!connectionIdSchema.safeParse(connectionId).success) return false;
     const localConnectionId = this.requiredLocalConnectionId();
     return await withScopedClient(this.pool, this.scope, async (client) => {
       return (
@@ -744,6 +749,7 @@ export class PostgresConnectionStore implements IConnectionStore {
   }
 
   async resumeRevocation(connectionId: string): Promise<boolean> {
+    if (!connectionIdSchema.safeParse(connectionId).success) return false;
     const localConnectionId = this.requiredLocalConnectionId();
     const pending = await withScopedClient(this.pool, this.scope, async (client) => {
       return (
