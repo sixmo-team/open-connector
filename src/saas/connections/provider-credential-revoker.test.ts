@@ -78,6 +78,7 @@ describe("ProviderSaasCredentialRevoker", () => {
     const fetchFn = vi
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error(`provider rejected ${oauthCredential.accessToken} and ${userToken}`))
+      .mockRejectedValueOnce(new Error("provider retry failed"))
       .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
     const revoker = new ProviderSaasCredentialRevoker({ fetchFn, lookup: null });
     const credential = {
@@ -87,7 +88,7 @@ describe("ProviderSaasCredentialRevoker", () => {
 
     const outcome = await revoker.revoke(request("slack", credential));
 
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
     expect(outcome).toBe("failed");
     expect(JSON.stringify({ outcome })).not.toContain(oauthCredential.accessToken);
     expect(JSON.stringify({ outcome })).not.toContain(userToken);
@@ -179,14 +180,13 @@ describe("ProviderSaasCredentialRevoker", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
-  it("retries an uncertain failure without changing or exposing the credential", async () => {
+  it("retries an uncertain provider response within the same revocation", async () => {
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(new Response('{"ok":false,"error":"temporarily_unavailable"}', { status: 200 }))
       .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
     const revoker = new ProviderSaasCredentialRevoker({ fetchFn, lookup: null });
 
-    await expect(revoker.revoke(request("slack"))).resolves.toBe("failed");
     await expect(revoker.revoke(request("slack"))).resolves.toBe("revoked");
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });

@@ -171,31 +171,38 @@ export class ProviderSaasCredentialRevoker implements SaasProviderCredentialRevo
         outcome = "failed";
         continue;
       }
-      try {
-        const headers = new Headers({ "content-type": definition.contentType });
-        let body: string;
-        if (definition.auth.type === "body") {
-          body = new URLSearchParams({ [definition.auth.field]: token }).toString();
-        } else {
-          headers.set("authorization", `Bearer ${token}`);
-          body = "null";
-        }
-        const response = await this.fetchFn(endpoint.toString(), {
-          method: definition.method,
-          headers,
-          body,
-          redirect: "error",
-          signal,
-        });
-        const bytes = await readBoundedResponseBytes(response, {
-          maxBytes: this.maxResponseBytes,
-          fieldName: "Provider revocation response",
-          createError: (message) => new Error(message),
-        });
-        if (!responseMatches(definition.response, response.status, new TextDecoder().decode(bytes))) outcome = "failed";
-      } catch {
-        outcome = "failed";
+      const headers = new Headers({ "content-type": definition.contentType });
+      let body: string;
+      if (definition.auth.type === "body") {
+        body = new URLSearchParams({ [definition.auth.field]: token }).toString();
+      } else {
+        headers.set("authorization", `Bearer ${token}`);
+        body = "null";
       }
+      let revoked = false;
+      for (let attempt = 0; attempt < 2 && !signal.aborted; attempt++) {
+        try {
+          const response = await this.fetchFn(endpoint.toString(), {
+            method: definition.method,
+            headers,
+            body,
+            redirect: "error",
+            signal,
+          });
+          const bytes = await readBoundedResponseBytes(response, {
+            maxBytes: this.maxResponseBytes,
+            fieldName: "Provider revocation response",
+            createError: (message) => new Error(message),
+          });
+          if (responseMatches(definition.response, response.status, new TextDecoder().decode(bytes))) {
+            revoked = true;
+            break;
+          }
+        } catch {
+          if (signal.aborted) break;
+        }
+      }
+      if (!revoked) outcome = "failed";
     }
     return outcome;
   }
