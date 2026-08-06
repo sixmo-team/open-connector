@@ -799,14 +799,15 @@ describe("SaasConnectServer", () => {
     );
     expect(rotatedCustom.status).toBe(200);
     expect(JSON.stringify(await rotatedCustom.json())).not.toContain("rotated-custom-secret");
-    expect((rows[2]?.stored.credential as { values?: Record<string, string> }).values?.clientSecret).toBe(
-      "rotated-custom-secret",
-    );
+    expect(rows[2]!.stored.credential).toMatchObject({
+      authType: "custom_credential",
+      values: { clientSecret: "rotated-custom-secret" },
+    });
     const replacedA = await create("write-a", localA, "account-a", "replacement-secret");
     expect(replacedA.status).toBe(201);
     expect((await replacedA.json()).id).toBe("connector-1");
     expect((await create("replace-a", localA, "account-a", "scoped-create-secret")).status).toBe(403);
-    expect((rows[0]?.stored.credential as { apiKey?: string }).apiKey).toBe("replacement-secret");
+    expect(rows[0]!.stored.credential).toMatchObject({ authType: "api_key", apiKey: "replacement-secret" });
 
     const rotated = await replaceCredential("replace-a");
     expect(rotated.status).toBe(200);
@@ -816,7 +817,7 @@ describe("SaasConnectServer", () => {
       service: "example",
       connectionName: "account-a",
     });
-    expect((rows[0]?.stored.credential as { apiKey?: string }).apiKey).toBe("rotated-secret");
+    expect(rows[0]!.stored.credential).toMatchObject({ authType: "api_key", apiKey: "rotated-secret" });
     const redactedRotation = await replaceCredential("replace-a");
     expect(JSON.stringify(await redactedRotation.json())).not.toMatch(/rotated-secret|credential|reference/i);
     const revisionAfterRotation = rows[0]?.stored.revision;
@@ -828,7 +829,7 @@ describe("SaasConnectServer", () => {
     expect((await replaceCredential("replace-a")).status).toBe(409);
     failCredentialUpdate = false;
     expect(rows[0]?.stored.revision).toBe(revisionAfterRotation);
-    expect((rows[0]?.stored.credential as { apiKey?: string }).apiKey).toBe("rotated-secret");
+    expect(rows[0]!.stored.credential).toMatchObject({ authType: "api_key", apiKey: "rotated-secret" });
 
     const listed = await (
       await connectionApp.request("/internal/saas/connections", {
@@ -1218,7 +1219,7 @@ describe("SaasConnectServer", () => {
     let purgeFailure: Error | undefined;
     let purgeCalls = 0;
     const lifecycleService = {
-      async exportPage({ cursor, limit }: { cursor?: string; limit: number }) {
+      async exportPage({ cursor }: { cursor?: string; limit: number }) {
         return {
           tenantId: lifecycleReadScope.tenantId,
           workspaceId: lifecycleReadScope.workspaceId,

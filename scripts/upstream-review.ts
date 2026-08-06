@@ -252,6 +252,7 @@ function validateRepoPath(path: string): string {
     path.length === 0 ||
     path.startsWith("/") ||
     path.includes("\\") ||
+    // oxlint-disable-next-line no-control-regex -- ASCII controls are invalid in repository paths.
     /[\u0000-\u001f\u007f]/.test(path) ||
     parts.some((part) => part === "" || part === "." || part === "..")
   ) {
