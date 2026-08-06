@@ -1,0 +1,49 @@
+name: Upstream Compatibility
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  upstream-compat:
+    name: Upstream Compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check approved upstream baseline
+        run: npm run upstream:check
+
+      - name: Review local upstream candidate
+        run: npm run upstream:review -- "$GITHUB_SHA"
+
+      - name: Check single-runtime cutover invariants
+        run: npm run upstream:protected
+
+      - name: Verify generated catalog
+        run: npm run verify:generated
+
+      - name: Run compatibility tests
+        run: npm test
+
+      - name: Build
+        run: npm run build

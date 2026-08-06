@@ -30,6 +30,20 @@ jobs:
   ci:
     name: Lint, Typecheck & Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: open_connector_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d open_connector_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,10 +69,21 @@ jobs:
       - name: Check formatting (oxfmt)
         run: npm run format
 
-      # 2) Typecheck (build): regenerates the registry, type-checks src/scripts/examples.
-      - name: Typecheck
-        run: npm run typecheck
+      # 2) Build: regenerates the catalog, type-checks Node/SaaS sources, and builds the sole Connect UI.
+      - name: Build
+        run: npm run build
+
+      - name: Build final runtime image
+        run: docker build -f docker/Dockerfile -t open-connector:verify .
+
+      - name: Verify final runtime image
+        run: npm run verify:no-legacy-runtime -- --image open-connector:verify
 
       # 3) Unit tests (vitest): covers src and the web workspace.
       - name: Run tests (vitest)
         run: npm test
+
+      - name: Run real PostgreSQL RLS gate
+        run: npm run test:rls
+        env:
+          TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/open_connector_test

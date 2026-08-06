@@ -1,3 +1,0 @@
-{
-  "extends": "@hyrious/configs/tsconfig.node.json"
-}

@@ -4,7 +4,7 @@
 
 - Keep one clear owner for each fact. Do not repeat provider metadata such as `displayName` in executors when it already belongs to `definition.ts`; pass or inject it from the caller that has the definition/catalog.
 - Provider definitions are catalog source code. Build schemas with `src/core/json-schema.ts` helpers, usually imported as `s`, instead of copying generated catalog JSON.
-- Keep provider execution lazy at the executor-module boundary. Generated registries should map each service to `import("./<service>/executors.ts")`, and `ProviderLoader` should call that importer only when an action, proxy request, or credential validator runs. Inside `executors.ts`, import provider runtime modules normally unless those modules have meaningful startup cost or side effects.
+- Keep provider execution lazy at the executor-module boundary. Generated registries should map each service to `import("./<service>/executors.ts")`, and `ProviderLoader` should call that importer only when an authorized action or credential validator runs. Inside `executors.ts`, import provider runtime modules normally unless those modules have meaningful startup cost or side effects.
 - Do not create barrel files such as `index.ts`. Import from the concrete module that owns the API.
 
 ## Code Style
@@ -21,10 +21,10 @@
 
 ## Runtime API
 
-- Keep `/v1` response shaping in `src/server/runtime-api.ts`; route handlers should dispatch and validate, not assemble compatibility objects field by field.
-- Public runtime fields should have a clear source and consumer. Do not expose local implementation concepts or placeholder fields just because they are easy to add.
-- Match existing runtime wire shapes deliberately: catalog index endpoints, action metadata, connection aliases, envelopes, and error codes should stay stable for SDK/CLI clients.
-- If an upstream-compatible field has no local source yet, prefer omitting it or returning a documented empty value from the serializer rather than scattering optional fields in routes.
+- `src/saas` is the only runtime. Keep its wire contract aligned with `docs/contracts/saas-runtime.openapi.yaml`.
+- Every storage or execution call must use the verified `SaasRequestScope`; tenant/workspace/user/action/connection identity never comes from request headers or alternate parameters.
+- Keep provider execution behind `SaasActionRunner`. Do not add compatibility routes, arbitrary provider proxies, static tokens, direct MCP execution, default connections, or another server entrypoint.
+- PostgreSQL adapters must use request-local transactions and forced RLS. OpenBao paths, OAuth state, SeaweedFS metadata, audit records, and deletion must carry the same scope.
 
 ## Providers
 
@@ -36,32 +36,29 @@
 
 ## Provider Network Egress (SSRF)
 
-- All provider egress must go through the shared SSRF-guarded fetch, never the global `fetch`. Use `context.fetcher` (injected by `defineProviderExecutors`/`defineApiKeyProviderExecutors`/etc.) or, in a hand-written proxy, the exported `providerFetch` / `createProviderFetch`. The guard validates the request URL and every redirect `Location` with `assertPublicHttpUrl`, follows redirects manually, and (by default) validates DNS-resolved addresses.
+- All provider egress must go through the shared SSRF-guarded fetch, never the global `fetch`. Use `context.fetcher` (injected by `defineProviderExecutors`/`defineApiKeyProviderExecutors`/etc.) or `providerFetch` / `createProviderFetch`. The guard validates the request URL and every redirect `Location` with `assertPublicHttpUrl`, follows redirects manually, and (by default) validates DNS-resolved addresses.
 - DNS resolved-address validation is ON by default and runs once per request for hostname targets. Add `skipDnsValidation: true` (on `defineProviderExecutors`/`defineProviderProxy`/`createProviderFetch`) ONLY when the egress host is a hardcoded literal fully controlled by the code. NEVER add it when the host comes from credential/user input, when the base URL is a resolver, or when the provider fetches a user-supplied URL — there the DNS check is the SSRF defense, not redundant overhead.
 - Self-hosted providers whose instance host is user/credential-configured and may live on a private network pass `allowPrivateNetwork: isPrivateNetworkAccessAllowed` into their executors/proxy AND thread the same flag into their base-URL `assertPublicHttpUrl` call (see Dokploy for the reference pattern). It is deployment-gated by `OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK`; reserved, loopback, link-local, and cloud-metadata targets stay blocked even when it is enabled.
 - User-supplied content/download URLs (e.g. `fileUrl`, `sourceUrl`, `imageUrl`) must ALWAYS be validated public-only — call `assertPublicHttpUrl` without `allowPrivateNetwork` and download them with the public-only `providerFetch`, never a private-aware `context.fetcher`. The private-network opt-in covers only the trusted instance host.
 - Prefer the shared `assertPublicHttpUrl` / `isBlockedIpAddress` over a bespoke per-provider hostname guard; bespoke guards have missed the cloud-metadata blocklist and bracketed-IPv6 forms.
 - Gotcha: a provider that branches on `fetcher === fetch` (e.g. to gate rate limiting to production) must compare against `providerFetch`, since that is the fetcher the runtime now injects — not the global `fetch`.
-- Non-fetch egress is held to the same policy. A provider that opens a WebSocket must use `openGuardedWebSocket` from `src/core/guarded-websocket.ts`, never `new WebSocket(...)` directly: it validates the target with the same `assertGuardedEgressUrl` hop check the guarded fetch uses (URL literal plus DNS resolved addresses), accepts the same `allowPrivateNetwork` / `skipDnsValidation` options, and maps `ws`/`wss` onto the `http`/`https` form the guard understands. It works on Node and on workerd, which both expose a client `WebSocket` constructor. Any future non-HTTP transport should reuse `assertGuardedEgressUrl` rather than growing a second, drifting host check.
-- The private-network opt-in only means the guard permits the target — it does not make it reachable. Cloudflare Workers cannot route to private addresses at all, so a self-hosted provider pointed at a LAN instance works on Node/Docker/Fly deployments only, regardless of `OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK`.
+- Non-fetch egress is held to the same policy. A provider that opens a WebSocket must use `openGuardedWebSocket` from `src/core/guarded-websocket.ts`, never `new WebSocket(...)` directly: it validates the target with the same `assertGuardedEgressUrl` hop check the guarded fetch uses. Any future non-HTTP transport should reuse that guard rather than growing a second host check.
+- The private-network opt-in only permits the target; deployment networking must separately make it reachable. Production leaves the opt-in disabled unless an approved provider requires it.
 
 ## TypeScript And Tooling
 
 - Use native Node.js TypeScript execution. Do not add `tsx` or `--experimental-strip-types`.
-- `src/`, `scripts/`, and `examples/` each have their own `tsconfig.json`; project checks focus on `src`.
+- `src/` and `scripts/` have separate TypeScript project checks.
 - Exported top-level functions and public types should have explicit return types and useful JSDoc when it explains business meaning.
 - Use `oxfmt` and `oxlint`; do not add Prettier.
 
-## Examples And Web
+## Web
 
-- Examples should be concrete scripts users can run directly with `node examples/...`; do not add every example to `package.json`.
-- If an example depends on external credentials, print a clear skip message when environment variables are missing.
-- Do not put web UI code under `src/`. The future console should live as a separate Vite package under `web/`.
-- Public docs should describe normal OSS usage and may include official SaaS, hosted, or team product paths when they are part of the public product strategy. Do not mention internal compatibility projects or unreleased SDK behavior.
+- Keep the administration UI in `web/src/saas`; it is served only by the scoped runtime and proxied through the authenticated backend BFF.
+- Public docs describe the single scoped runtime. Do not document removed local/Cloudflare/static-token/MCP/proxy compatibility paths.
 
 ## Verification
 
 - Before finishing code changes, run `npm run fix-check`. It runs lint fixes, formatting fixes, and the `src` typecheck.
 - Run `npm run build` only when you need a separate no-fix typecheck, for example after generated files changed or for CI parity.
 - Run `npm run generate:catalog` when provider definitions or actions change.
-- Run provider examples manually when the task changes user-facing example behavior.

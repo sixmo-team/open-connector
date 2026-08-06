@@ -46,8 +46,7 @@ A good report lets us reproduce and assess the issue quickly. Where possible, in
 
 - A description of the vulnerability and its security impact (what an attacker can do).
 - Step-by-step reproduction, proof-of-concept, or the relevant code path.
-- The affected version, release, or commit, and the **deployment mode** (local Docker/Node or
-  Cloudflare Workers).
+- The affected version, release, or commit and the deployment topology.
 - Any known mitigation or workaround.
 
 ### Protect secrets in your report
@@ -82,21 +81,19 @@ We follow a coordinated disclosure process:
 
 **In scope** — vulnerabilities in this repository's own code and defaults, for example:
 
-- Credential storage and at-rest encryption (`src/server/secrets/*`), key handling, and token
-  management.
-- Runtime authentication and authorization: the admin bearer token, runtime tokens (`oct_…`),
-  session cookies, and the OAuth authorization/callback flow.
-- Leakage of secrets through API responses, run logs, or error messages (log redaction bypasses).
-- Action allow/block policy bypass, SSRF, injection, path traversal, or transit-file abuse in the
-  gateway and its executors.
-- The Web Console, the HTTP/OpenAPI and MCP surfaces, and the Cloudflare Workers deployment code.
+- Tenant-scoped PostgreSQL/OpenBao/SeaweedFS storage, key handling, token refresh, and idempotency.
+- JWT verification, purpose/permission enforcement, connection ownership, membership, and row-level isolation.
+- Scoped OAuth authorization/state/callback handling.
+- Leakage of secrets through API responses, audit records, run logs, or errors.
+- Action-policy bypass, SSRF, injection, path traversal, webhook verification, or transit-file abuse.
+- The SaaS administration UI and scoped HTTP/OpenAPI runtime surface.
 
 **Out of scope** — please do not report these as vulnerabilities in OpenConnector:
 
 - Vulnerabilities in third-party providers or their APIs. Report those to the provider.
-- Insecure **self-hosted configuration** that this project documents how to avoid — for example
-  running without `OOMOL_CONNECT_ENCRYPTION_KEY`, running without `OOMOL_CONNECT_ADMIN_TOKEN`,
-  binding to `0.0.0.0` on an untrusted network, or exposing the SQLite/D1/R2 data store. See
+- Insecure **self-hosted configuration** that this project documents how to avoid — for example a
+  schema-owning or `BYPASSRLS` runtime role, a root/overbroad OpenBao token, wildcard action grants,
+  plaintext production OpenBao transport, or public connector/admin ingress. See
   [Hardening your deployment](#hardening-your-deployment).
 - The hosted [OOMOL](https://oomol.com/) service and other OOMOL products. These are maintained
   separately from this repository and are not covered by this policy; report issues in them to
@@ -117,39 +114,32 @@ currently run a paid bug-bounty program, but we credit every reporter whose find
 
 ## Hardening Your Deployment
 
-OpenConnector can be self-hosted and holds live provider credentials, so operators share
-responsibility for securing their deployment. At minimum:
+OpenConnector holds live provider credentials and tenant data. Operators share responsibility for
+the deployment boundary. At minimum:
 
-- **Enable at-rest encryption.** Set `OOMOL_CONNECT_ENCRYPTION_KEY` so stored credentials, OAuth
-  client configuration, and completed idempotent Action response payloads are encrypted
-  (AES-256-GCM). Without it, those payloads are stored in plaintext; completed responses may contain
-  sensitive provider data. The raw `Idempotency-Key` is not stored, but its hash, request
-  fingerprint, claim state, and timestamps remain unencrypted metadata. Store the encryption key
-  outside the database; losing it makes encrypted records unrecoverable.
-- **Require authentication.** Set `OOMOL_CONNECT_ADMIN_TOKEN` to protect `/api`, `/docs`, and the Web
-  Console, and issue scoped runtime tokens or configure JWT access-token verification for `/v1` and
-  `/mcp`. Both admin and runtime authentication are disabled by default for local development.
-- **Control network exposure.** The Node server binds `127.0.0.1` by default; the Docker image binds
-  `0.0.0.0`. Only expose the gateway on a trusted network or behind an authenticated proxy, and never
-  expose it publicly without admin and runtime authentication enabled.
-- **Protect the data store.** The SQLite database (local), D1 (Cloudflare), and R2 transit files
-  contain sensitive material even when encrypted. Restrict file permissions and access, and store
-  Cloudflare secrets with `wrangler secret put`. Idempotent Action responses are eligible for replay
-  for 24 hours, but expired records are removed opportunistically rather than by a physical-deletion
-  deadline.
-- **Reduce attack surface.** Use `OOMOL_CONNECT_ALLOWED_ACTIONS` / `OOMOL_CONNECT_BLOCKED_ACTIONS` to
-  limit which Actions can run. Restrict provider proxies separately with
-  `OOMOL_CONNECT_ALLOWED_PROXIES` / `OOMOL_CONNECT_BLOCKED_PROXIES`: `/v1/proxy/:service` can reach
-  provider API endpoints beyond the curated Action catalog, every proxy is allowed until one of those
-  variables restricts it, and the Action variables do not restrict it. Persistent runtime tokens
-  must independently grant provider proxy access through `allowedProxies`; an empty grant denies
-  every proxy. Pin both the runtime policy and each token to the services they actually proxy, or set
-  `OOMOL_CONNECT_BLOCKED_PROXIES="*"` to disable provider proxies entirely.
-- **Stay current.** Run a supported Node.js (22.18+ / 24) and update to the latest OpenConnector
-  release for security fixes.
+- **Separate database authority.** Run migrations with a schema owner that is never injected into
+  the service. The runtime role must be a non-owner, non-superuser without `BYPASSRLS`; forced RLS
+  and request-local scope must remain enabled.
+- **Scope secrets.** Give the connector a renewable least-privilege OpenBao token through the
+  read-only token file. Production OpenBao must use verified TLS. Never use a root token or put the
+  token in the environment, image, logs, or persistent volume.
+- **Require verified identity.** Accept only asymmetric JWTs from the configured issuer/audience and
+  authenticated JWKS endpoint. Keep lifetimes short and restrict purpose and permission claims.
+  Never derive tenant, workspace, user, connection, or action scope from caller headers.
+- **Control network exposure.** Do not publish the connector port. Put it on the private backend
+  control network plus a connector-only egress network. Publish the administration BFF only on
+  loopback and do not route it through a public API, reverse proxy, tunnel service, or public DNS.
+- **Protect provider access.** Grant only reviewed actions. Unknown actions, unowned connections,
+  stale membership, revoked credentials, ambiguous accounts, and unsafe classifications must fail
+  closed. The runtime has no arbitrary provider proxy or direct MCP execution route.
+- **Protect storage and files.** Use a dedicated SeaweedFS bucket/key, bounded transit-file
+  lifetimes, tenant-scoped deletion, and verified backups for PostgreSQL, OpenBao, and object
+  storage.
+- **Pin and verify releases.** Deploy immutable image digests, run the one-shot same-image migration
+  job, require `/ready`, and retain tenant-scoped audit evidence.
 
-See [docs/credentials.md](docs/credentials.md), [docs/configuration.md](docs/configuration.md), and
-[docs/cloudflare.md](docs/cloudflare.md) for full guidance.
+See [docs/saas-deployment.md](docs/saas-deployment.md) for the complete production boundary and
+rollback procedure.
 
 ## Handling Credentials in the Codebase
 

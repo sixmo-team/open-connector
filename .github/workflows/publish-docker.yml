@@ -12,7 +12,7 @@ name: Publish Docker Image
 # digest, and the two are then merged into a single multi-arch manifest per tag.
 #
 # main-branch pushes and releases never overlap: `push` ignores tag refs and
-# publishing a release does not fire a branch `push`. See docs/docker-ghcr.md.
+# publishing a release does not fire a branch `push`. See docs/saas-deployment.md.
 on:
   push:
     branches: [main]
@@ -72,6 +72,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install verifier dependencies
+        run: npm ci
+
       # Blacksmith's Docker builder keeps a per-Dockerfile layer cache on a
       # sticky disk (one per architecture), so no cache-from/cache-to is needed.
       - name: Set up Blacksmith Docker builder
@@ -88,6 +97,12 @@ jobs:
           # Single-manifest per arch; skip the provenance attestation.
           provenance: false
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Verify architecture image
+        run: |
+          image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
+          docker pull "$image"
+          npm run verify:no-legacy-runtime -- --image "$image"
 
       - name: Export digest
         run: |
@@ -145,3 +160,26 @@ jobs:
 
       - name: Inspect manifest
         run: docker buildx imagetools inspect "$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+
+      - name: Record verified immutable image
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          mkdir -p qualification
+          image_tag="$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          digest="sha256:$(docker buildx imagetools inspect "$image_tag" --raw | sha256sum | cut -d ' ' -f 1)"
+          jq -n \
+            --arg digest "$digest" \
+            --arg commitSha "$COMMIT_SHA" \
+            --arg runId "$RUN_ID" \
+            '{status:"passed", digest:$digest, commitSha:$commitSha, runId:$runId}' \
+            > qualification/image-verifier.json
+
+      - name: Upload verified image qualification
+        uses: actions/upload-artifact@v7
+        with:
+          name: open-connector-image-qualification
+          path: qualification/image-verifier.json
+          if-no-files-found: error
+          retention-days: 90
