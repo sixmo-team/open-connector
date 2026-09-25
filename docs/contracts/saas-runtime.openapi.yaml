@@ -200,10 +200,11 @@ paths:
       operationId: revokeSaasConnection
       summary: Revoke and remove a scoped connector connection
       description: >-
-        Blocks execution first, revokes supported Google OAuth credentials, then deletes OpenBao
-        and PostgreSQL connection state. A scoped non-secret receipt makes exact retries return
-        204 after completed cleanup. Unsupported or failed provider revocation leaves the row
-        blocked for backend reconciliation and never returns 204.
+        Blocks execution first, attempts provider revocation through the registered provider
+        adapter when supported, then deletes OpenBao and PostgreSQL connection state. A scoped
+        non-secret receipt makes exact retries return 204 after completed cleanup. Unsupported
+        remote revocation is audited and does not block local erasure; failed or ambiguous
+        revocation remains blocked for backend reconciliation and returns 503.
       tags: [Connections]
       security:
         - SaasBearer: []
