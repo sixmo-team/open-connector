@@ -63,7 +63,7 @@ export interface SaasConnectServerOptions {
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
   verifyJwt: SaasJwtVerifier;
-  readiness: Readonly<SaasDependencyReadiness>;
+  readiness: () => Promise<Readonly<SaasDependencyReadiness>>;
   oauthCredentials?: IOAuthCredentialRefresher;
   oauthClientReadiness?: ReadonlyMap<string, OAuthClientConfigReadiness>;
   runtimeDatabaseFactory?: Pick<SaasRuntimeDatabaseFactory, "forScope"> & {
@@ -106,11 +106,10 @@ export class SaasConnectServer {
     const app = new Hono<SaasHonoEnvironment>();
 
     app.get("/health", (context) => context.json({ ok: true }));
-    app.get("/ready", (context) =>
-      Object.values(this.options.readiness).every(Boolean)
-        ? context.json({ ok: true })
-        : context.json({ ok: false }, 503),
-    );
+    app.get("/ready", async (context) => {
+      const readiness = await this.options.readiness();
+      return Object.values(readiness).every(Boolean) ? context.json({ ok: true }) : context.json({ ok: false }, 503);
+    });
 
     app.get("/internal/saas/catalog/providers", requireCatalogPurpose(this.options.verifyJwt), (context) =>
       exactQuery(context, []) ? context.json(this.safeProviders) : invalidInput(context),

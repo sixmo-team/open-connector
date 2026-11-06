@@ -51,7 +51,7 @@ const verifyJwt: SaasJwtVerifier = async (authorization) => {
   throw new SaasAuthorizationError(401);
 };
 
-function completeReadiness() {
+async function completeReadiness() {
   return {
     postgres: true,
     openBao: true,
@@ -65,7 +65,7 @@ const app = new SaasConnectServer({
   catalog: createCatalogStore([]),
   providerLoader,
   verifyJwt,
-  readiness: completeReadiness(),
+  readiness: completeReadiness,
 }).createApp();
 
 describe("SaasConnectServer", () => {
@@ -78,10 +78,27 @@ describe("SaasConnectServer", () => {
       catalog: createCatalogStore([]),
       providerLoader,
       verifyJwt,
-      readiness: { ...completeReadiness(), openBao: false },
+      readiness: async () => ({ ...(await completeReadiness()), openBao: false }),
     }).createApp();
     expect((await unready.request("/health")).status).toBe(200);
     expect((await unready.request("/ready")).status).toBe(503);
+  });
+
+  it("rechecks dependency readiness after startup without failing process health", async () => {
+    let jwksReady = true;
+    const changing = new SaasConnectServer({
+      catalog: createCatalogStore([]),
+      providerLoader,
+      verifyJwt,
+      readiness: async () => ({ ...(await completeReadiness()), jwks: jwksReady }),
+    }).createApp();
+
+    expect((await changing.request("/ready")).status).toBe(200);
+    jwksReady = false;
+    expect((await changing.request("/ready")).status).toBe(503);
+    expect((await changing.request("/health")).status).toBe(200);
+    jwksReady = true;
+    expect((await changing.request("/ready")).status).toBe(200);
   });
 
   it.each([
@@ -144,7 +161,7 @@ describe("SaasConnectServer", () => {
       catalog: createCatalogStore([]),
       providerLoader,
       verifyJwt: async () => scope("file:read", { fileId }),
-      readiness: completeReadiness(),
+      readiness: completeReadiness,
       runtimeDatabaseFactory: {
         forScope() {
           return {
@@ -256,7 +273,7 @@ describe("SaasConnectServer", () => {
       providerLoader,
       verifyJwt: async (authorization) =>
         authorization === "Bearer search" ? scope("action:search") : catalogPrincipal(),
-      readiness: completeReadiness(),
+      readiness: completeReadiness,
       oauthClientReadiness: new Map([["example", { status: "operational" as const }]]),
     }).createApp();
 
@@ -299,7 +316,7 @@ describe("SaasConnectServer", () => {
       catalog,
       providerLoader,
       verifyJwt,
-      readiness: completeReadiness(),
+      readiness: completeReadiness,
       oauthClientReadiness: new Map([
         ["example", { status: "unavailable" as const, reasonCode: "oauth_client_config_access_denied" as const }],
       ]),
@@ -713,7 +730,7 @@ describe("SaasConnectServer", () => {
         }
         throw new SaasAuthorizationError(401);
       },
-      readiness: completeReadiness(),
+      readiness: completeReadiness,
       oauthCredentials: {
         async refresh(_service, credential) {
           return credential;
@@ -1107,7 +1124,7 @@ describe("SaasConnectServer", () => {
         if (token === "tenant") return scope("admin:read", { tenantId: "tenant-2" });
         throw new SaasAuthorizationError(401);
       },
-      readiness: completeReadiness(),
+      readiness: completeReadiness,
       runtimeDatabaseFactory,
     }).createApp();
     const request = (path: string, token = "owner") =>
@@ -1190,7 +1207,7 @@ describe("SaasConnectServer", () => {
       catalog: createCatalogStore([]),
       providerLoader,
       verifyJwt: async () => owner,
-      readiness: completeReadiness(),
+      readiness: completeReadiness,
     }).createApp();
     expect(
       (
@@ -1272,7 +1289,7 @@ describe("SaasConnectServer", () => {
         if (authorization === "Bearer wrong-purpose") return scope("admin:read");
         throw new SaasAuthorizationError(401);
       },
-      readiness: completeReadiness(),
+      readiness: completeReadiness,
       runtimeDatabaseFactory: {
         forScope() {
           throw new Error("non-lifecycle runtime should not be used");

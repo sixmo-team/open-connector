@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans`. Complete `2026-08-04-workspace-sharing-and-lifecycle-completion.md` first.
 
+**Актуальная рамка (2026-11-06):** [Границы сервисов](../specs/2026-11-06-service-boundaries-and-upstream-sync-design.md) и [будущее обновление main → multitenant](2026-11-06-upstream-main-multitenant-sync.md). Прочитать все актуальные основания до слияния; сохранить полный внутренний каталог, но не включать исходные добавления автоматически. Допуск интеграции в продукт принадлежит бекенду ИИ-маркетолога, разрешения её функций — OpenConnector.
+
 **Goal:** Remove the Google-only and canary-only product restrictions while preserving fail-closed authorization, per-action safety classification, per-tenant entitlements/grants, schema-drift checks, and exact tenant/user connection selection.
 
-**Current gaps this plan closes:**
+**Historical starting gaps (August 2026; verify against current implementation before executing):**
 
 - `packages/runtime/src/integrations/service.ts` filters catalog, connection, reconnect, revoke, visibility, and provider resolution through `googleProviderIds`.
 - `INTEGRATION_CONNECTOR_ROLLOUT_STAGE` defaults to `disabled`, and tool-registry startup depends on one canary tenant/workspace/user.
@@ -12,14 +14,16 @@
 - provider credential revocation is Google-specific;
 - the UI can render dynamic providers, but backend policy prevents non-Google providers from reaching it.
 
-**Definition of full rollout:** Every executable OpenConnector provider is discoverable through the backend when its authentication method is operational, every exposed action has an explicit reviewed classification and schema fingerprint, and every entitled tenant may connect it. This does **not** mean every action is enabled by default. Tenant grants remain deny-by-default and destructive/access-changing actions remain approval-gated.
+**Definition of full rollout:** Every exposed action has reviewed classification and schema fingerprints; product availability is independently constrained by backend configuration, authentication readiness and entitlement. After the action-policy cutover, OpenConnector alone stores/resolves the requester's individual/default action permissions and checks them before execution. Missing both still denies; backend role, billing and approval checks remain mandatory.
+
+**Service-boundary follow-up (2026-11-06):** [Общие разрешения действий OpenConnector](2026-11-06-default-integration-action-permissions.md) gives OpenConnector sole action-enable ownership and adds common rules using the existing bulk console. There are no real users: use empty new policy tables and a direct cutover, not import or compatibility with old test grants. This is planned, not current behavior. The separate `Product integration configuration` section below records future backend-owned settings; safety review and the user's consent are not replaced by action enablement.
 
 ## Invariants
 
 1. No action is exposed to an agent without a source-controlled classification and exact schema fingerprint.
-2. Catalog discovery is not authorization. Execution reloads membership, billing entitlement, connection status/ownership, action grant, role, approval, and request hash.
+2. Catalog discovery is not authorization. The backend reloads business access, connection visibility, role, approval and exact request hash; OpenConnector independently reloads its actor-specific effective permission before execution and completed replay.
 3. A provider is connectable only when at least one declared auth method is operational. Missing OAuth client configuration is a safe unavailable state, not a late token-exchange failure.
-4. Removing canary rollout never removes the billing feature gate or tenant action grants.
+4. Removing canary rollout never removes the billing feature gate or OpenConnector action permissions.
 5. Catalog reads use a service-purpose token that cannot list connections, read a database scope, execute actions, access secrets, or call lifecycle routes.
 6. Provider/action drift blocks release. It never silently grants a new upstream action.
 7. API-key/custom-credential disconnect destroys the local secret. OAuth revocation is attempted when supported; unsupported remote revocation is recorded explicitly and must not prevent legally required local erasure.
@@ -28,14 +32,15 @@
 ## Target product flow
 
 ```text
-OpenConnector generated registry/catalog
--> backend catalog service token
--> reviewed provider availability + action classifications
--> tenant billing entitlement
--> tenant/user action grants
--> Mastra ToolSearchProcessor
--> exact backend connection selection
--> purpose-bound connector execution JWT
+OpenConnector complete generated catalog
+-> backend reviewed action support, schemas and safety classification
+-> backend product integration configuration, authentication readiness and entitlement
+-> OpenConnector batch permission decisions for the requester
+-> existing bounded tool search and exact local connection selection
+-> backend repeated role/billing/safety/approval checks
+-> exact body-bound action:execute:v2 token
+-> OpenConnector current actor permission and owner-scoped resource checks
+-> existing provider executor
 ```
 
 ---
@@ -290,7 +295,7 @@ Remove `INTEGRATION_CONNECTOR_ROLLOUT_STAGE`, canary tenant/workspace/actor sett
 
 - [ ] **Step 4: Keep operational controls in the right layer**
 
-Emergency disable is the existing billing feature/feature flag or deployment kill switch. Provider/action enablement is the reviewed admission manifest and tenant grant. Do not add another percentage rollout abstraction.
+Emergency product disable belongs to backend product configuration and business gates; the future mutable setting is an intersection with reviewed support, not a replacement for it. OpenConnector independently owns individual/common action permissions; a common default is not a mandatory ceiling over individual exceptions. Preserve existing connection metadata and safe revocation/export when a provider is disabled. Do not add percentage rollout or a second action-permission resolver to the backend.
 
 - [ ] **Step 5: Verify**
 
@@ -399,3 +404,44 @@ This plan is complete only when:
 - [ ] **Step 6: Add changelog entries and commit**
 
 Then proceed to `2026-08-04-single-runtime-multitenant-cutover.md`.
+
+## Product integration configuration
+
+**Status:** planned follow-up, recorded at the user's request on 2026-11-06; not implemented by this planning change. This section supersedes wording that treats the source-reviewed provider set as the permanent operator configuration.
+
+### Current fact and ownership
+
+Today `action-classifications/` and `action-classification.ts` derive the allowed product set from reviewed source decisions. There is no separate editable provider-enable setting or environment allowlist. The recorded current set is 26 integrations / 696 actions. The optional catalog fingerprint setting detects drift; it is not a provider on/off configuration.
+
+The future configuration belongs to **`ai-backend-marketing-agent`**, including storage, validation, API and its own future administration UI. OpenConnector owns provider implementation/authentication and per-action permissions, not which integrations the AI-marketer product advertises. Mobile continues to consume the server catalog; do not introduce a second mobile allowlist.
+
+### Add a layer; preserve the achieved safety behavior
+
+```text
+effective product availability =
+  reviewed supported provider/actions
+  AND explicit backend product setting enabled
+  AND operational connection method
+  AND current entitlement/business access
+
+action execution additionally requires OpenConnector's effective action permission.
+```
+
+- Keep reviewed input/output fingerprints, risk, minimum roles, confirmation, byte limits and replay policy in their existing source modules. The future administration UI may toggle product availability but cannot make an unreviewed/unsupported action executable.
+- Store product provider settings in a dedicated backend configuration table/module, following the existing global-settings/revision/audit pattern; do not put them into OpenConnector action tables, billing-provider settings or an untyped shared settings bag. Provider ID is a string using existing exact IDs, not a new hard-coded enum or renamed key.
+- Prepare settings with `providerId`, `enabled`, revision, verified editor, reason and timestamp so the future AI-backend administration UI does not need another persistence redesign. Do not build that UI, a generic configuration framework or provider-specific mobile switches in the action-permission cutover.
+- The first migration uses a reviewed snapshot of the current product set: seed exactly the currently admitted 26 IDs with their existing product-enable behavior. Keep readiness and tariff checks separate, so seeding does not expose a provider that is not operational today. Preserve already stored operator settings with conflict-safe insertion, not unconditional overwrite.
+- Missing/new provider settings mean disabled. A newly installed catalog provider, source review or upstream update does not automatically enable it for the product. Do not seed from whatever full catalog happens to be present at migration time.
+
+### Required read paths and preservation checks
+
+- Use one backend product-policy reader for public catalog, new connection, reconnect, connection guide, tool discovery and authorization immediately before signing execution. Known but disabled product providers do not reach an external action even through an already-loaded tool or scheduled/resumed work.
+- Registry startup still validates complete catalog/schema review and fingerprints. Operational authentication is required for enabled product integrations; an intentionally disabled integration must not prevent startup solely because its authentication application is unconfigured.
+- Disabling product availability does not delete credentials, existing connections, audit or OpenConnector personal/common permissions. Preserve an authenticated safe path for disconnect/export/cleanup and the existing installed-connection presentation; do not blindly apply the new hide filter to deletion/recovery.
+- Changes are checked on the next relevant request and before signing execution, not only at process startup. Configuration-read failure denies affected use; no fallback to an implicit “all reviewed providers are enabled”.
+- Before rollout, compare all previously admitted provider IDs, API responses, connection methods and tool access with the initial settings snapshot. Prove missing/unknown disabled, unsupported cannot be activated, dynamic disable blocks stale tools, enable/disable does not erase existing data, and two tenants retain independent connections.
+
+### Bounded implementation map for the future task
+
+Backend configuration storage/migration and typed product-policy module; readers in `packages/runtime/src/integrations/service.ts`, `action-tool-registry.ts`, `tool-search-processor.ts`, `action-execution-service.ts`, and the OpenConnector connection-guide route. Reuse platform admin authentication/revision/audit when its UI is implemented. All action enable/default calculation and final checks stay in OpenConnector.
+

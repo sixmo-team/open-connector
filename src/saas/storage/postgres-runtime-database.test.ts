@@ -688,14 +688,14 @@ describe("SaaS per-request runtime binding", () => {
           permissions: ["connection:read"],
         };
       },
-      readiness: {
+      readiness: async () => ({
         postgres: true,
         openBao: true,
         jwks: true,
         seaweedFs: true,
         providerRegistry: true,
         catalogFingerprint: true,
-      },
+      }),
       runtimeDatabaseFactory: {
         forScope(requestScope) {
           captured.push(requestScope);

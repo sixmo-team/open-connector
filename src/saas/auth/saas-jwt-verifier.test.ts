@@ -2,6 +2,7 @@ import type { SaasJwtVerifier } from "./saas-jwt-verifier.ts";
 import type { AddressInfo } from "node:net";
 
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -68,6 +69,11 @@ let privateKey: CryptoKey;
 let oldPrivateKey: CryptoKey;
 let jwksUrl: string;
 let closeJwksServer: () => Promise<void>;
+let expectedJwksBearerToken = "jwks-secret";
+
+afterEach(() => {
+  expectedJwksBearerToken = "jwks-secret";
+});
 
 beforeAll(async () => {
   const current = await generateKeyPair("EdDSA");
@@ -79,7 +85,7 @@ beforeAll(async () => {
     { ...(await exportJWK(old.publicKey)), alg: "EdDSA", kid: "old", use: "sig" },
   ];
   const server = createServer((request, response) => {
-    if (request.headers.authorization !== "Bearer jwks-secret") {
+    if (request.headers.authorization !== `Bearer ${expectedJwksBearerToken}`) {
       response.statusCode = 401;
       response.end();
       return;
@@ -190,7 +196,47 @@ describe("createSaasJwtVerifier", () => {
       },
       "wrong-secret",
     );
-    await expect(badVerifier(header(await token()))).rejects.toThrow("unauthorized");
+    await expect(badVerifier.verify(header(await token()))).rejects.toThrow("unauthorized");
+  });
+
+  it("detects rejected bootstrap credentials with warm keys and recovers after rotation", async () => {
+    const config: Parameters<typeof createSaasJwtVerifier>[0] = {
+      jwksUrl,
+      jwtIssuer: "integration-backend",
+      jwtAudience: "open-connector-saas",
+      jwtActiveKid: "current",
+    };
+    const authentication = createSaasJwtVerifier(config, "jwks-secret");
+    const userId = randomUUID();
+    const jwt = await token({
+      sub: userId,
+      tenant_id: randomUUID(),
+      workspace_id: randomUUID(),
+      actor_user_id: userId,
+      subject_user_id: userId,
+    });
+    await authentication.verify(header(jwt));
+    await expect(authentication.checkJwks()).resolves.toBe(true);
+
+    expectedJwksBearerToken = "replacement-jwks-secret";
+    await expect(authentication.checkJwks()).resolves.toBe(false);
+
+    const replacement = createSaasJwtVerifier(config, expectedJwksBearerToken);
+    await expect(replacement.checkJwks()).resolves.toBe(true);
+    await expect(replacement.verify(header(jwt))).resolves.toMatchObject({ subjectUserId: userId });
+  });
+
+  it("reports unready when JWKS is accessible but the active key is missing", async () => {
+    const authentication = createSaasJwtVerifier(
+      {
+        jwksUrl,
+        jwtIssuer: "integration-backend",
+        jwtAudience: "open-connector-saas",
+        jwtActiveKid: randomUUID(),
+      },
+      "jwks-secret",
+    );
+    await expect(authentication.checkJwks()).resolves.toBe(false);
   });
 
   it("rejects an OAuth completion token exceeding 60 seconds", async () => {
@@ -255,7 +301,7 @@ function verifier(): SaasJwtVerifier {
       jwtActiveKid: "current",
     },
     "jwks-secret",
-  );
+  ).verify;
 }
 
 async function tokenFile(content: string): Promise<string> {

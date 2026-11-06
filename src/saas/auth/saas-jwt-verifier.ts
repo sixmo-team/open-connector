@@ -17,17 +17,18 @@ export class SaasAuthorizationError extends Error {
   }
 }
 
-/** Create a verifier for short-lived, backend-issued Ed25519 JWTs. */
+/** Share one key resolver between scoped JWT verification and authenticated JWKS readiness. */
 export function createSaasJwtVerifier(
   config: Pick<SaasConfig, "jwksUrl" | "jwtIssuer" | "jwtAudience" | "jwtActiveKid">,
   jwksBearerToken: string,
-): SaasJwtVerifier {
+): { verify: SaasJwtVerifier; checkJwks: () => Promise<boolean> } {
   assertBearerToken(jwksBearerToken);
   const jwks = createRemoteJWKSet(new URL(config.jwksUrl), {
     headers: { authorization: `Bearer ${jwksBearerToken}` },
+    timeoutDuration: 3_000,
   });
 
-  return async (authorization): Promise<Readonly<SaasPrincipal>> => {
+  const verify: SaasJwtVerifier = async (authorization): Promise<Readonly<SaasPrincipal>> => {
     const token = readBearerToken(authorization);
     try {
       const protectedHeader = decodeProtectedHeader(token);
@@ -76,6 +77,20 @@ export function createSaasJwtVerifier(
     } catch {
       throw new SaasAuthorizationError(401);
     }
+  };
+
+  return {
+    verify,
+    async checkJwks(): Promise<boolean> {
+      try {
+        // Cached signing keys must not hide a rejected bootstrap credential.
+        await jwks.reload();
+        await jwks({ alg: "EdDSA", kid: config.jwtActiveKid });
+        return true;
+      } catch {
+        return false;
+      }
+    },
   };
 }
 

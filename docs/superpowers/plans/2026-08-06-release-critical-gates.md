@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans`. Work in the order below. Do not weaken a gate to make it green, do not replace real PostgreSQL/OpenBao/SeaweedFS with in-memory doubles, and do not mark production evidence complete from repository state alone.
 
+**Актуальная рамка (2026-11-06):** [Границы сервисов](../specs/2026-11-06-service-boundaries-and-upstream-sync-design.md) и [будущее обновление main → multitenant](2026-11-06-upstream-main-multitenant-sync.md). Эти условия применяются к результату контролируемого переноса, включая изменения без текстовых конфликтов. Исторические результаты ниже не доказывают состояние нового коммита/образа; ни один признак изоляции не заменяется выбором всей стороны слияния.
+
 **Goal:** Block release until shared-connection identity semantics are correct, all real RLS suites pass together, the final Docker image is inspected, one clean command proves the backend-to-storage chain, and the production cutover is backed by live non-secret evidence.
 
 **Repositories:**
@@ -45,13 +47,15 @@ Passing source checks do not cancel a failed external gate.
 1. `actor_user_id` is the requester who initiated the action.
 2. For a private connection, `subject_user_id` is its owner and therefore equals the requester.
 3. For a workspace-shared connection, `subject_user_id` is the connection owner even when another member executes it.
-4. Backend membership, grants, billing, and visibility authorize the requester before the owner scope is derived. The caller never supplies or widens the owner scope.
-5. The connector JWT, PostgreSQL transaction scope, OpenBao path, run intent, idempotency record, and lifecycle records use the authoritative connection owner as subject. Audit retains the distinct requester as actor.
+4. Backend membership, billing, product admission, role and visibility authorize the requester before owner scope is derived; action enablement is resolved by OpenConnector for that requester. The caller never supplies or widens owner scope, and neither service overrides the other's denial.
+5. The execution JWT, credential/run PostgreSQL scope, OpenBao path, run intent, idempotency and resource lifecycle use the authoritative connection owner as subject. Action-policy lookup uses the verified requester as actor, not that owner. Audit retains both identities.
 6. Every PostgreSQL runtime table has `ENABLE ROW LEVEL SECURITY` and `FORCE ROW LEVEL SECURITY`; the runtime role is neither owner, superuser, `BYPASSRLS`, nor a member of an owning role.
 7. CI inspects the filesystem and config of the exact Docker image it executes. Source-tree checks alone are insufficient.
 8. The clean-stack gate starts from empty volumes and provisions all identities, policies, keys, schemas, buckets, and fixtures itself.
 9. Production cutover evidence comes from the live deployment and references an immutable image digest. A tag, Compose file, plan checkbox, or repository commit is not deployment evidence.
 10. Product admission is independent from tenant isolation: only explicitly bounded actions are exposed, and omitted providers do not block a multi-tenant cutover.
+
+**Planned ownership amendment (2026-11-06):** [Общие разрешения OpenConnector](2026-11-06-default-integration-action-permissions.md) gives OpenConnector sole action-enable storage and enforcement; backend business checks and exact user consent remain separate. There are no real users: use direct cutover and empty new policy stores, not a test-data import or old compatibility model. These target invariants and the flow below include that change; the historical audit baseline is not evidence it is implemented. Rerun release gates after the contract, own-service schema and independent deployment changes.
 
 ---
 
@@ -92,7 +96,7 @@ In `RepositoryIntegrationActionExecutionAuthority.reauthorize`:
 
 1. Parse the incoming requester scope and require its actor and subject to match at the user-facing boundary.
 2. Reload the requester's workspace membership.
-3. Resolve the connection under requester visibility rules and load the requester's action grant/billing/feature state.
+3. Resolve the connection under requester visibility rules; load backend billing/product/role/approval state and request OpenConnector's effective action permission for the requester. Do not resolve individual/default inheritance in the backend.
 4. After the connection is authorized, derive an execution scope from the stored `ownerUserId`: keep requester as actor and set owner as subject.
 5. Reject an owner who is no longer a valid workspace member or a connection whose ownership/visibility transition is incomplete.
 
@@ -100,12 +104,12 @@ Return explicit `authorizationScope` and `executionScope` fields rather than mut
 
 - [ ] **Step 3: Use each scope only for its owner fact**
 
-- Policy and grants use `authorizationScope`.
+- Backend business/safety/approval checks use `authorizationScope`; OpenConnector action-policy reads use its verified requester. Owner resource scope never changes whose action rule is evaluated.
 - Connector token issuance, connector request binding, connector run intent/idempotency, and owner-scoped lifecycle state use `executionScope`.
 - Backend audit always records the requester as actor and the connection owner as subject where the schema supports both.
 - Request hashes continue to bind the backend-local connection ID, connector connection ID, action ID, and input; the scope split must not weaken replay protection.
 
-Do not change `ConnectorTokenService`: it already sets `sub` and `subject_user_id` from the supplied scope. Fix the caller that supplies the wrong scope.
+The original shared-identity correction did not require changing `ConnectorTokenService`: it already sets `sub` and `subject_user_id` from the supplied scope. Correct that caller identity; the separately planned action-policy cutover must also migrate execution purpose to `action:execute:v2` and isolate management signing authority.
 
 - [ ] **Step 4: Remove contradictory expectations**
 
@@ -302,11 +306,11 @@ Use an existing self-hosted provider whose guarded runtime supports the deployme
 The scenario must prove:
 
 ```text
-backend membership/grant authorization
+backend membership/role/billing/product checks and remote OpenConnector permission decision
 -> backend execution intent and audit
--> owner-subject execution JWT
--> connector JWT verification and forced-RLS transaction
--> owner-scoped OpenBao credential read
+-> exact owner-subject action:execute:v2 JWT, retaining requester as actor
+-> connector JWT verification and current requester action-policy check
+-> owner-scoped forced-RLS transaction and OpenBao credential read
 -> guarded provider read action
 -> connector/backend run completion
 -> SeaweedFS transit object create/read/purge

@@ -16,6 +16,7 @@ Use `../ai-backend-marketing-agent/docker-compose.yml` with these invariants:
 - Use distinct PostgreSQL migrator/owner and runtime roles. The connector receives only `OPEN_CONNECTOR_POSTGRES_URL`; keep `OPEN_CONNECTOR_POSTGRES_MIGRATOR_URL` in the migration job. The runtime role must not own the schema, bypass RLS, inherit an owner, create roles, or be superuser.
 - Use a dedicated SeaweedFS bucket and bucket-scoped access key. The connector must not use a local transit-file directory.
 - Do not configure wildcard action or proxy grants. New canaries start with action grants disabled.
+- Resolve `proxy-addr` to `2.0.8` or a later patched release in `package-lock.json` ([GHSA-jqcg-44mw-7w3h](https://github.com/advisories/GHSA-jqcg-44mw-7w3h)); the MCP SDK brings it transitively through Express. Rebuild the shared connector/migration image after lockfile changes: updating host `node_modules` alone does not patch a deployed container.
 
 Set every variable listed in the Compose file. In particular, the backend requires:
 
@@ -46,6 +47,10 @@ OPEN_CONNECTOR_SEAWEEDFS_BUCKET
 ```
 
 The current runtime additionally requires the active JWT key ID, a short-lived internal-service bearer token supplied only through the read-only JWKS token secret, and dedicated SeaweedFS access key ID/secret shown in `.env.example`.
+
+The deployment operator must renew the finite JWKS bootstrap credential before its `exp` and recreate only `open-connector` with the same Compose files after atomic secret replacement. Updating the host file alone does not reload its mounted inode or the verifier's captured credential. Keep UID/GID `1000`, mode `0400`, the approved service privileges and issuer/audience; never log token values.
+
+Every `/ready` request forces a fresh authenticated JOSE key reload and resolves the configured usable EdDSA key, bounded to three seconds. Cached keys cannot hide a rejected bootstrap credential: that state returns 503 while `/health` remains process-only. Readiness does not renew credentials; expiry monitoring and rotation remain deployment operations.
 
 Start production by naming its service set explicitly. `open-connector` waits for the same-image `open-connector-migrate` job to complete successfully:
 

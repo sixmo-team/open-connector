@@ -83,18 +83,20 @@ for (const readiness of oauthClientReadiness.values()) {
 }
 console.info(JSON.stringify({ event: "oauth_client_readiness", ...oauthReadinessSummary }));
 const oauthCredentials = new OAuthCredentialRefreshService(oauthClientConfigService);
+const authentication = createSaasJwtVerifier(config, jwksBearerToken);
 const app = new SaasConnectServer({
   catalog,
   providerLoader,
-  verifyJwt: createSaasJwtVerifier(config, jwksBearerToken),
-  readiness: Object.freeze({
-    postgres: true,
-    openBao: true,
-    jwks: true,
-    seaweedFs: true,
-    providerRegistry: true,
-    catalogFingerprint: true,
-  }),
+  verifyJwt: authentication.verify,
+  readiness: async () =>
+    Object.freeze({
+      postgres: true,
+      openBao: true,
+      jwks: await authentication.checkJwks(),
+      seaweedFs: true,
+      providerRegistry: true,
+      catalogFingerprint: true,
+    }),
   oauthCredentials,
   oauthClientReadiness,
   credentialRevoker: new ProviderSaasCredentialRevoker(),

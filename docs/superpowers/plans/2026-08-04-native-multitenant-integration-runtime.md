@@ -2,32 +2,36 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn the OpenConnector fork into a private, horizontally scalable integration data plane for `ai-backend-marketing-agent` without changing existing OpenConnector behavior, with complete tenant/workspace/user isolation, OpenBao-backed credentials, native mobile connection flows, Mastra tool execution, and a system-administrator console reachable only through an SSH tunnel.
+**Goal:** Turn the OpenConnector fork into a private, horizontally scalable integration data plane for `ai-backend-marketing-agent` while preserving existing provider implementations and adding service-owned authorization, complete tenant/workspace/user isolation, OpenBao-backed credentials, native mobile connection flows, Mastra tool execution, and a system-administrator console reachable only through an SSH tunnel.
 
-**Architecture:** `ai-backend-marketing-agent` remains the only control plane and source of truth for identity, membership, roles, billing, approvals, connection ownership, action grants, audit, and lifecycle. The OpenConnector fork remains a separate internal container and becomes a scoped data plane: it verifies short-lived backend-issued JWTs, binds every request to tenant/workspace/subject-user context, stores runtime metadata in a dedicated PostgreSQL schema protected by forced RLS, stores credentials only in OpenBao, and executes existing provider actions. `ai-marketing-agent-user-mobile` remains the only end-user UI. The adapted OOMOL console is served by a separate backend management container whose host port is published only on server loopback, is absent from the public API/reverse proxy, and is reachable only through SSH local port forwarding plus system-administrator authentication.
+**Architecture:** Target after the action-policy cutover: `ai-backend-marketing-agent` owns identity, membership, roles, billing, product-provider configuration, safety classification, approvals, local connection mapping, and lifecycle orchestration. OpenConnector independently owns individual action-enable exceptions, platform defaults, their storage/audit, effective-permission resolution, and final enforcement before provider execution. Each service owns its database credentials and migrations; runtime communication is authenticated HTTP to configured endpoints, without cross-service SQL or colocated-filesystem assumptions. The existing protected console may remain behind the backend management gateway, but that gateway only authenticates, presents, and forwards policy commands; it does not store or calculate permissions. The original baseline tasks below are historical where they assign action-enable ownership to the backend; the `Platform action defaults` amendment and its implementation plan supersede those parts.
 
 **Tech Stack:** Node.js 22+, TypeScript, Hono, Zod/JSON Schema, PostgreSQL 16, `pg`, OpenBao KV/Transit, SeaweedFS S3 API, Mastra, Expo 54/React Native, React/Vite, Vitest, Docker Compose, OpenTelemetry.
 
+**Актуальная спецификация (2026-11-06):** [Границы сервисов и инкапсуляция](../specs/2026-11-06-service-boundaries-and-upstream-sync-design.md). Она фиксирует уже реализованную многопользовательскую/мультитенантную основу отдельно от запланированного владельца разрешений. Исторические задачи ниже не возвращают удалённые рабочие пути и не отменяют более поздние решения.
+
+**Будущая синхронизация:** [Обновление main → multitenant](2026-11-06-upstream-main-multitenant-sync.md). Сначала прочитать все актуальные планы/спецификации, затем адаптировать исходные изменения с сохранением архитектурных гарантий, включая автоматически слитые участки. Написание плана не запускает слияние.
+
 ## Global Constraints
 
-- Baseline OpenConnector revision is exactly `8e6d35e9c5f09116ea090e9a5ae0a3cf92fab077` (`@oomol-lab/open-connector` 1.3.4).
-- The authoritative product repositories are `../ai-backend-marketing-agent` and `../ai-marketing-agent-user-mobile`; OpenConnector must adapt to their contracts, never the reverse.
+- Historical bootstrap used `8e6d35e9c5f09116ea090e9a5ae0a3cf92fab077`; read the actual approved checkpoint from `.upstream-base` and `scripts/check-upstream-base.ts`. Future synchronization records the source-main commit separately from the reviewed adapted checkpoint and never repins merely to silence drift.
+- Each service owns its facts and documented HTTP contract. Product UI and business access remain backend-owned; OpenConnector action permissions remain connector-owned. Do not import backend implementation modules into OpenConnector or rely on a shared database, source checkout, process, or filesystem.
 - Do not rename, repurpose, or migrate existing `ad_connections`, Yandex Direct, or VK Ads code. Add generic integration modules beside them.
 - Existing Yandex Direct and VK Ads adapters, approvals, reporting, and Mastra tools remain native backend paths.
-- Preserve upstream local/SQLite and Cloudflare behavior. SaaS behavior must live under new `src/saas/**` modules and a separate entrypoint.
-- Treat existing OpenConnector source as protected upstream code. Implement SaaS behavior only in new `src/saas/**`, `web/src/saas/**`, separate entrypoints/configs, and additive packaging files; do not modify existing `ConnectionService`, `ActionRunner`, OAuth flow, local server, Cloudflare server, dashboard entrypoint/pages, provider definitions/executors, or existing Dockerfile.
-- OpenConnector must publish no host port and accept inbound traffic only from the dedicated backend integration network. The administrative container may listen on its private container interface, but Docker must publish it only as `127.0.0.1:4400`; nginx, Caddy, Traefik, ngrok, a load balancer, public firewall rule, and public DNS must not route to it.
+- `src/saas/**` is the only working runtime in `multitenant`; the later single-runtime cutover supersedes the original preservation of local/SQLite, D1 and Cloudflare servers.
+- Preserve and semantically adapt upstream provider/core/OAuth fixes, using existing scoped adapters where possible. Necessary protected-code changes require explicit review, behavior proof and an approved checkpoint; never restore removed entrypoints or select a whole side as a substitute for analysis.
+- OpenConnector has no public client ingress. Use a configured authenticated private endpoint; sharing a Docker network or physical server is optional, not an architecture requirement. Keep the administrative browser listener on server loopback with SSH forwarding and system-administrator authentication; do not expose it through a public reverse proxy.
 - Do not expose connector URLs, JWTs, aliases, IDs, `/api`, `/v1`, `/mcp`, `/docs`, or provider proxy endpoints to mobile users or browsers.
 - SaaS mode must disable static runtime tokens, direct MCP execution, arbitrary provider proxy, default authenticated connections, public connector OAuth callbacks, and direct browser administration.
-- Production starts only the SaaS entrypoint and separate SaaS image. The preserved upstream local/Cloudflare runtimes and original console build remain available for upstream development/tests but never run beside the SaaS runtime in production.
-- Every SaaS request must derive `tenant_id`, `workspace_id`, `actor_user_id`, `subject_user_id`, role, purpose, and permissions from a verified asymmetric JWT. Caller-supplied identity headers are forbidden.
+- Production and supported development start only the SaaS entrypoint from `docker/Dockerfile`. Original upstream runtimes may exist in the mirror `main`, not as executable alternatives in `multitenant`.
+- Every customer-scoped SaaS request derives `tenant_id`, `workspace_id`, `actor_user_id`, `subject_user_id`, role, purpose, and permissions from a verified asymmetric JWT. Platform-policy administration and lifecycle requests use separately verified narrow principals with real signed targets; they never invent customer identifiers to satisfy a user scope. Caller-supplied identity headers are forbidden.
 - Private connections are owner-only. Workspace-shared connections are available only to authorized members of the same workspace. Only a workspace `owner` or `admin` may change connection visibility to or from `workspace`; ordinary connection ownership is insufficient.
-- Unknown actions fail closed. Tenant grants may tighten policy but may never downgrade global safety or approval classification.
+- Unknown actions fail closed. Backend business/safety checks and OpenConnector action permissions are independent required gates; neither may override the other's denial. Permission settings never weaken role, billing, or approval requirements.
 - Provider side effects must never begin unless execution intent and idempotency state are durably recorded.
 - Credentials, access tokens, refresh tokens, PKCE verifiers, and provider client secrets must never be stored in connector PostgreSQL, backend PostgreSQL, logs, traces, mobile storage, or action payload history.
 - Connector credentials live in OpenBao. PostgreSQL stores only secret references, revisions, safe metadata, hashes, and lifecycle state.
 - No plaintext secret fallback is permitted in SaaS mode. Missing PostgreSQL, JWT/JWKS, OpenBao, or encryption configuration must fail startup.
-- Use the existing PostgreSQL server, OpenBao, SeaweedFS, backend outbox, Mastra, and observability stack. Do not add Redis, Nango, ACI, another workflow engine, or another secrets system.
+- Reuse PostgreSQL, OpenBao, SeaweedFS, backend outbox, Mastra, and existing observability. OpenConnector owns its configurable database/secret/object endpoints and credentials; using the same infrastructure host is optional. Do not add Redis, Nango, ACI, another workflow engine, or another secrets system.
 - Do not adopt or fork `oomol-lab/connector-sdk` or `oomol-lab/connector-types` initially. Use an explicit typed HTTP facade until the scoped wire contract is stable.
 - Keep upstream provider directories and generated registry/catalog mechanics unchanged wherever possible so upstream provider updates merge cleanly.
 - Do not add a plugin framework. New providers continue to use `src/providers/<service>/definition.ts`, `actions.ts`, `executors.ts`, `scopes.ts`, and generated registries.
@@ -45,26 +49,112 @@
 - The complete upstream OpenConnector provider/action catalog and all provider source directories remain intact and continue to receive upstream updates; no non-Google provider or action is deleted, excluded from generated registries, or disabled inside the connector core. Initial end-user enablement is Google-only through backend-owned provider/action allowlists: `gmail`, `googlecalendar`, `googledrive`, `googledocs`, `googlesheets`, `googleslides`, `googleforms`, `googletasks`, `googlephotos`, `googleads`, `google_analytics`, `google_search_console`, `google_bigquery`, `google_routes`, `google_address_validation`, and `youtube`. Other providers remain available in the internal catalog for later activation but are hidden from end users and non-executable until explicitly enabled. Existing native Yandex Direct/VK Ads paths remain unchanged.
 - **Authoritative Mastra integration decision:** Represent connector actions as real schema-bearing Mastra `Tool` instances and discover them through the lockfile-installed native `ToolSearchProcessor` with `search: { topK: 3, autoLoad: true }`, `storage: "context"`, and request-aware filtering in all `search|load|active` phases. This is the documented Mastra large-tool-catalog pattern ([ToolSearchProcessor](https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/processors/tool-search-processor.mdx), [using tools](https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/agents/using-tools.mdx), [request context](https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/server/request-context.mdx), [agent approval](https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/agents/agent-approval.mdx)) and supersedes any generic `integration.search-actions`/`integration.execute-action`, direct MCP client, custom retrieval layer, or second tool registry proposal. Reconsider only if a lockfile-pinned Mastra upgrade removes this API or measured Task 20 evals prove it insufficient.
 
----
+## Platform action defaults
+
+**Revised:** 2026-11-06 after the user's service-boundary correction. **Status:** design and implementation plan only; no product code or database has changed. This revision replaces the earlier proposal to store common action permissions in the AI backend.
+
+**Implementation plan:** [Общие разрешения действий OpenConnector](2026-11-06-default-integration-action-permissions.md).
+
+### Ownership and current-state distinction
+
+| Responsibility | Owner after cutover |
+| --- | --- |
+| Individual action-enable exceptions, common defaults, effective permission, final action-permission check and policy audit | OpenConnector |
+| Users, memberships, role assignment, billing/plan access, product integration selection, reviewed safety classification and the user's exact consent to an AI command | AI-marketer backend |
+| Console authentication, selection of a real customer scope, presentation and authenticated forwarding of policy commands | Existing management gateway; no policy database or inheritance calculation |
+
+**Current code is different:** individual function `enabled` values and the separate confirmation requirement `approval_override` currently share `app.integration_action_grants` in the backend. The backend currently decides action enablement; the connector verifies a signed execution command rather than its own stored grant. This is existing behavior, not a change already made by this plan. There are no real users: replace that ownership directly with empty connector policy tables instead of importing test records or preserving a compatibility path.
+
+**Confirmation is not permission:** `approval_override=always` means the person must approve a specific AI command even when the ordinary safety rule would not require that. It never enables a function, lowers mandatory safety confirmation or substitutes for OpenConnector's decision. The AI-marketer backend owns that consent flow and optional additional requirement; its separate confirmation table has no `enabled` or connector policy copies. Retain the useful mechanism, not old test rows.
+
+### Global constraints for this addition
+
+- Общие и индивидуальные разрешения действий хранятся, рассчитываются и проверяются только OpenConnector.
+- Пользователи, членство, роли, тарифы, допуск интеграций в продукт и подтверждения остаются ответственностью бекенда ИИ-маркетолога.
+- Рабочий обмен сервисов идёт через защищённые настраиваемые сетевые адреса; чужие базы, общие файлы и соседний каталог репозитория не являются зависимостями.
+- Реальных пользователей нет: старые тестовые настройки не переносятся; полезные возможности и проверки безопасности сохраняются.
+- Индивидуальное исключение для конкретного действия пользователя в пространстве имеет приоритет над общим правилом.
+- Если нет явно включённого индивидуального или общего правила, действие запрещено.
+- Существующие таблица, фильтр интеграции и пакетные операции панели переиспользуются; пакет не превращается в цикл отдельных сетевых запросов.
+- Новые действия не включаются по маске или автоматически при обновлении каталога.
+- Административный доступ к настройкам не даёт права выполнять действия с клиентскими подключениями.
+- Сбой OpenConnector или чтения его правил не заменяется локальными разрешениями сервера ИИ-маркетолога.
+- После переключения нет двух рабочих источников разрешений или старой совместимости; общие правила не копируются в каждого пользователя.
+- Меняются только планы и, при отдельной реализации, пути OpenConnector; код остальных интеграций не затрагивается.
+
+### Existing bulk interface and precedence
+
+Переиспользовать `web/src/saas/actions-page.tsx:updateVisibleGrants`, существующие фильтр интеграции, состояние пакетной операции, подтверждение пакета и обработку ошибки. Сейчас они уже передают массив действий одним запросом. Для общей и индивидуальной настройки использовать тот же путь таблицы и пакетного сохранения с различной явно выбранной областью, без второго механизма массовых операций.
+
+В разделе «Действия» остаются два режима: **«Общие правила»** без выбора клиента и **«Индивидуальные правила»** с выбором организации → пространства → пользователя. Разрешены весь показанный пакет интеграции или выбранные действия. Если нужен выбор произвольных строк, добавить его в существующую таблицу без нового компонента-каталога и зависимости. Один пакет до 5000 точных идентификаторов применяется одной транзакцией OpenConnector; смешанный допустимый/недопустимый пакет не меняет ничего.
+
+Приоритет считается OpenConnector отдельно для каждого действия:
+
+| Индивидуальное правило | Общее правило | Итог |
+| --- | --- | --- |
+| разрешить | любое / отсутствует | разрешить |
+| запретить | любое / отсутствует | запретить |
+| отсутствует | разрешить | разрешить |
+| отсутствует | запретить / отсутствует | запретить |
+
+«По общему правилу» удаляет только индивидуальное исключение включения в OpenConnector. Оно не изменяет требование согласия человека на команду помощника: это не ещё одна проверка разрешений OpenConnector. Общее отключение не отменяет индивидуального разрешения и не является принудительным выключением интеграции в продукте.
+
+### Connector-owned storage and enforcement
+
+Создать миграцией OpenConnector три первоначально пустые таблицы: `integration_runtime.action_grants`, `integration_runtime.action_defaults` и `integration_runtime.action_policy_audit`. Индивидуальный ключ — организация + пространство + пользователь правила + точное действие; `enabled` — обязательное логическое значение, отсутствие строки означает наследование. Общая таблица не содержит вымышленных клиентских идентификаторов. Отсутствие обоих правил запрещает действие; специальных состояний готовности импорта, квитанций и переноса старых тестовых записей нет.
+
+Все таблицы имеют включённую и принудительную защиту строк. Персональные чтения используют проверенного **инициатора** `actor_user_id`, а не владельца общего подключения `subject_user_id`. Общие чтения разрешают только настоящую общую конфигурацию; административные записи допускает отдельный проверенный управляющий контекст с точной целью и назначением. Не ослаблять защиту строк существующих таблиц и не выдавать клиентскому владельцу право менять политики.
+
+Пакетный метод OpenConnector возвращает рассчитанные разрешения для переданных действий. Поиск помощника и предварительная проверка используют этот ответ; сервер ИИ-маркетолога не выполняет собственное наследование и не читает локальную копию разрешений. Полный служебный каталог, его схемы и отпечаток остаются полным справочником, не персональным списком прав.
+
+Окончательная проверка OpenConnector находится в `SaasActionRunner.authorize()` **до** чтения результата повторного запроса, фиксации исполнения и обращения к поставщику. Даже корректно подписанный запрос без действующего разрешения запрещён. Права на чужое личное подключение из общей настройки не возникают.
+
+### Authenticated contract and independent deployment
+
+Сохранить существующий `OpenConnectorClient`, проверку подписи и точную привязку запроса к действию, подключению и содержимому. Для защищённого переключения протокола использовать назначение исполнения **`action:execute:v2`**: старая версия OpenConnector не должна принять новый запрос и исполнить его без своей проверки прав. После переключения старое назначение исполнения не поддерживается.
+
+Для административных команд нужен отдельный ограниченный подписывающий профиль: ключ управления политиками не является ключом исполнения пользовательских действий. Управляющее доказательство содержит проверенного оператора, точное назначение чтения/записи, цель `platform` или реальную пользовательскую область; запись связана с содержимым команды. Каталожный ключ, клиентская роль и старое `admin:read` не дают доступа к изменению правил. Шлюзу панели не выдавать ключ, которым можно подписать пользовательское исполнение.
+
+Очистка и инвентаризация политик при удалении выполняются узкими служебными командами с подписанной настоящей целью удаления и идентификатором операции, не с поддельным пользователем. Их полномочия не означают право выполнять действия. Решение о членстве и удалении по-прежнему принимает сервер ИИ-маркетолога.
+
+Адрес OpenConnector, проверенные издатели/получатели подписей, адреса открытых ключей и собственная база сервиса задаются конфигурацией. Проверка на двух отдельных базах и разных сетевых адресах обязательна. Общая физическая машина или экземпляр PostgreSQL может быть вариантом размещения, но не условием работы.
+
+### Direct cutover and lifecycle
+
+Реальных пользователей нет. Перед реализационным переключением завершить или отменить тестовые операции, остановить старые процессы связки, применить собственные миграции каждого сервиса и запустить согласованные новые версии. Не добавлять постоянные флаги обслуживания, переносимые файлы, импортёр и сверочные квитанции ради сохранения тестовых настроек. Подключения, секреты и данные остальных интеграций не сбрасывать.
+
+Старая объединённая `app.integration_action_grants` удаляется новой миграцией, без копирования строк и без `CASCADE`. Её рабочие читатели/писатели и старый объединённый формат удаляются целиком. У OpenConnector собственные пустые общие/личные политики, у сервера помощника — отдельное пустое хранилище дополнительных требований согласия `always`, без включения действий. Обязательное базовое подтверждение продолжает действовать независимо от пустоты этой таблицы. Ранее применённые миграции остаются историей, не вторым источником прав.
+
+После начала работы новые индивидуальные запреты/разрешения сохраняют приоритет над общими, а переключение общего правила не меняет согласие пользователя. Оператор один раз задаёт общий пакет через существующую панель; регистрация не создаёт копий правил пользователю.
+
+Состояние действующего/заблокированного членства проверяет сервер ИИ-маркетолога перед выдачей запроса; удаление участника блокирует выдачу новых запросов ещё до удалённых операций. OpenConnector экспортирует и удаляет свои индивидуальные правила и их целевой аудит вместе с точной пользовательской областью; общие правила не являются данными клиента. Счётчики и экспорт получают разрешения по сети, а согласия — у сервера помощника, не смешивая два факта в прежнюю запись.
+
+Не поддерживать старые реплики или возврат к локальным правилам: старая версия OpenConnector не проверяет новую политику. Неисправная новая схема означает отказ, а не включение старой разрешающей модели. Перезапуск и откат возможны только на согласованные версии с тем же владельцем прав; уже начатые внешние действия нельзя обещать отменить.
+
+### Product integration configuration is a separate follow-up
+
+Сейчас допуск интеграций определяется исходным кодом сервера ИИ-маркетолога — проверенными решениями `action-classifications/` и `action-classification.ts`; отдельной изменяемой конфигурации включения интеграций нет. Зафиксированное исходное состояние: 26 допущенных интеграций / 696 действий.
+
+Добавить отдельную задачу [Product integration configuration](2026-08-04-full-provider-rollout.md#product-integration-configuration): сохраняемые настройки включения интеграций в продукте принадлежат серверу ИИ-маркетолога и позднее редактируются его собственной административной панелью. Это дополнительное ограничение поверх проверенной кодом поддержки, а не замена проверок риска, схем, ролей, подтверждения и готовности подключения. Начальное состояние должно в точности сохранить текущий допуск; неизвестные и новые интеграции выключены. Мобильное приложение продолжает получать список с сервера, без второго списка в приложении.
 
 ## System Invariants
 
-1. **Backend authority:** A connector row or secret cannot create access. Access exists only when the backend resolves an active local connection under verified tenant/workspace/user membership and issues a purpose-specific JWT.
+1. **Two independent authorities:** Backend identity, current membership, role, product admission, billing and safety must permit the request; OpenConnector must also permit the actor's action from its own stored rules. A connector row, secret, or valid execution signature alone cannot grant access.
 2. **No confused deputy:** Connector routes reject a token whose purpose, action, connection, subject user, or canonical request hash does not exactly match the request.
 3. **Two-user rule:** Two users may use the same provider and the same human alias without collisions. Their database rows, OpenBao paths, OAuth states, idempotency records, files, and run logs remain disjoint.
 4. **Admin targeting:** An administrator acts as `actor_user_id` while querying a separately authorized `subject_user_id`. The connector never chooses or widens the subject.
 5. **One-time OAuth:** State is random, hashed at rest, scoped, expiring, atomically reserved, and consumed exactly once. Callback response loss is recoverable without repeating provider token exchange.
 6. **Audit before effect:** Backend run intent and connector run intent exist before any provider call. If either durable write fails, execution fails without contacting the provider.
-7. **Safe catalog drift:** A newly merged upstream action is invisible to agents until it has source-controlled safety classification and an explicit tenant grant.
+7. **Safe catalog drift:** A newly merged upstream action is unavailable until the backend has reviewed its safety/schema and OpenConnector has an explicit enabled rule for the requester. A provider wildcard or a catalog update never creates action permission.
 8. **No secret observability:** Run records contain action/provider identifiers, result status, duration, input/output byte counts, safe error codes, and hashes—never raw request/response bodies or credentials.
-9. **Upstream compatibility:** Local Node/SQLite and Cloudflare entrypoints retain their current APIs and tests. SaaS-specific routes and storage remain isolated.
+9. **Upstream functionality, not legacy launchers:** Preserve reviewed provider/core/OAuth behavior and adapt incoming improvements to the sole SaaS path. The mirror `main` retains upstream content; `multitenant` does not restore Node/SQLite, D1, Cloudflare, direct MCP, proxy or old-console entrypoints.
 10. **Console isolation:** Only backend-authenticated system administrators may receive the administrative HTML/assets or BFF data. Tenant identity, workspace membership, and workspace `owner`/`admin` roles never grant console access.
 11. **Catalog preservation:** Provider/action availability is controlled only by backend policy and UI exposure. Never delete, stub, filter out of generated registries, or modify upstream provider/action implementations merely because they are not enabled in the current rollout.
-12. **Protected upstream core:** The release gate compares protected upstream files to `.upstream-base` and fails on any product-authored change. SaaS wrappers may import stable public core functions but must not patch or fork existing runtime behavior.
+12. **Reviewed protected core:** The release gate compares protected source to the approved adapted checkpoint and rejects unreviewed changes. A necessary scoped adaptation must preserve the upstream fix, pass behavioral review and be approved before advancing that checkpoint; broad exclusions and automatic repinning are forbidden.
 13. **No Internet-facing administration:** Neither OpenConnector nor its console/BFF has public ingress. Public API and ngrok/reverse-proxy surfaces contain no admin route or console asset; SSH tunneling is the only network path to the loopback management listener.
-14. **Single production runtime:** The production Compose graph starts only `start:saas`; it never starts the upstream local server, Cloudflare worker, original console, or static-token runtime beside it.
+14. **Single production runtime:** Supported start/development commands and the production Compose graph invoke only `src/saas/index.ts` from `docker/Dockerfile`; no old `start:saas` alias, upstream local server, Cloudflare worker, original console or static-token runtime is restored beside it.
 15. **Real action tools:** The model never supplies a canonical `actionId`. Each dynamically discovered Mastra tool captures one exact action ID in its executor and exposes that action's actual connector input schema plus a backend-local connection ID.
-16. **Discovery is not authorization:** Tool search/load/active phases filter against a request-scoped backend policy snapshot for usability, while execution independently reloads membership, connection ownership/status, grant, classification, approval, and exact request hash.
+16. **Discovery is not authorization:** Search uses current backend business checks and OpenConnector's permission response, without a backend inheritance resolver. Execution reloads business access and independently rechecks the actor's stored permission inside OpenConnector before any provider call or completed replay.
 17. **Bounded native discovery:** Connector actions are absent from the initial model tool list. `search_tools` returns at most three authorized matches, auto-loads them for the next turn, stores loaded state in tenant-scoped conversation context, and remains bounded by the server step limit and connector deadlines.
 
 ## Wire Identity Contract
@@ -92,7 +182,7 @@ interface ConnectorIdentityClaims {
     | "oauth:start"
     | "oauth:complete"
     | "action:search"
-    | "action:execute"
+    | "action:execute:v2"
     | "admin:read";
   permissions: string[];
   local_connection_id?: string;
@@ -106,7 +196,7 @@ interface ConnectorIdentityClaims {
 Rules:
 
 - Token lifetime is at most 60 seconds; OAuth completion tokens may be 120 seconds because the backend mints them only after callback state reservation.
-- `action:execute` requires exact `local_connection_id`, `connector_connection_id`, `action_id`, and SHA-256 `request_hash`.
+- `action:execute:v2` requires exact `local_connection_id`, `connector_connection_id`, `action_id`, and SHA-256 `request_hash`, plus the independent connector-side policy check. The old execution purpose is not a compatibility path.
 - `oauth:start` and `oauth:complete` require exact `oauth_session_id` and local connection IDs.
 - `admin:read` requires backend authorization before minting and never permits writes or execution.
 - Wildcard permissions are forbidden.
@@ -115,9 +205,9 @@ Rules:
 
 | Repository                          | Owns                                                                                                                                                | Must not own                                                                                  |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `../ai-backend-marketing-agent`     | Identity, membership, local connection records, grants, safety classification, approvals, billing limits, lifecycle, audit, admin BFF, JWT issuer   | Provider tokens or connector implementation details                                           |
+| `../ai-backend-marketing-agent`     | Identity, membership, roles, local connection mapping, product-provider configuration, safety classification, approvals, billing, orchestration, audit and admin gateway | OpenConnector action-enable/default storage or inheritance; provider secrets |
 | `../ai-marketing-agent-user-mobile` | End-user provider catalog, connection list, OAuth browser session, credential forms, reconnect/revoke                                               | Connector URL, remote aliases, admin UI, provider tokens                                      |
-| `open-connector`                    | Provider catalog/executors, scoped OAuth/token refresh, OpenBao credential access, scoped runtime state, action execution, adapted operator console | Product users, tenant provisioning, billing, invitations, chat, final authorization decisions |
+| `open-connector`                    | Provider catalog/executors, scoped OAuth, credentials, runtime state, individual/default action permissions, policy audit and final permission enforcement | Product users, role assignment, billing, product-provider selection and business approval decisions |
 
 ## Planned File Structure
 
@@ -310,8 +400,8 @@ git commit -m "chore: pin upstream connector baseline"
 
 ```ts
 it("rejects an execute token without exact connection, action, and request hash", () => {
-  expect(() => parseConnectorIdentityClaims({ ...validClaims, purpose: "action:execute" })).toThrow(
-    "action:execute claims are incomplete",
+  expect(() => parseConnectorIdentityClaims({ ...validClaims, purpose: "action:execute:v2" })).toThrow(
+    "action:execute:v2 claims are incomplete",
   );
 });
 
@@ -450,7 +540,7 @@ revoked_at
 Create:
 
 - `app.integration_oauth_sessions`: local connection, state hash, status `pending|reserved|completed|failed|expired`, expiry, reservation lease, fixed return target, callback result fingerprint.
-- `app.integration_action_grants`: tenant/workspace/action exact ID, enabled flag, `approval_override` limited to `inherit|always`, created/updated actor.
+- Historical bootstrap input: `app.integration_action_grants` combined enabled state and `approval_override`. The action-policy follow-up migrates enabled state to OpenConnector and retains only approval metadata in the backend; do not add defaults or a new inheritance resolver to this table.
 - `app.integration_action_runs`: actor and subject user, local connection, provider/action, connector execution ID, status, duration, input/output byte counts, request hash, idempotency hash, safe error code; no raw input/output.
 
 Add foreign keys to existing tenant/workspace/user tables, tenant-leading indexes, and uniqueness on `(tenant_id, workspace_id, connector_connection_id)` and `(tenant_id, workspace_id, provider_id, connector_alias)`.
@@ -526,8 +616,8 @@ git commit -m "feat: add tenant-scoped integration control plane"
 it("binds execute tokens to exact subject, connection, action, and body hash", async () => {
   const token = await service.issue({
     scope,
-    purpose: "action:execute",
-    permissions: ["action:execute"],
+    purpose: "action:execute:v2",
+    permissions: ["action:execute:v2"],
     localConnectionId,
     connectorConnectionId,
     actionId: "gmail.messages_list",
@@ -613,7 +703,7 @@ Test that SaaS startup rejects missing PostgreSQL URL, OpenBao address/token, JW
 ```ts
 it("rejects a valid JWT minted for the wrong purpose", async () => {
   const response = await app.request("/internal/saas/connections", {
-    headers: { authorization: `Bearer ${tokenFor("action:execute")}` },
+    headers: { authorization: `Bearer ${tokenFor("action:execute:v2")}` },
   });
   expect(response.status).toBe(403);
 });
@@ -1180,7 +1270,9 @@ git commit -m "feat: journal connector actions before side effects"
 
 ---
 
-### Task 14: Classify Actions and Enforce Tenant Grants in the Backend
+### Task 14: Historical Backend Grant Gate; Retain Reviewed Safety Classifications
+
+**Ownership amendment:** The original enabled-grant implementation below describes the baseline, not the target owner. The action-policy follow-up replaces its storage and permission checks with OpenConnector. Keep source-reviewed safety, role, billing and approval behavior; do not implement another backend default/override resolver.
 
 **Files:**
 
@@ -1290,7 +1382,7 @@ Cover:
 
 - [ ] **Step 2: Write failing execution and approval tests**
 
-Cover provider/action mismatch, inaccessible local connection, role/plan denial, missing approval, payload drift, exact request hash, durable backend run intent, body-bound connector JWT, idempotency key, result redaction, connector timeout classification, and approval resume after process restart. Assert that the wrapper re-reads connection ownership, status, grant, and classification immediately before every execution; discovery state is never authorization.
+Cover provider/action mismatch, inaccessible local connection, role/plan denial, missing approval, payload drift, exact request hash, durable backend run intent, body-bound v2 connector JWT, idempotency key, result redaction, connector timeout classification, and approval resume after process restart. Assert that the wrapper reloads connection, business access and the authoritative OpenConnector permission response, while OpenConnector independently checks its actor rule before executing; discovery state is never authorization.
 
 - [ ] **Step 3: Verify failure**
 
@@ -1343,7 +1435,7 @@ new ToolSearchProcessor({
 
 `storage: "context"` is mandatory: loaded state is derived from tenant-scoped conversation messages, survives process replacement, and avoids replica-local or anonymous shared state. `autoLoad: true` gives the bounded `search_tools -> real action` flow and does not expose `load_tool`. Do not create `integration.search-actions`, `integration.execute-action`, a generic action-ID tool, a direct MCP client, or a second vector/tool-search subsystem.
 
-Before every agent run, backend-authoritative middleware resolves current membership, active accessible connections, provider/action classifications, tenant grants, and feature state. It writes a JSON-serializable `Record<toolId, true>` to `integrationAllowedToolIds` and adds a compact safe instruction block listing connected provider names, `localConnectionId`, display label, owner/visibility, and reconnect state. Instructions require a concise English capability query for `search_tools`, even for a Russian request; critical launch actions also receive curated Russian/English aliases in their descriptions. If multiple accounts match, the agent asks the user once rather than guessing.
+Before every agent run, backend middleware resolves current membership, active accessible connections, provider/action classifications, feature state and an authenticated batch permission response from OpenConnector for the actor. It must not load or resolve backend enabled grants. It writes the existing JSON-serializable `Record<toolId, true>` to `integrationAllowedToolIds` and keeps the compact connection instructions and existing account-selection behavior. Native tool discovery remains the existing bounded implementation, not a second search subsystem.
 
 Keep native tools always available. Connector actions exist only behind `search_tools` and are injected on the next model turn. Preserve the existing server-wide `maxSteps: 10` so connector rollout cannot regress native Yandex/VK workflows; the normal connector path must finish in at most three steps (`search_tools`, real action, final response). Add a 60-second end-to-end agent deadline and propagate its `AbortSignal` through model and connector calls. Integration instructions permit at most one refined search after an empty result. The request filter must remain a pure O(1) lookup over the precomputed map—no database, OpenBao, connector, or network I/O. Connector calls retain their narrower explicit deadline/byte limits. Search selection, termination, and latency are gated in Task 20 before canary enablement.
 
@@ -1784,8 +1876,8 @@ Commit OpenConnector security and upstream gates, backend E2E tests, and mobile 
 - Mobile users connect, list, search, reconnect, and revoke integrations without seeing OOMOL UI or connector identifiers; only workspace `owner`/`admin` can share or unshare a connection.
 - Connector exposure is disabled by default through the existing backend feature mechanism and enabled first for one canary tenant; disabled mode preserves all existing native routes, tools, connections, and workflows.
 - Multiple accounts of the same provider work for the same user and across users without alias collisions.
-- Backend remains the only authority for tenant/workspace/user identity, roles, plan limits, grants, approvals, and lifecycle.
-- Connector independently enforces the backend-issued scope through JWT binding, forced PostgreSQL RLS, scoped OpenBao paths, and exact-action request hashes.
+- Backend remains authoritative for identity, memberships, roles, product integration configuration, plan limits, approvals and lifecycle orchestration; it is not a second action-permission authority.
+- OpenConnector owns and independently checks individual/common action permissions as well as JWT binding, forced PostgreSQL RLS, scoped secrets and exact request hashes. A management signing profile cannot authorize customer execution.
 - No route allows browsers, mobile clients, or Mastra to call connector MCP, proxy, admin, OAuth callback, or raw execution APIs directly.
 - Provider actions cannot begin before durable backend and connector intent/idempotency records exist.
 - Generic credentials exist only in OpenBao; PostgreSQL/logs/traces/mobile contain no secret material.

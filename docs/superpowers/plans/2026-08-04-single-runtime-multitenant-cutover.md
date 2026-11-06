@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans`. This is the final destructive cutover. Complete the workspace/lifecycle and full-provider plans first.
 
+**Актуальная рамка (2026-11-06):** [Границы сервисов](../specs/2026-11-06-service-boundaries-and-upstream-sync-design.md) и [будущее обновление main → multitenant](2026-11-06-upstream-main-multitenant-sync.md). Сохранение единственного защищённого рабочего пути обязательно и при слиянии; исходные функции адаптируются, старые входные пути не возвращаются. Перед повторением исторических задач проверить реализацию. Прежний импорт реальных подключений/секретов не означает перенос старых тестовых разрешений: для них действует отдельный прямой переход ноября.
+
 **Goal:** Make the multi-tenant SaaS runtime the only executable OpenConnector runtime, remove the SQLite/D1/static-token/direct-MCP/proxy/public-console paths, publish one production image, and prove that every supported start/development/deployment path enforces the same tenant/workspace/user boundary.
 
 **Superseded decisions:** This plan intentionally supersedes the following constraints from `2026-08-04-native-multitenant-integration-runtime.md`:

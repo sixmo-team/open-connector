@@ -2,14 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans`. Execute tasks in order. Do not start the full-provider or single-runtime cutover plans until this plan passes its final gate.
 
+**Актуальная рамка (2026-11-06):** [Границы сервисов](../specs/2026-11-06-service-boundaries-and-upstream-sync-design.md) и [будущее обновление main → multitenant](2026-11-06-upstream-main-multitenant-sync.md). Этот документ описывает историческую последовательность доработки; перед новым исполнением проверить фактическое состояние, не повторять завершённые переходы по старым флажкам. Разрешения функций принадлежат OpenConnector по отдельному плану, человеческое согласие и бизнес-доступ — бекенду ИИ-маркетолога.
+
 **Goal:** Make private/workspace connection visibility authoritative in both databases, make ownership transfer reachable, implement the connector run APIs, and make user/workspace/tenant export and deletion complete across the backend PostgreSQL database, OpenConnector PostgreSQL database, OpenBao, and SeaweedFS.
 
 **Prerequisite:** `2026-08-04-native-multitenant-integration-runtime.md` has been implemented. This follow-up supersedes its incomplete visibility and lifecycle behavior; it does not weaken JWT, RLS, OpenBao, or backend-authorization invariants.
 
 **Repositories:**
 
-- `open-connector` owns credential/runtime state and exact-scope execution.
-- `../ai-backend-marketing-agent` remains the identity, membership, connection, audit, export, and lifecycle authority.
+- `open-connector` owns credential/runtime state, runtime audit, exact-scope execution/export/purge and, after the planned permission cutover, its own function permissions.
+- `../ai-backend-marketing-agent` owns identity, membership/business access, local connection mapping, its own audit and aggregation/orchestration of export and lifecycle; it does not read the connector database directly.
 - `../ai-marketing-agent-user-mobile` remains the end-user UI; its existing visibility controls must work without a connector URL or connector ID becoming a trust input.
 
 ## Non-negotiable invariants
