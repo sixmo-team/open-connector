@@ -1,30 +1,8 @@
 name: Release
 
-# The one entry point for cutting a release. Dispatch it manually on `main`;
-# it computes the version from the latest `vX.Y.Z` tag (or takes an explicit
-# one), then drives the per-artifact workflows and finally publishes the
-# GitHub release:
-#
-#   version ──> draft release ──┬──> binaries (build, smoke, attach to draft) ──┐
-#                               ├──> npm package (build, verify, publish)      ├──> publish release
-#                               └──> docker image (latest + vX.Y.Z)            ┘
-#
-# `package.json` stays at 0.0.0-development; git tags are the only owner of
-# released versions. The tag is created by GitHub when the draft is published,
-# after every asset is attached, so `releases/latest/download/...` never points
-# at a half-built release.
-#
-# Every step is idempotent, so a failed run is retried with "Re-run failed
-# jobs" (the computed version is kept) or by dispatching again on the same
-# commit (the version is recomputed to the same value: an existing draft is
-# reused, an existing tag at this commit is resumed, published npm versions
-# and uploaded assets are skipped or overwritten in place).
-#
-# Releases published with GITHUB_TOKEN do not fire `release:` events, which is
-# why docker and binaries are called from here instead of listening for one.
-#
-# Setup: the npm package trusts this repository's `release.yml` via trusted
-# publishing (OIDC); no npm token is stored in the repository.
+# Dispatch on multitenant. Compute the existing version/tag, create the draft,
+# publish and verify the isolated scoped container, then publish the release.
+# No npm runtime or standalone binary is distributed from this branch.
 on:
   workflow_dispatch:
     inputs:
@@ -73,15 +51,13 @@ jobs:
           node-version: "24.22.2"
           package-manager-cache: false
 
-      # Releases are cut from main only. workflow_dispatch lets any branch or
-      # tag be selected, and every later job builds and publishes whatever
-      # `github.sha` that selection resolved to.
-      - name: Require main
-        if: github.ref != 'refs/heads/main'
+      # The unmodified source main is not the scoped service release branch.
+      - name: Require multitenant
+        if: github.ref != 'refs/heads/multitenant'
         env:
           REF: ${{ github.ref }}
         run: |
-          echo "::error::Release must be dispatched on main, not ${REF}."
+          echo "::error::Scoped release must be dispatched on multitenant, not ${REF}."
           exit 1
 
       - name: Compute version

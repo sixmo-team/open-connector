@@ -24,6 +24,7 @@
 
 - Saved action results are isolated by the verified actor even for shared connections; current permission is checked again immediately before dispatch or replay.
 - Helm rejects undeclared container and pod security-context fields instead of accepting privileged-container or extra-group overrides.
+- Scoped image/chart publication is bound to `multitenant` and uses separate registry packages, so unmodified source-main publications cannot overwrite SaaS artifact names.
 - Transit-file metadata belongs to the initiating actor, not the owner of a shared credential; expired leases are purged for either bound actor or credential owner.
 - Shopify client-credential tokens are partitioned by verified tenant, workspace, credential owner and connection lineage. Pending mints remain within their original bounded processing root, and cancelled work cannot populate the cache.
 - Gmail attachment reads honor processing cancellation before send/draft writes. Native OAuth accepts Amazon's authorization-code alias while rejecting duplicate or conflicting callback codes before consuming state.

@@ -3,7 +3,7 @@ name: Publish Helm chart
 # Lints the chart at deploy/helm/open-connector on pull requests, and pushes
 # it to GitHub Packages (ghcr.io) as an OCI artifact:
 #
-#   push to main        -> <chart-version>-tip.<full-sha>  (immutable ref,
+#   push to multitenant  -> <chart-version>-tip.<full-sha>  (immutable ref,
 #                                                           one per commit)
 #   published release   -> <chart-version>                 (only when the
 #                                                           chart version
@@ -15,11 +15,11 @@ name: Publish Helm chart
 #                                                           only)
 #
 # Pulling the published chart:
-#   helm pull oci://ghcr.io/$OWNER/charts/open-connector --version 0.1.0
+#   helm pull oci://ghcr.io/$OWNER/charts-multitenant/open-connector --version 0.1.0
 #
 # ghcr.io packages are private by default and the REST API cannot change
 # package visibility, so after the first publish flip the
-# `charts/open-connector` package to public once in the GitHub Packages UI.
+# `charts-multitenant/open-connector` package visibility explicitly when required.
 on:
   pull_request:
     paths:
@@ -27,7 +27,7 @@ on:
       - ".github/workflows/publish-helm.yml"
       - "scripts/fixtures/helm-scoped-values.yaml"
   push:
-    branches: [main]
+    branches: [multitenant]
     paths:
       - "deploy/helm/open-connector/**"
       - ".github/workflows/publish-helm.yml"
@@ -41,7 +41,7 @@ permissions:
   contents: read
   packages: write
 
-# One in-flight publish per ref. main-branch pushes share a group so a
+# One in-flight publish per ref. Multitenant pushes share a group so a
 # newer commit cancels an older, still-running build - this keeps the
 # "tip" tag pointing at the most recent commit. Releases use their own
 # per-tag group and are never cancelled.
@@ -89,13 +89,17 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CHART_PATH: deploy/helm/open-connector
-      # ghcr.io requires OCI artifacts to be linked to a repository. We use
-      # a dedicated "charts" namespace inside the owner's account so the
-      # package name is `charts/open-connector`, distinct from the docker
-      # image package `open-connector`. Override here to push elsewhere
-      # (e.g. oci://ghcr.io/${{ github.repository_owner }}/open-connector/helm).
-      OCI_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts
+      # Separate from charts published by the unmodified source main.
+      OCI_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts-multitenant
     steps:
+      - name: Require scoped publication branch
+        if: github.event_name != 'release' && github.ref != 'refs/heads/multitenant'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::Scoped charts must be published from multitenant, not ${REF}."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,6 +110,12 @@ jobs:
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v4.2.4
+      - name: Verify scoped chart before publication
+        run: |
+          test -f .upstream-base
+          test -f src/saas/index.ts
+          helm lint "${CHART_PATH}" -f scripts/fixtures/helm-scoped-values.yaml
+          helm template qualified "${CHART_PATH}" -f scripts/fixtures/helm-scoped-values.yaml > "$RUNNER_TEMP/scoped-chart.yaml"
 
       - name: Read chart metadata
         id: meta

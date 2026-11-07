@@ -1,10 +1,10 @@
 name: Publish Docker Image
 
-# Build the OpenConnector image from docker/Dockerfile and publish it to the
-# GitHub Packages container registry (GHCR) at ghcr.io/<owner>/<repo>.
+# Build the scoped image from docker/Dockerfile and publish it separately from
+# the unmodified upstream main at ghcr.io/<owner>/<repo>-multitenant.
 #
 # Triggers and tags:
-#   - push to main (this includes merged PRs): `tip` + the short commit hash
+#   - push to multitenant:                    `tip` + the short commit hash
 #   - workflow_call from release.yml:          `latest` + the release tag (e.g. v1.7.0),
 #                                              built from the calling run's commit
 #
@@ -15,7 +15,7 @@ name: Publish Docker Image
 # Releases use the reusable workflow call. See docs/saas-deployment.md.
 on:
   push:
-    branches: [main]
+    branches: [multitenant]
   workflow_call:
     inputs:
       release_tag:
@@ -23,9 +23,8 @@ on:
         required: true
         type: string
 
-# One in-flight publish per ref. main pushes share a group so a newer commit
-# cancels an older, still-running build — this keeps `tip` pointing at the most
-# recent commit. Releases use their own per-tag group and are never cancelled.
+# One in-flight publish per ref. New multitenant pushes replace only their own
+# candidate build; versioned releases are never cancelled.
 concurrency:
   group: publish-docker-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'push' && inputs.release_tag == '' }}
@@ -37,8 +36,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  # ghcr.io/oomol-lab/open-connector — GHCR auto-links the package to this repository.
-  IMAGE_NAME: ${{ github.repository }}
+  # Source main may publish its global runtime to the unsuffixed package.
+  IMAGE_NAME: ${{ github.repository }}-multitenant
 
 jobs:
   # Build each architecture natively and push it to GHCR by digest (no tags yet).
@@ -57,6 +56,14 @@ jobs:
             pair: linux-arm64
     runs-on: ${{ matrix.runner }}
     steps:
+      - name: Require multitenant source
+        if: github.ref != 'refs/heads/multitenant'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::Scoped images must be published from multitenant, not ${REF}."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v7
         with:

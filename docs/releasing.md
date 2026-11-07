@@ -2,6 +2,8 @@
 
 `package.json` remains private at `0.0.0-development`; source tags and reviewed image digests identify candidates. This branch distributes one Node 24 scoped container, not an embeddable npm runtime or Bun single-file product. The Release workflow computes a tag/draft, invokes the existing container workflow and publishes the release only after that job succeeds. The separate Helm workflow retains chart packaging for the same private image/boundary.
 
+The scoped workflows run from `multitenant`: images use `ghcr.io/<owner>/<repo>-multitenant` and charts use `oci://ghcr.io/<owner>/charts-multitenant/open-connector`. The unmodified source `main` may retain upstream publication workflows, but its unsuffixed artifacts are not SaaS candidates. Never deploy their moving tags in place of a qualified scoped digest. Manual release dispatch must select `multitenant`; container and chart workflows refuse a different publication branch.
+
 Before any release, qualify the exact source candidate with Node 24.22.2+ in the Node 24 line:
 
 ```sh
