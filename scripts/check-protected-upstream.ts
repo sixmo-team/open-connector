@@ -16,7 +16,7 @@ export function findProtectedUpstreamViolations(base: string, rootDir = process.
   const fields = splitNull(runGit(["diff", "--name-status", "--find-renames", "-z", base, "--"], rootDir));
   const violations: string[] = [];
 
-  for (let index = 0; index < fields.length; ) {
+  for (let index = 0; index < fields.length;) {
     const status = fields[index++];
     const oldPath = fields[index++];
     if (!status || !oldPath) throw new Error("git diff returned an incomplete name-status record");
@@ -42,9 +42,12 @@ export function findCutoverViolations(rootDir = process.cwd()): string[] {
   if (existsSync(packagePath)) {
     const scripts =
       (JSON.parse(readFileSync(packagePath, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {};
-    if (scripts.start !== "node --experimental-transform-types src/saas/index.ts") violations.push("package start is not the SaaS runtime");
-    if (scripts.dev !== "node --experimental-transform-types --watch src/saas/index.ts") violations.push("package dev is not the SaaS runtime");
-    if (scripts.migrate !== "node --experimental-transform-types scripts/saas-migrate.ts") violations.push("package migrate is not the SaaS migrator");
+    if (scripts.start !== "node --experimental-transform-types src/saas/index.ts")
+      violations.push("package start is not the SaaS runtime");
+    if (scripts.dev !== "node --experimental-transform-types --watch src/saas/index.ts")
+      violations.push("package dev is not the SaaS runtime");
+    if (scripts.migrate !== "node --experimental-transform-types scripts/saas-migrate.ts")
+      violations.push("package migrate is not the SaaS migrator");
     const scriptText = JSON.stringify(scripts);
     for (const marker of forbiddenRuntimeMarkers) {
       if (scriptText.includes(marker)) violations.push(`legacy package script marker: ${marker}`);

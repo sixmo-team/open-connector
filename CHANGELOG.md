@@ -8,6 +8,7 @@
 - The existing Helm chart now uses the same reviewed immutable image, external runtime/owner Secret references, read-only token files and restricted private ClusterIP access; no public console or local state.
 - Operator-managed common action rules and explicit per-user overrides are owned and enforced by OpenConnector. Unconfigured actions remain denied; new users inherit common rules without copied grants.
 - Scoped native managed authorization polling/cancellation, custom OAuth options, actor-private trigger state and complete native lifecycle metadata preserve the existing provider protocols behind the private service.
+- Native Marketplace creation is reachable through a signed private API; its selected actions never grant execution permission. Existing backend recovery invokes one actor-bound OO maintenance pass without owning connector queues or data.
 
 ### Changed
 
@@ -23,6 +24,9 @@
 
 - Saved action results are isolated by the verified actor even for shared connections; current permission is checked again immediately before dispatch or replay.
 - Helm rejects undeclared container and pod security-context fields instead of accepting privileged-container or extra-group overrides.
+- Transit-file metadata belongs to the initiating actor, not the owner of a shared credential; expired leases are purged for either bound actor or credential owner.
+- Shopify client-credential tokens are partitioned by verified tenant, workspace, credential owner and connection lineage. Pending mints remain within their original bounded processing root, and cancelled work cannot populate the cache.
+- Gmail attachment reads honor processing cancellation before send/draft writes. Native OAuth accepts Amazon's authorization-code alias while rejecting duplicate or conflicting callback codes before consuming state.
 
 - The egress guard now always blocks the Azure platform endpoint `168.63.129.16` and the
   IPv6 metadata endpoints of Google Cloud (`fd20:ce::254`) and Oracle Cloud

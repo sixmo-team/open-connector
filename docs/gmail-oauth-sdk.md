@@ -45,7 +45,6 @@ and `References`. If you also supply `threadId`, it must match that message's th
 `threadId` selects the most recent non-draft message in the conversation. A target without a usable
 RFC `Message-ID` header is rejected before creating or sending a reply.
 
-
 Ordinary reply draft edits preserve the reply association and existing files. A supplied subject
 must match the conversation subject, ignoring leading `Re:` prefixes. To change the reply target,
 pass `replyToMessageId` or a different `threadId` to `update_draft`; the connector rebuilds the reply

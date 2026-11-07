@@ -57,11 +57,11 @@
 
 ### Ownership and current-state distinction
 
-| Responsibility | Owner after cutover |
-| --- | --- |
-| Individual action-enable exceptions, common defaults, effective permission, final action-permission check and policy audit | OpenConnector |
-| Users, memberships, role assignment, billing/plan access, product integration selection, reviewed safety classification and the user's exact consent to an AI command | AI-marketer backend |
-| Console authentication, selection of a real customer scope, presentation and authenticated forwarding of policy commands | Existing management gateway; no policy database or inheritance calculation |
+| Responsibility                                                                                                                                                        | Owner after cutover                                                        |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Individual action-enable exceptions, common defaults, effective permission, final action-permission check and policy audit                                            | OpenConnector                                                              |
+| Users, memberships, role assignment, billing/plan access, product integration selection, reviewed safety classification and the user's exact consent to an AI command | AI-marketer backend                                                        |
+| Console authentication, selection of a real customer scope, presentation and authenticated forwarding of policy commands                                              | Existing management gateway; no policy database or inheritance calculation |
 
 **Current code is different:** individual function `enabled` values and the separate confirmation requirement `approval_override` currently share `app.integration_action_grants` in the backend. The backend currently decides action enablement; the connector verifies a signed execution command rather than its own stored grant. This is existing behavior, not a change already made by this plan. There are no real users: replace that ownership directly with empty connector policy tables instead of importing test records or preserving a compatibility path.
 
@@ -90,12 +90,12 @@
 
 Приоритет считается OpenConnector отдельно для каждого действия:
 
-| Индивидуальное правило | Общее правило | Итог |
-| --- | --- | --- |
-| разрешить | любое / отсутствует | разрешить |
-| запретить | любое / отсутствует | запретить |
-| отсутствует | разрешить | разрешить |
-| отсутствует | запретить / отсутствует | запретить |
+| Индивидуальное правило | Общее правило           | Итог      |
+| ---------------------- | ----------------------- | --------- |
+| разрешить              | любое / отсутствует     | разрешить |
+| запретить              | любое / отсутствует     | запретить |
+| отсутствует            | разрешить               | разрешить |
+| отсутствует            | запретить / отсутствует | запретить |
 
 «По общему правилу» удаляет только индивидуальное исключение включения в OpenConnector. Оно не изменяет требование согласия человека на команду помощника: это не ещё одна проверка разрешений OpenConnector. Общее отключение не отменяет индивидуального разрешения и не является принудительным выключением интеграции в продукте.
 
@@ -203,11 +203,11 @@ Rules:
 
 ## Repository Map and Ownership
 
-| Repository                          | Owns                                                                                                                                                | Must not own                                                                                  |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `../ai-backend-marketing-agent`     | Identity, membership, roles, local connection mapping, product-provider configuration, safety classification, approvals, billing, orchestration, audit and admin gateway | OpenConnector action-enable/default storage or inheritance; provider secrets |
-| `../ai-marketing-agent-user-mobile` | End-user provider catalog, connection list, OAuth browser session, credential forms, reconnect/revoke                                               | Connector URL, remote aliases, admin UI, provider tokens                                      |
-| `open-connector`                    | Provider catalog/executors, scoped OAuth, credentials, runtime state, individual/default action permissions, policy audit and final permission enforcement | Product users, role assignment, billing, product-provider selection and business approval decisions |
+| Repository                          | Owns                                                                                                                                                                     | Must not own                                                                                        |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `../ai-backend-marketing-agent`     | Identity, membership, roles, local connection mapping, product-provider configuration, safety classification, approvals, billing, orchestration, audit and admin gateway | OpenConnector action-enable/default storage or inheritance; provider secrets                        |
+| `../ai-marketing-agent-user-mobile` | End-user provider catalog, connection list, OAuth browser session, credential forms, reconnect/revoke                                                                    | Connector URL, remote aliases, admin UI, provider tokens                                            |
+| `open-connector`                    | Provider catalog/executors, scoped OAuth, credentials, runtime state, individual/default action permissions, policy audit and final permission enforcement               | Product users, role assignment, billing, product-provider selection and business approval decisions |
 
 ## Planned File Structure
 

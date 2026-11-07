@@ -1,14 +1,20 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 import type { ActionPolicyTarget, SaasRequestScope } from "../contracts.ts";
+import type { ServerType } from "@hono/node-server";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { serve, type ServerType } from "@hono/node-server";
+import { serve } from "@hono/node-server";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { createServer } from "node:http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../../catalog-store.ts";
 import { setDefaultGuardedFetchDnsLookup } from "../../core/guarded-fetch.ts";
+import { provider as shopifyProvider } from "../../providers/shopify/definition.ts";
+import {
+  credentialValidators as shopifyValidators,
+  executors as shopifyExecutors,
+} from "../../providers/shopify/executors.ts";
 import { canonicalActionPolicyRequestHash, canonicalActionRequestHash } from "../actions/canonical-request.ts";
 import { createSaasJwtVerifier } from "../auth/saas-jwt-verifier.ts";
 import { createScopedNativeServices } from "../scoped-native-services.ts";
@@ -37,7 +43,7 @@ const provider: ProviderDefinition = {
     },
   ],
 };
-const catalog = createCatalogStore([provider]);
+const catalog = createCatalogStore([provider, shopifyProvider], { executableActionIds: ["shopify.get_shop"] });
 const harness = createNativePostgresHarness();
 const path = "/internal/saas/connections/marketplace";
 const requests: Array<{ path: string; init?: RequestInit }> = [];
@@ -98,14 +104,15 @@ beforeAll(async () => {
   const app = new SaasConnectServer({
     catalog,
     providerLoader: {
-      async loadActionExecutor() {
+      async loadActionExecutor(service, actionId) {
+        if (service === "shopify" && actionId === "shopify.get_shop") return shopifyExecutors["shopify.get_shop"];
         throw new Error("Marketplace cannot fall back to local execution");
       },
       async loadProxyExecutor() {
         return undefined;
       },
-      async loadCredentialValidators() {
-        return undefined;
+      async loadCredentialValidators(service) {
+        return service === "shopify" ? shopifyValidators : undefined;
       },
     },
     verifyJwt,
@@ -383,5 +390,104 @@ describe.skipIf(!harness.enabled)("private native Marketplace connect over HTTP"
     expect(await response.json()).toEqual({ error: "marketplace_auth_error" });
     expect(requests.map((item) => item.path)).toEqual(["/discovery", "/validate"]);
     expect(await db.connectionStore.list()).toEqual([]);
+  });
+});
+
+describe.skipIf(!harness.enabled)("native provider ownership over authenticated HTTP and PostgreSQL", () => {
+  it("keeps Shopify tokens private across tenants and reuses the actual credential owner's token for a shared actor", async () => {
+    const nativeFetch = globalThis.fetch;
+    let minted = 0;
+    const used: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.hostname !== "store.myshopify.com") return nativeFetch(input, init);
+      if (url.pathname.endsWith("/oauth/access_token"))
+        return Response.json({ access_token: `private-token-${++minted}`, scope: "read_products", expires_in: 3600 });
+      used.push(new Headers(init?.headers).get("x-shopify-access-token") ?? "missing");
+      return Response.json({
+        data: { shop: { id: "gid://shopify/Shop/1", name: "Store", myshopifyDomain: url.hostname } },
+      });
+    });
+    try {
+      const target: ActionPolicyTarget = { kind: "platform" };
+      const mutation = { actionIds: ["shopify.get_shop"], enabled: true, reason: "Reviewed native owner smoke" };
+      await policy.applyForControl(
+        {
+          subjectKind: "policy_control",
+          subject: "operator:owner-smoke",
+          purpose: "action-policy:write",
+          permissions: ["action-policy:write"],
+          target,
+          requestId: crypto.randomUUID(),
+          requestHash: canonicalActionPolicyRequestHash(
+            "PUT",
+            "/internal/saas/action-policy/defaults",
+            target,
+            mutation,
+          ),
+        },
+        mutation,
+      );
+      const created: Array<{ scope: SaasRequestScope; id: string }> = [];
+      for (let index = 0; index < 2; index++) {
+        const db = harness.forScope({ purpose: "connection:write", permissions: ["connection:write"] });
+        const response = await fetch(`${baseUrl}/internal/saas/connections/credentials`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${await signed(db.scope)}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            localConnectionId: db.scope.localConnectionId,
+            service: "shopify",
+            connectionName: "shop",
+            authType: "custom_credential",
+            credentials: {
+              shopDomain: "store.myshopify.com",
+              clientId: "identical-client",
+              clientSecret: "identical-secret",
+            },
+          }),
+        });
+        expect(response.status, JSON.stringify({ response: await response.clone().json(), minted, used })).toBe(201);
+        const connection = await response.json();
+        expect(JSON.stringify(connection)).not.toContain("identical-secret");
+        created.push({ scope: db.scope, id: connection.id });
+      }
+      const send = async (scope: SaasRequestScope, id: string) => {
+        const executionScope: SaasRequestScope = {
+          ...scope,
+          purpose: "action:execute:v2",
+          permissions: ["action:execute:v2"],
+          connectorConnectionId: id,
+          actionId: "shopify.get_shop",
+          maxOutputBytes: 65536,
+          requestHash: canonicalActionRequestHash("shopify.get_shop", id, {}),
+        };
+        const response = await fetch(`${baseUrl}/internal/saas/actions/shopify.get_shop`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${await signed(executionScope)}`,
+            "content-type": "application/json",
+            "idempotency-key": crypto.randomUUID(),
+          },
+          body: JSON.stringify({ connectorConnectionId: id, input: {} }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ output: { shop: { id: "gid://shopify/Shop/1" } } });
+      };
+      const [first, second] = created;
+      await send(first!.scope, first!.id);
+      await send(second!.scope, second!.id);
+      await harness.factory.forScope(first!.scope).connectionStore.updateVisibilityById(first!.id, "workspace");
+      await send({ ...first!.scope, actorUserId: crypto.randomUUID(), workspaceRole: "member" }, first!.id);
+      expect(minted).toBe(2);
+      expect(used).toEqual([
+        "private-token-1",
+        "private-token-2",
+        "private-token-1",
+        "private-token-2",
+        "private-token-1",
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -103,7 +103,6 @@ jobs:
       previous_tag: ${{ needs.version.outputs.previous_tag }}
       publish: false
 
-
   # The private scoped service is distributed only as its verified container.
 
   docker:

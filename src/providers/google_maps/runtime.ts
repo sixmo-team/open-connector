@@ -124,24 +124,43 @@ export async function validateCredential(
   const context = { apiKey: input.apiKey, fetcher, signal };
   let validationEndpoint = "/v1/places:searchText";
   try {
-    await requestJson(new URL(validationEndpoint, placesBaseUrl),
+    await requestJson(
+      new URL(validationEndpoint, placesBaseUrl),
       { method: "POST", body: { textQuery: "Google" }, fieldMask: "places.id" },
-      context, "validate", "Google Maps credential validation");
+      context,
+      "validate",
+      "Google Maps credential validation",
+    );
   } catch (error) {
-    const details = error instanceof ProviderRequestError ? optionalRecord(optionalRecord(error.details)?.error)?.details : undefined;
-    const placesRestricted = Array.isArray(details) && details.some((item) => {
-      const info = optionalRecord(item);
-      return info?.domain === "googleapis.com" &&
-        (info.reason === "API_KEY_SERVICE_BLOCKED" || info.reason === "SERVICE_DISABLED") &&
-        optionalRecord(info.metadata)?.service === "places.googleapis.com";
-    });
+    const details =
+      error instanceof ProviderRequestError ? optionalRecord(optionalRecord(error.details)?.error)?.details : undefined;
+    const placesRestricted =
+      Array.isArray(details) &&
+      details.some((item) => {
+        const info = optionalRecord(item);
+        return (
+          info?.domain === "googleapis.com" &&
+          (info.reason === "API_KEY_SERVICE_BLOCKED" || info.reason === "SERVICE_DISABLED") &&
+          optionalRecord(info.metadata)?.service === "places.googleapis.com"
+        );
+      });
     if (!placesRestricted) throw error;
     validationEndpoint = "/directions/v2:computeRoutes";
-    await requestJson(new URL(validationEndpoint, routesBaseUrl), {
-      method: "POST", fieldMask: "routes.distanceMeters,routes.duration",
-      body: { origin: { location: { latLng: { latitude: 37.419734, longitude: -122.0827784 } } },
-        destination: { location: { latLng: { latitude: 37.41767, longitude: -122.079595 } } }, travelMode: "DRIVE" },
-    }, context, "validate", "Google Routes credential validation");
+    await requestJson(
+      new URL(validationEndpoint, routesBaseUrl),
+      {
+        method: "POST",
+        fieldMask: "routes.distanceMeters,routes.duration",
+        body: {
+          origin: { location: { latLng: { latitude: 37.419734, longitude: -122.0827784 } } },
+          destination: { location: { latLng: { latitude: 37.41767, longitude: -122.079595 } } },
+          travelMode: "DRIVE",
+        },
+      },
+      context,
+      "validate",
+      "Google Routes credential validation",
+    );
   }
   return {
     profile: { accountId: "google_maps", displayName: "Google Maps API Key" },

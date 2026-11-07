@@ -10,7 +10,12 @@ import { connectionExecutionError, ExecutionError, ExecutionPolicyError } from "
 import { measureExecutionPhase } from "./core/execution-timing.ts";
 
 export type ExecutionTarget =
-  | { kind: "local"; summary?: ConnectionSummary; getCredential: ExecutionContext["getCredential"] }
+  | {
+      kind: "local";
+      summary?: ConnectionSummary;
+      getCredential: ExecutionContext["getCredential"];
+      credentialCacheOwner?: ExecutionContext["credentialCacheOwner"];
+    }
   | { kind: "saas"; summary: ManagedConnectionSummary; reference: SaasConnectionReference }
   | { kind: "marketplace"; summary: ConnectionSummary };
 
@@ -69,6 +74,7 @@ export async function resolveExecutionTarget(input: ResolveExecutionTargetInput)
             kind: "local",
             summary: connection.summary,
             getCredential: async (service) => (service === input.service ? connection.credential : undefined),
+            credentialCacheOwner: connection.credentialCacheOwner,
           };
         case "saas":
           return { kind: "saas", summary: connection.summary, reference: connection.reference };

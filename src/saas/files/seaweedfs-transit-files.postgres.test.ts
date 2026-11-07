@@ -206,7 +206,12 @@ describe.skipIf(!harness.enabled)("native scoped transit files over PostgreSQL a
       purpose: "action:execute:v2",
       permissions: ["action:execute:v2"],
     };
-    const bobFiles: SaasRequestScope = { ...sharedAction, subjectUserId: bob, purpose: "file:read", permissions: ["file:read"] };
+    const bobFiles: SaasRequestScope = {
+      ...sharedAction,
+      subjectUserId: bob,
+      purpose: "file:read",
+      permissions: ["file:read"],
+    };
     const neighborId = randomUUID();
     const neighbor: SaasRequestScope = { ...alice, actorUserId: neighborId, subjectUserId: neighborId };
     expect(await new PostgresConnectionStore(harness.pool, sharedAction, secrets).getById(shared.id)).toBeDefined();
@@ -227,9 +232,10 @@ describe.skipIf(!harness.enabled)("native scoped transit files over PostgreSQL a
       sharedAction,
       async (sql) =>
         (
-          await sql.query<{ subject_user_id: string }>("SELECT subject_user_id FROM integration_runtime.transit_files WHERE id=$1", [
-            output.fileId,
-          ])
+          await sql.query<{ subject_user_id: string }>(
+            "SELECT subject_user_id FROM integration_runtime.transit_files WHERE id=$1",
+            [output.fileId],
+          )
         ).rows[0],
     );
     expect(row?.subject_user_id).toBe(bob);

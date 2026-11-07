@@ -17,7 +17,7 @@ export async function generateProviderRegistries(providerSources: ProviderSource
   ]);
   const obsolete = join(providersDir, "registry.cloudflare.generated.ts");
   if (check) {
-    if (await readTextFile(obsolete) !== undefined) throw new Error(`Unexpected generated artifact: ${obsolete}`);
+    if ((await readTextFile(obsolete)) !== undefined) throw new Error(`Unexpected generated artifact: ${obsolete}`);
   } else {
     await rm(obsolete, { force: true });
   }
@@ -83,7 +83,7 @@ async function writeActionContracts(sources: ProviderSource[], check: boolean): 
 }
 
 async function updateArtifact(path: string, content: string, check: boolean): Promise<void> {
-  if (await readTextFile(path) === content) return;
+  if ((await readTextFile(path)) === content) return;
   if (check) throw new Error(`Stale or missing generated artifact: ${path}`);
   const temporary = `${path}.${process.pid}.tmp`;
   try {

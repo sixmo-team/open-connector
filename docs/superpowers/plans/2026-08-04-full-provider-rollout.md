@@ -444,4 +444,3 @@ action execution additionally requires OpenConnector's effective action permissi
 ### Bounded implementation map for the future task
 
 Backend configuration storage/migration and typed product-policy module; readers in `packages/runtime/src/integrations/service.ts`, `action-tool-registry.ts`, `tool-search-processor.ts`, `action-execution-service.ts`, and the OpenConnector connection-guide route. Reuse platform admin authentication/revision/audit when its UI is implemented. All action enable/default calculation and final checks stay in OpenConnector.
-

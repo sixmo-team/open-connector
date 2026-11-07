@@ -1,4 +1,4 @@
-import type { CredentialProfile, ResolvedCredential } from "./core/types.ts";
+import type { CredentialCacheOwner, CredentialProfile, ResolvedCredential } from "./core/types.ts";
 
 export interface SaasConnectionReference {
   managedProjectId: string;
@@ -30,6 +30,8 @@ export interface StoredLocalConnection {
   service: string;
   connectionName: string;
   credential: ResolvedCredential;
+  /** Runtime-only identity from the verified store, never provider metadata or public input. */
+  credentialCacheOwner?: Readonly<CredentialCacheOwner>;
 }
 
 /**

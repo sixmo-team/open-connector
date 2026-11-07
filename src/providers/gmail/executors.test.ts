@@ -63,7 +63,6 @@ describe.each(["action", "proxy"])("Gmail %s errors", (path) => {
   });
 });
 
-
 describe.each(["action", "proxy"])("Gmail %s rate limit details", (path) => {
   it("preserves Retry-After through the action error envelope", async () => {
     vi.stubGlobal("fetch", async () =>

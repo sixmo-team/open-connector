@@ -13,7 +13,15 @@ function cleanSnapshot(): RuntimeImageSnapshot {
       ExposedPorts: { "3000/tcp": {} },
       Healthcheck: { Test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3000/ready || exit 1"] },
     },
-    paths: ["app", "app/package.json", "app/src", "app/src/saas", "app/src/saas/index.ts", "app/dist/web-saas/saas.html", "app/catalog/apps-index.json"],
+    paths: [
+      "app",
+      "app/package.json",
+      "app/src",
+      "app/src/saas",
+      "app/src/saas/index.ts",
+      "app/dist/web-saas/saas.html",
+      "app/catalog/apps-index.json",
+    ],
     packageJson: JSON.stringify({ scripts: { start: "node --experimental-transform-types src/saas/index.ts" } }),
     executableText: [["app/src/saas/index.ts", "export {};\n"]],
   };
@@ -41,7 +49,10 @@ describe("final runtime image verification", () => {
       "alternate package script",
       {
         packageJson: JSON.stringify({
-          scripts: { start: "node --experimental-transform-types src/saas/index.ts", local: "node src/server/index.ts" },
+          scripts: {
+            start: "node --experimental-transform-types src/saas/index.ts",
+            local: "node src/server/index.ts",
+          },
         }),
       },
       "legacy image package script",

@@ -14,18 +14,29 @@ const credential: Extract<ResolvedCredential, { authType: "oauth2" }> = {
 describe("Jira OAuth credential validation", () => {
   it.each([
     { name: "no resource", resources: [] },
-    { name: "a resource without Jira access", resources: [{ id: "cloud-123", url: "https://docs.atlassian.net", scopes: ["read:me"] }] },
+    {
+      name: "a resource without Jira access",
+      resources: [{ id: "cloud-123", url: "https://docs.atlassian.net", scopes: ["read:me"] }],
+    },
   ])("does not manufacture a connected account for $name", async ({ resources }) => {
-    await expect(credentialValidators.oauth2!(credential, {
-      fetcher: async () => Response.json(resources),
-    })).rejects.toMatchObject({ status: 403 });
+    await expect(
+      credentialValidators.oauth2!(credential, {
+        fetcher: async () => Response.json(resources),
+      }),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   it("preserves the verified Jira site identity and granted permissions", async () => {
     const result = await credentialValidators.oauth2!(credential, {
-      fetcher: async () => Response.json([{ id: "cloud-123", name: "Actual Jira site", url: "https://work.atlassian.net", scopes: ["read:jira-work"] }]),
+      fetcher: async () =>
+        Response.json([
+          { id: "cloud-123", name: "Actual Jira site", url: "https://work.atlassian.net", scopes: ["read:jira-work"] },
+        ]),
     });
-    expect(result).toMatchObject({ profile: { accountId: "jira:cloud-123", displayName: "Actual Jira site" }, metadata: { cloudId: "cloud-123", siteUrl: "https://work.atlassian.net" } });
+    expect(result).toMatchObject({
+      profile: { accountId: "jira:cloud-123", displayName: "Actual Jira site" },
+      metadata: { cloudId: "cloud-123", siteUrl: "https://work.atlassian.net" },
+    });
   });
 
   it("rejects malformed accessible-resource responses", async () => {

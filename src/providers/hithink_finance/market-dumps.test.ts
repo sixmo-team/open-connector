@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { MemoryTransitFiles } from "../../testing/memory-transit-files.ts";
 import { createMarketDumpHandlers } from "./market-dumps.ts";
 
-
 const magic = [0x50, 0x41, 0x52, 0x31];
 
 /** A minimal valid Parquet envelope: header, payload, metadata length, footer. */

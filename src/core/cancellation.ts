@@ -21,7 +21,6 @@ export function captureRequestProcessing<T extends RequestProcessingContext>(val
   return active ? Object.freeze({ ...value, ...active }) : value;
 }
 
-
 export function getRequestSignal(context?: Readonly<RequestProcessingContext>): AbortSignal | undefined {
   return context?.requestSignal ?? processing.getStore()?.requestSignal;
 }
@@ -31,7 +30,8 @@ export function remainingProcessingMs(context?: Readonly<RequestProcessingContex
   const deadline = context?.processingDeadlineMs ?? processing.getStore()?.processingDeadlineMs;
   if (deadline === undefined) return undefined;
   const remaining = deadline - Date.now();
-  if (!Number.isSafeInteger(deadline) || remaining <= 0) throw new DOMException("Connector request deadline expired", "TimeoutError");
+  if (!Number.isSafeInteger(deadline) || remaining <= 0)
+    throw new DOMException("Connector request deadline expired", "TimeoutError");
   return Math.max(1, Math.floor(remaining));
 }
 

@@ -769,6 +769,12 @@ export class PostgresTriggerStore implements TriggerStore {
         service: connection.service,
         connectionName: connection.connection_name,
         credential: mergeCredential(secret, connection.credential_profile),
+        credentialCacheOwner: {
+          tenantId: this.scope.tenantId,
+          workspaceId: this.scope.workspaceId,
+          credentialOwnerId: row.credential_owner_id,
+          connectionId: row.local_connection_id,
+        },
       };
     });
   }

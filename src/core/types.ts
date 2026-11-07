@@ -375,6 +375,14 @@ export interface TransitFileStore {
 
 export type TransitFileWriter = TransitFileStore;
 
+/** Verified storage owner and stable connection lineage, never provider input or credential metadata. */
+export interface CredentialCacheOwner {
+  readonly tenantId: string;
+  readonly workspaceId: string;
+  readonly credentialOwnerId: string;
+  readonly connectionId: string;
+}
+
 /**
  * Runtime services available to action executors.
  *
@@ -384,6 +392,8 @@ export type TransitFileWriter = TransitFileStore;
 export interface ExecutionContext {
   /** Resolve the credential currently configured for a provider service id. */
   getCredential(service: string): Promise<ResolvedCredential | undefined>;
+  /** Runtime-owned token cache partition; absent hosts cannot mint owner-scoped credentials. */
+  credentialCacheOwner?: Readonly<CredentialCacheOwner>;
   /** Optional local temporary file storage for actions that produce downloadable files. */
   transitFiles?: TransitFileWriter;
   /** Optional cancellation signal propagated from the HTTP request or runner. */
@@ -426,6 +436,8 @@ export type CredentialValidationResult = {
 
 export interface CredentialValidatorOptions {
   fetcher: typeof fetch;
+  /** Verified owner and connection lineage selected by the runtime before validation. */
+  credentialCacheOwner?: Readonly<CredentialCacheOwner>;
   signal?: AbortSignal;
   logger?: RuntimeLogger;
 }

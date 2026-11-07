@@ -222,9 +222,14 @@ export async function putAdminActionGrant(
   reason: string,
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
-  await putActionChange(withScope(`${adminRoot}/action-grants/${encodeURIComponent(actionId)}`, scope), {
-    enabled, reason: validateReason(reason),
-  }, fetcher);
+  await putActionChange(
+    withScope(`${adminRoot}/action-grants/${encodeURIComponent(actionId)}`, scope),
+    {
+      enabled,
+      reason: validateReason(reason),
+    },
+    fetcher,
+  );
 }
 
 export async function putAdminActionGrants(
@@ -235,9 +240,15 @@ export async function putAdminActionGrants(
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
   validateActionBatch(actionIds);
-  await putActionChange(withScope(`${adminRoot}/action-grants`, scope), {
-    actionIds, enabled, reason: validateReason(reason),
-  }, fetcher);
+  await putActionChange(
+    withScope(`${adminRoot}/action-grants`, scope),
+    {
+      actionIds,
+      enabled,
+      reason: validateReason(reason),
+    },
+    fetcher,
+  );
 }
 
 export async function putAdminActionDefault(
@@ -246,9 +257,14 @@ export async function putAdminActionDefault(
   reason: string,
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
-  await putActionChange(`${adminRoot}/action-defaults/${encodeURIComponent(actionId)}`, {
-    enabled, reason: validateReason(reason),
-  }, fetcher);
+  await putActionChange(
+    `${adminRoot}/action-defaults/${encodeURIComponent(actionId)}`,
+    {
+      enabled,
+      reason: validateReason(reason),
+    },
+    fetcher,
+  );
 }
 
 export async function putAdminActionDefaults(
@@ -258,9 +274,15 @@ export async function putAdminActionDefaults(
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
   validateActionBatch(actionIds);
-  await putActionChange(`${adminRoot}/action-defaults`, {
-    actionIds, enabled, reason: validateReason(reason),
-  }, fetcher);
+  await putActionChange(
+    `${adminRoot}/action-defaults`,
+    {
+      actionIds,
+      enabled,
+      reason: validateReason(reason),
+    },
+    fetcher,
+  );
 }
 
 export async function putAdminActionApprovalOverride(
@@ -270,14 +292,24 @@ export async function putAdminActionApprovalOverride(
   reason: string,
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
-  await putActionChange(withScope(`${adminRoot}/action-approval-overrides/${encodeURIComponent(actionId)}`, scope), {
-    approvalOverride, reason: validateReason(reason),
-  }, fetcher);
+  await putActionChange(
+    withScope(`${adminRoot}/action-approval-overrides/${encodeURIComponent(actionId)}`, scope),
+    {
+      approvalOverride,
+      reason: validateReason(reason),
+    },
+    fetcher,
+  );
 }
 
 function validateActionBatch(actionIds: string[]): void {
-  if (actionIds.length === 0 || actionIds.length > 5000 || actionIds.some((id) => !id.trim()) ||
-    new Set(actionIds).size !== actionIds.length) throw new Error("Invalid action batch");
+  if (
+    actionIds.length === 0 ||
+    actionIds.length > 5000 ||
+    actionIds.some((id) => !id.trim()) ||
+    new Set(actionIds).size !== actionIds.length
+  )
+    throw new Error("Invalid action batch");
 }
 
 function validateReason(reason: string): string {

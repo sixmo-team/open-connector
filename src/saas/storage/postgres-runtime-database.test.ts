@@ -664,7 +664,7 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     expect(new Set(connections.map((item) => item.id)).size).toBe(3);
     for (let index = 0; index < stores.length; index += 1) {
       expect((await stores[index].get("gmail", alias))?.credential).toEqual(credentials[index]);
-      expect(await stores[index].list()).toEqual([connections[index]]);
+      expect((await stores[index].list()).map((connection) => connection.id)).toEqual([connections[index].id]);
     }
     await withScopedClient(runtimePool, tenantAUserA, async (client) => {
       const metadata = await client.query<{ auth_metadata: Record<string, unknown> }>(

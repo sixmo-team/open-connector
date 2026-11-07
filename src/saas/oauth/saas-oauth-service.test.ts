@@ -43,6 +43,7 @@ const provider: ProviderDefinition = {
         },
       ],
       tokenEndpointAuthMethod: "client_secret_post",
+      tokenRequestCallbackParameters: ["selling_partner_id"],
     },
   ],
   actions: [],
@@ -94,6 +95,65 @@ describe("SaasOAuthService", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_oauth_state" });
     expect(await scoped.states.take(state)).toMatchObject({ state });
+  });
+
+  it.each(["spapi_oauth_code=seller%2Bcode", "code=&spapi_oauth_code=seller%2Bcode"])(
+    "exchanges an alias callback through the protected scoped boundary: %s",
+    async (codeQuery) => {
+      const scoped = stores();
+      const state = await startState(service("oauth:start", scoped));
+      const app = callbackApp(scoped);
+      const tokenRequests: URLSearchParams[] = [];
+      vi.stubGlobal("fetch", async (_url: unknown, init: RequestInit) => {
+        tokenRequests.push(new URLSearchParams(String(init.body)));
+        return Response.json({ access_token: "seller-access", token_type: "Bearer" });
+      });
+      const callbackQuery = `state=${state}&${codeQuery}&selling_partner_id=seller%2F123`;
+      const response = await app.request("/internal/saas/oauth/complete", {
+        method: "POST",
+        headers: { authorization: "Bearer complete", "content-type": "application/json" },
+        body: JSON.stringify({
+          localConnectionId: "11111111-1111-4111-8111-111111111111",
+          oauthSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          state,
+          code: "seller+code",
+          callbackQuery,
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(tokenRequests).toHaveLength(1);
+      expect(tokenRequests[0]!.get("code")).toBe("seller+code");
+      expect(tokenRequests[0]!.get("selling_partner_id")).toBe("seller/123");
+      expect(
+        await scoped.connections.get("example", connectorAlias("11111111-1111-4111-8111-111111111111")),
+      ).toMatchObject({ credential: { accessToken: "seller-access" } });
+      expect(await scoped.states.take(state)).toBeUndefined();
+    },
+  );
+
+  it.each([
+    "code=trusted&spapi_oauth_code=other",
+    "code=trusted&code=trusted",
+    "spapi_oauth_code=trusted&spapi_oauth_code=trusted",
+    "code=trusted&spapi_oauth_code=&spapi_oauth_code=",
+    "code=trusted&state=foreign",
+  ])("rejects ambiguous callbacks before consuming scoped state: %s", async (codeQuery) => {
+    const scoped = stores();
+    const state = await startState(service("oauth:start", scoped));
+    const response = await callbackApp(scoped).request("/internal/saas/oauth/complete", {
+      method: "POST",
+      headers: { authorization: "Bearer complete", "content-type": "application/json" },
+      body: JSON.stringify({
+        localConnectionId: "11111111-1111-4111-8111-111111111111",
+        oauthSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        state,
+        code: "trusted",
+        callbackQuery: `state=${state}&${codeQuery}`,
+      }),
+    });
+    expect(response.status).toBe(400);
+    expect(await scoped.states.take(state)).toMatchObject({ state });
+    expect(await scoped.connections.list()).toEqual([]);
   });
 
   it("honors selected provider scopes over HTTP and rejects a forged callback without consuming valid authorization", async () => {
@@ -278,6 +338,32 @@ describe("SaasOAuthService", () => {
 
 function stores(): Stores {
   return { connections: new MemoryConnectionStore(), states: new MemoryOAuthStateStore() };
+}
+function callbackApp(scoped: Stores) {
+  return new SaasConnectServer({
+    catalog,
+    providerLoader,
+    verifyJwt: async () => ({
+      tenantId: "tenant-a",
+      workspaceId: "workspace-a",
+      actorUserId: "user-a",
+      subjectUserId: "user-a",
+      workspaceRole: "member",
+      purpose: "oauth:complete",
+      permissions: ["oauth:complete"],
+      localConnectionId: "11111111-1111-4111-8111-111111111111",
+      oauthSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    }),
+    readiness: async () => ({
+      postgres: true,
+      openBao: true,
+      jwks: true,
+      seaweedFs: true,
+      providerRegistry: true,
+      catalogFingerprint: true,
+    }),
+    oauthServiceFactory: { forScope: (scope) => service(scope.purpose, scoped, scope) },
+  }).createApp();
 }
 
 function service(

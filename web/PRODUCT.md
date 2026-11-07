@@ -1,9 +1,5 @@
 # Product
 
-## Register
-
-product
-
 ## Users
 
 Authenticated integration operators. They inspect safe provider, connection, and run metadata for an explicitly selected tenant, workspace, and subject, and administer action permissions without exposing credentials or raw execution payloads.

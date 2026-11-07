@@ -211,7 +211,6 @@ function download(context: ExecutionContext): Promise<ExecutionResult> {
   );
 }
 
-
 async function createFixture(
   upstream: (response: ServerResponse) => void | Promise<void>,
   maxBytes = 32 * 1024 * 1024,

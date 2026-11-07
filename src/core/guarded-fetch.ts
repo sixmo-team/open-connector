@@ -222,7 +222,13 @@ export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fe
     const processingSignal = getRequestSignal();
     if (processingSignal) {
       const callerSignal = init?.signal ?? request?.signal;
-      init = { ...init, signal: callerSignal && callerSignal !== processingSignal ? AbortSignal.any([callerSignal, processingSignal]) : processingSignal };
+      init = {
+        ...init,
+        signal:
+          callerSignal && callerSignal !== processingSignal
+            ? AbortSignal.any([callerSignal, processingSignal])
+            : processingSignal,
+      };
     }
     const transport = baseFetch ?? globalThis.fetch;
     const requestId = dispatchAttempt ? crypto.randomUUID() : "";

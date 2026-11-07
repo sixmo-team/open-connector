@@ -57,10 +57,14 @@ if (check) {
     await rm(tempIndexFile, { force: true });
     throw error;
   }
-  console.log(`Generated ${apps.length} apps and ${apps.reduce((sum, app) => sum + app.actions.length, 0)} actions, and the startup index ${indexFile}.`);
-  console.log(`Chinese provider translations: ${apps.length - untranslatedProviderServices(apps).length}/${apps.length}; run node scripts/check-catalog-translations.ts for untranslated services.`);
+  console.log(
+    `Generated ${apps.length} apps and ${apps.reduce((sum, app) => sum + app.actions.length, 0)} actions, and the startup index ${indexFile}.`,
+  );
+  console.log(
+    `Chinese provider translations: ${apps.length - untranslatedProviderServices(apps).length}/${apps.length}; run node scripts/check-catalog-translations.ts for untranslated services.`,
+  );
 }
 
 async function assertContent(path: string, expected: string): Promise<void> {
-  if (await readFile(path, "utf8") !== expected) throw new Error(`Stale generated artifact: ${path}`);
+  if ((await readFile(path, "utf8")) !== expected) throw new Error(`Stale generated artifact: ${path}`);
 }

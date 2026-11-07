@@ -416,6 +416,7 @@ export class SaasActionRunner {
   ): ExecutionContext {
     return {
       getCredential: connection.getCredential,
+      credentialCacheOwner: connection.credentialCacheOwner,
       ...(this.options.transitFiles ? { transitFiles: this.options.transitFiles } : {}),
       ...(signal ? { signal } : {}),
     };

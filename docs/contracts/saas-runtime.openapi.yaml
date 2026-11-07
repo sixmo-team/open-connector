@@ -162,6 +162,40 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/connections/{connectionId}/credentials:
+    put:
+      operationId: replaceSaasConnectionCredentials
+      summary: Validate and replace credentials of the exact existing owned connection
+      description: >-
+        The verified connection:write token and body bind the same local and connector IDs.
+        Provider, alias and credential kind must match the current stored connection; remote
+        managed and public no_auth connections cannot use this operation. Concurrent replacement
+        or revocation prevents a stale write. Runtime cache ownership is derived internally.
+      tags: [Connections]
+      security:
+        - SaasBearer: []
+      x-required-purpose: connection:write
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      requestBody:
+        description: Strict JSON limited to 262144 bytes.
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConnectorCredentialReplacementInput" }
+      responses:
+        "200":
+          description: Safe metadata after validated replacement; credentials are never returned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SafeConnectionSummary" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /internal/saas/connections/{connectionId}/transfer:
     post:
       operationId: transferSaasConnection
@@ -1341,14 +1375,15 @@ components:
       required: [localConnectionId, service, connectionName, authType, credentials]
       properties:
         localConnectionId: { type: string, format: uuid }
-        service: { type: string, minLength: 1 }
-        connectionName: { type: string, minLength: 1 }
+        service: { type: string, minLength: 1, maxLength: 128 }
+        connectionName: { type: string, minLength: 1, maxLength: 255 }
         authType: { type: string, enum: [no_auth, api_key, custom_credential] }
         credentials:
           type: object
           writeOnly: true
           additionalProperties: { type: string, maxLength: 65536 }
           maxProperties: 64
+          propertyNames: { minLength: 1, maxLength: 255 }
           description: Sent directly to OpenBao-backed storage and never persisted in PostgreSQL or returned.
       allOf:
         - if:
@@ -1358,6 +1393,22 @@ components:
           then:
             properties:
               credentials: { maxProperties: 0 }
+    ConnectorCredentialReplacementInput:
+      type: object
+      additionalProperties: false
+      required: [localConnectionId, connectorConnectionId, service, connectionName, authType, credentials]
+      properties:
+        localConnectionId: { type: string, format: uuid }
+        connectorConnectionId: { type: string, minLength: 1, maxLength: 255 }
+        service: { type: string, minLength: 1, maxLength: 128 }
+        connectionName: { type: string, minLength: 1, maxLength: 255 }
+        authType: { type: string, enum: [api_key, custom_credential] }
+        credentials:
+          type: object
+          writeOnly: true
+          maxProperties: 64
+          propertyNames: { minLength: 1, maxLength: 255 }
+          additionalProperties: { type: string, maxLength: 65536 }
     ConnectionTransferInput:
       type: object
       additionalProperties: false
@@ -1433,6 +1484,12 @@ components:
       type: object
       additionalProperties: false
       required: [localConnectionId, oauthSessionId, code, state]
+      description: >-
+        code is the nonempty standard code or spapi_oauth_code fallback. callbackQuery preserves
+        the original bounded raw query, including an empty standard code and provider parameters.
+        Duplicate state/code/alias or conflicting nonempty codes are rejected before state is
+        consumed. Query and callbackParameters must agree; provider metadata is derived from
+        the verified raw query rather than a second inconsistent callback copy.
       properties:
         localConnectionId: { type: string, format: uuid }
         oauthSessionId: { type: string, format: uuid }

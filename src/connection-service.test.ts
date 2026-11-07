@@ -301,10 +301,16 @@ describe("ConnectionService", () => {
   });
 
   it("does not let provider validation metadata opt a local API key into Marketplace", async () => {
-    const service = createService([apiKeyProvider], { providerLoader: new FakeProviderLoader({
-      async apiKey() { return { metadata: { nativeMarketplace: { discoveryUrl: "https://foreign.example/discovery" } } }; },
-    }) });
-    const summary = await service.connectWithApiKey("uptimerobot", { values: { apiKey: "key", accountId: "actual-account" } });
+    const service = createService([apiKeyProvider], {
+      providerLoader: new FakeProviderLoader({
+        async apiKey() {
+          return { metadata: { nativeMarketplace: { discoveryUrl: "https://foreign.example/discovery" } } };
+        },
+      }),
+    });
+    const summary = await service.connectWithApiKey("uptimerobot", {
+      values: { apiKey: "key", accountId: "actual-account" },
+    });
     expect(summary.authType).toBe("api_key");
     const credential = await service.getCredential("uptimerobot");
     expect(credential).not.toHaveProperty("metadata.nativeMarketplace");

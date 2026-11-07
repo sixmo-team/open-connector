@@ -1,6 +1,7 @@
 import type { GuardedFetchDnsLookup } from "./guarded-fetch.ts";
 
 import { describe, expect, it, vi } from "vitest";
+import { withRequestProcessing } from "./cancellation.ts";
 import {
   createGuardedFetch,
   crossOriginSafeHeaders,
@@ -8,7 +9,6 @@ import {
   unwrapGuardedFetch,
 } from "./guarded-fetch.ts";
 import { withProviderNetworkPolicy } from "./provider-network-policy.ts";
-import { withRequestProcessing } from "./cancellation.ts";
 
 interface RecordedCall {
   url: string;
@@ -80,17 +80,23 @@ describe("guarded runtime processing", () => {
     let now = 10_000;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
     const { transport, calls } = createTransport([new Response("provider data")]);
-    const guarded = createGuardedFetch({ fetch: transport, lookup: async () => {
-      now += 101;
-      return [{ address: "93.184.216.34", family: 4 }];
-    } });
+    const guarded = createGuardedFetch({
+      fetch: transport,
+      lookup: async () => {
+        now += 101;
+        return [{ address: "93.184.216.34", family: 4 }];
+      },
+    });
     try {
-      await expect(withRequestProcessing({ processingDeadlineMs: now + 100 }, () => guarded("https://api.example.com/data"))).rejects.toThrow(/deadline/i);
+      await expect(
+        withRequestProcessing({ processingDeadlineMs: now + 100 }, () => guarded("https://api.example.com/data")),
+      ).rejects.toThrow(/deadline/i);
       expect(calls).toEqual([]);
-    } finally { clock.mockRestore(); }
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
-
 
 // Every header the cross-origin rule keeps, with a value of the shape the header
 // really carries. The 307 test sends the whole set in one hop and the fixture is

@@ -11,11 +11,11 @@ This chart deploys the same reviewed Node 24 image as `docker/Dockerfile`, not a
 
 Create the following external Kubernetes Secrets through the existing secret-management process (do not commit their contents or pass tokens on a CLI):
 
-| Value | Required Secret keys | Consumer |
-| --- | --- | --- |
-| `secret.existingSecret` | `OPEN_CONNECTOR_POSTGRES_URL`, `OPEN_CONNECTOR_SEAWEEDFS_ACCESS_KEY_ID`, `OPEN_CONNECTOR_SEAWEEDFS_SECRET_ACCESS_KEY` | Server; migration hook reads only the runtime PostgreSQL URL |
-| `authSecret.existingSecret` | `open_connector_openbao_token`, `open_connector_jwks_bearer_token` | Server-only read-only `/run/secrets` volume, mode 0440 and fsGroup 1000 |
-| `database.migration.existingSecret` | `OPEN_CONNECTOR_POSTGRES_MIGRATOR_URL` | Migration hook only; never injected into the server |
+| Value                               | Required Secret keys                                                                                                  | Consumer                                                                |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `secret.existingSecret`             | `OPEN_CONNECTOR_POSTGRES_URL`, `OPEN_CONNECTOR_SEAWEEDFS_ACCESS_KEY_ID`, `OPEN_CONNECTOR_SEAWEEDFS_SECRET_ACCESS_KEY` | Server; migration hook reads only the runtime PostgreSQL URL            |
+| `authSecret.existingSecret`         | `open_connector_openbao_token`, `open_connector_jwks_bearer_token`                                                    | Server-only read-only `/run/secrets` volume, mode 0440 and fsGroup 1000 |
+| `database.migration.existingSecret` | `OPEN_CONNECTOR_POSTGRES_MIGRATOR_URL`                                                                                | Migration hook only; never injected into the server                     |
 
 The external Secrets must predate the release because migration is a pre-install/pre-upgrade hook. The chart does not copy the owner URL or authentication tokens into a ConfigMap. `config` accepts only actual non-secret scoped environment keys. Token file paths are fixed by the runtime. Optional disabling of the migration hook requires a separately qualified same-image migration before rollout; never bypass pending schema checks.
 

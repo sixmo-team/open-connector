@@ -393,6 +393,7 @@ export class TriggerRunner {
             () =>
               executor(request, {
                 getCredential: target.getCredential,
+                credentialCacheOwner: stored.credentialCacheOwner,
                 signal: requestSignal ?? signal,
               }),
             this.options.providerHttpDispatch,

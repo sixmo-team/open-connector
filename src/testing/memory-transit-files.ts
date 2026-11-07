@@ -1,4 +1,5 @@
 import type { TransitFileRead, TransitFileStore, TransitFileStream, TransitFileUpload } from "../core/types.ts";
+
 import { randomUUID } from "node:crypto";
 import { assertFileSize, transitFileResponse } from "../saas/files/transit-file-store.ts";
 
@@ -22,7 +23,9 @@ export class MemoryTransitFiles implements TransitFileStore {
   async createFromStream(input: TransitFileStream): Promise<TransitFileUpload> {
     const reader = input.body.getReader();
     const chunks: Uint8Array<ArrayBuffer>[] = [];
-    const abort = () => { void reader.cancel(input.signal?.reason).catch(() => undefined); };
+    const abort = () => {
+      void reader.cancel(input.signal?.reason).catch(() => undefined);
+    };
     input.signal?.addEventListener("abort", abort, { once: true });
     try {
       input.signal?.throwIfAborted();
@@ -55,11 +58,19 @@ export class MemoryTransitFiles implements TransitFileStore {
     return transitFileResponse(file.stream(), info);
   }
 
-  async delete(fileId: string): Promise<boolean> { return this.files.delete(fileId); }
+  async delete(fileId: string): Promise<boolean> {
+    return this.files.delete(fileId);
+  }
 
   private publish(file: File): TransitFileUpload {
     const fileId = randomUUID();
     this.files.set(fileId, file);
-    return { fileId, downloadUrl: `${this.publicOrigin}/files/${fileId}`, sizeBytes: file.size, name: file.name, mimeType: file.type };
+    return {
+      fileId,
+      downloadUrl: `${this.publicOrigin}/files/${fileId}`,
+      sizeBytes: file.size,
+      name: file.name,
+      mimeType: file.type,
+    };
   }
 }

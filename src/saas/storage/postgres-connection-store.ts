@@ -1398,6 +1398,12 @@ export class PostgresConnectionStore implements IConnectionStore {
       service: row.service,
       connectionName: row.connection_name,
       credential: mergeCredential(secret, row.credential_profile),
+      credentialCacheOwner: {
+        tenantId: this.scope.tenantId,
+        workspaceId: this.scope.workspaceId,
+        credentialOwnerId: row.subject_user_id,
+        connectionId: row.local_connection_id,
+      },
     };
   }
 

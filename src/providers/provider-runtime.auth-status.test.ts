@@ -193,7 +193,6 @@ async function runExpiredCredential(testCase: AuthFailureCase, status: number): 
   return executor({}, contextFor(testCase.credential));
 }
 
-
 describe.each(authFailureCases)("$service execute-phase credential failures", (testCase) => {
   it("reports an upstream 401 as authorization_failed", async () => {
     const result = await runExpiredCredential(testCase, 401);

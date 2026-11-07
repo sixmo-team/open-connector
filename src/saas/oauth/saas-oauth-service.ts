@@ -195,7 +195,14 @@ export class SaasOAuthService {
       )
         return this.toCompletion(completed);
     }
-    const result = await this.flow.completeAuthorization({ ...input, signal: this.signal(input.signal) });
+    const result = await this.flow.completeAuthorization({
+      ...input,
+      callbackParameters:
+        input.callbackQuery === undefined
+          ? input.callbackParameters
+          : Object.fromEntries(new URLSearchParams(input.callbackQuery)),
+      signal: this.signal(input.signal),
+    });
     const connection = await this.connections.getConnectionSummary(result.service, connectionName);
     if (!connection?.configured) throw new Error("OAuth completion did not create a scoped connection");
     return this.toCompletion(connection);
@@ -247,27 +254,32 @@ export function validateOAuthCallback(input: OAuthAuthorizationCompleteInput): v
   const fail = (): never => {
     throw new OAuthFlowError("invalid_oauth_state", "OAuth callback does not match the verified state and code.");
   };
-  if (!input.state || !input.code || input.state.length > 4096 || input.code.length > 4096) fail();
-  if (input.callbackQuery !== undefined) {
-    if (Buffer.byteLength(input.callbackQuery) > 16384) fail();
-    const params = new URLSearchParams(input.callbackQuery);
-    for (const key of ["state", "code"] as const) {
-      const values = params.getAll(key);
-      if (values.length !== 1 || values[0] !== input[key]) fail();
-    }
+  if (!input.state?.trim() || !input.code?.trim() || input.state.length > 4096 || input.code.length > 4096) fail();
+  const query = input.callbackQuery === undefined ? undefined : new URLSearchParams(input.callbackQuery);
+  if (query) {
+    const entries = [...query];
+    if (Buffer.byteLength(input.callbackQuery!) > 16384 || entries.length > 64) fail();
+    if (Buffer.byteLength(JSON.stringify(Object.fromEntries(query))) > 32768) fail();
+    for (const [key, value] of entries) if (!key || key.length > 128 || value.length > 4096) fail();
+    if (query.getAll("state").length !== 1 || query.get("state") !== input.state) fail();
+    for (const key of ["code", "spapi_oauth_code"]) if (query.getAll(key).length > 1) fail();
+    const standard = query.get("code");
+    const alias = query.get("spapi_oauth_code");
+    if ((standard && alias && standard !== alias) || (standard || alias) !== input.code) fail();
   }
   if (input.callbackParameters !== undefined) {
     const entries = Object.entries(input.callbackParameters);
     if (entries.length > 64 || Buffer.byteLength(JSON.stringify(input.callbackParameters)) > 32768) fail();
     for (const [key, value] of entries)
       if (key.length > 128 || typeof value !== "string" || value.length > 4096) fail();
-    for (const key of ["state", "code"] as const) {
-      if (input.callbackParameters[key] !== undefined && input.callbackParameters[key] !== input[key]) fail();
+    const parameters = input.callbackParameters;
+    if (parameters.state !== undefined && parameters.state !== input.state) fail();
+    if (parameters.code !== undefined || parameters.spapi_oauth_code !== undefined) {
+      const standard = parameters.code;
+      const alias = parameters.spapi_oauth_code;
+      if ((standard && alias && standard !== alias) || (standard || alias) !== input.code) fail();
     }
-    if (input.callbackQuery !== undefined) {
-      const params = new URLSearchParams(input.callbackQuery);
-      for (const [key, value] of entries) if (params.getAll(key).at(-1) !== value) fail();
-    }
+    if (query) for (const [key, value] of entries) if (query.getAll(key).at(-1) !== value) fail();
   }
 }
 function required(value: string | undefined, name: string): string {

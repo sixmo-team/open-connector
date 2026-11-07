@@ -6,7 +6,6 @@ Connecting explicitly selects one service and a nonempty exact allowlist of curr
 
 There are no global settings, automatic provider enablement, virtual/fallback connections or public discovery UI. Every execution rereads the authorized real row, exact scope/connector/revision and current remote identity/action intersection. A rejected key, discovery outage or mismatch fails closed, never switches to local credentials.
 
-
 ## Outbound vendor protocol
 
 The external Marketplace v1 service exposes three endpoints; these are not incoming OpenConnector routes:

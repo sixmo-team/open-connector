@@ -46,7 +46,11 @@ describe("single-runtime cutover guard", () => {
 
   it("rejects a native provider that imports the removed global runtime", async () => {
     const directory = await fixture();
-    await writePath(directory, "src/providers/example/executors.ts", 'import "../../server/storage/runtime-store.ts";\n');
+    await writePath(
+      directory,
+      "src/providers/example/executors.ts",
+      'import "../../server/storage/runtime-store.ts";\n',
+    );
     expect(findCutoverViolations(directory).join("\n")).toContain("src/providers/example/executors.ts");
   });
 

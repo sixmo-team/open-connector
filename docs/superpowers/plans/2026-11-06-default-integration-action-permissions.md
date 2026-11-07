@@ -10,7 +10,7 @@
 
 **Spec:** [Platform action defaults](2026-08-04-native-multitenant-integration-runtime.md#platform-action-defaults).
 
-**Status:** Исправленная редакция после уточнения пользователя: реальных пользователей нет, сохранять старые тестовые записи не требуется. Нужен прямой переход на целевую архитектуру, без импорта прежних прав и поддержки старой схемы. Это только план: рабочий код, базы и развёртывание не изменены; реализация выполняется отдельно.
+**Status:** Реализация выполнена на изолированных ветках: разрешения перенесены в OpenConnector, общие правила и индивидуальные исключения используют существующую пакетную панель; роли, тарифы и согласие человека переиспользуются в бекенде. Реальных пользователей нет: прежние тестовые разрешения не импортируются и вторая рабочая копия правил не поддерживается. Окончательная квалификация отдельных сервисов, образа и панели относится к внешнему отчёту неизменяемого кандидата; производственное развёртывание не выполнено. Раздел «Проверенная исходная точка» ниже описывает состояние до реализации, а не текущего владельца данных.
 
 **Существующее поведение, не новая задача:** роли, тарифные ограничения и пользовательские подтверждения уже реализованы в бекенде ИИ-маркетолога. Их код и обычный порядок работы переиспользуются. Меняются владение разрешениями функций и необходимая связь с OpenConnector; отдельного проекта реализации ролей, тарифов или подтверждений нет. Разделение хранилища дополнительного `always` не создаёт второй процесс получения согласия.
 
@@ -83,6 +83,7 @@
 ### Task 1: Версионированный договор и разделённые полномочия
 
 **Files:**
+
 - Modify: `docs/contracts/saas-runtime.openapi.yaml`
 - Modify: `src/saas/contracts.ts`
 - Modify: `src/saas/contracts.test.ts`
@@ -115,16 +116,16 @@ export type ActionPolicyTarget =
 
 В `OpenConnectorClient` добавить `getActionAccess(token, { actionIds }): Promise<ActionPermissionDecision[]>`, `readActionPolicy(token, mode, page)`, `setActionPolicies(token, mode, { actionIds, enabled, reason })`, `listActionPolicySubjects(token, page)` и `purgeActionPolicies(token, { correlationId })`. `mode` — `defaults/grants`, он выбирает только адрес метода; целевая область всегда проверяется по подписанному доказательству, не выводится из неподтверждённого разбора токена. Чтения возвращают `items/nextCursor`, принимают ограниченные `cursor/limit` до 100 строк. `enabled=null` — только команда возврата индивидуального правила к общему, не значение таблицы. Ответы управления включают исходные строки с авторами/временем; личность клиента не берётся из тела.
 
-| Метод OpenConnector | Подписанное полномочие и цель |
-| --- | --- |
-| `POST /internal/saas/action-access` | Пользовательское `action:search`: только свой инициатор; либо управляющее чтение с точной пользовательской целью. Тело — только `actionIds`. |
-| `GET /internal/saas/action-policy/defaults` | Управляющее `action-policy:read`, цель `platform`. |
-| `PUT /internal/saas/action-policy/defaults` | Управляющее `action-policy:write`, цель `platform`; логическое `enabled`, причина и массив действий. |
-| `GET /internal/saas/action-policy/grants` | Управляющее чтение, цель `user`; только её индивидуальные строки. |
-| `PUT /internal/saas/action-policy/grants` | Управляющая запись, цель `user`; `enabled=true/false/null`, причина и массив действий. |
-| `PUT .../defaults/:actionId`, `PUT .../grants/:actionId` | Тот же обработчик пакета с одним действием, не отдельный путь расчёта. |
-| `GET /internal/saas/action-policy/subjects` | Служебная инвентаризация для подписанной организации/пространства; возвращает только области собственных записей политик, с ограничением и курсором. |
-| `POST /internal/saas/action-policy/purge` | Служебное `action-policy:purge`, подписанная цель удаления и `correlationId`; не общие настройки. |
+| Метод OpenConnector                                      | Подписанное полномочие и цель                                                                                                                        |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /internal/saas/action-access`                      | Пользовательское `action:search`: только свой инициатор; либо управляющее чтение с точной пользовательской целью. Тело — только `actionIds`.         |
+| `GET /internal/saas/action-policy/defaults`              | Управляющее `action-policy:read`, цель `platform`.                                                                                                   |
+| `PUT /internal/saas/action-policy/defaults`              | Управляющее `action-policy:write`, цель `platform`; логическое `enabled`, причина и массив действий.                                                 |
+| `GET /internal/saas/action-policy/grants`                | Управляющее чтение, цель `user`; только её индивидуальные строки.                                                                                    |
+| `PUT /internal/saas/action-policy/grants`                | Управляющая запись, цель `user`; `enabled=true/false/null`, причина и массив действий.                                                               |
+| `PUT .../defaults/:actionId`, `PUT .../grants/:actionId` | Тот же обработчик пакета с одним действием, не отдельный путь расчёта.                                                                               |
+| `GET /internal/saas/action-policy/subjects`              | Служебная инвентаризация для подписанной организации/пространства; возвращает только области собственных записей политик, с ограничением и курсором. |
+| `POST /internal/saas/action-policy/purge`                | Служебное `action-policy:purge`, подписанная цель удаления и `correlationId`; не общие настройки.                                                    |
 
 - [ ] **Step 1: Написать проверки границы до изменения договора.** Обычный пользователь, владелец пространства, каталожный ключ, `admin:read`, неверный издатель/получатель и неверная цель не могут изменить правила. Управляющий ключ, даже с подставленными назначением исполнения и клиентской областью, не принимается исполняющим проверяющим. Служебное удаление не может менять общие настройки. Подмена пользователя в теле `action-access` запрещена.
 - [ ] **Step 2: Зафиксировать отдельные подписывающие профили.** Пользовательское исполнение и служебное удаление выдаются существующим доверенным сервером после его проверок; управление операторами — отдельным ограниченным ключом, не входящим в исполняющий набор открытых ключей. Издатель, получатель и адрес открытых ключей управления задаются конфигурацией. Сохранить срок не более 60 секунд, существующий допуск расхождения часов и ограниченное время обработки. Не выдавать службе панели ключ пользовательского исполнения, не добавлять статический административный токен и не подбирать проверяющий по принципу «подошёл любой известный ключ».
@@ -138,6 +139,7 @@ export type ActionPolicyTarget =
 ### Task 2: Хранилище и окончательная проверка внутри OpenConnector
 
 **Files:**
+
 - Create: `src/saas/storage/migrations/0009_action_permissions.sql`
 - Create: `src/saas/storage/postgres-action-policy-store.ts`
 - Create: `src/saas/actions/action-permission-policy.ts`
@@ -151,6 +153,7 @@ export type ActionPolicyTarget =
 - Modify: `src/saas/index.ts`
 
 **Interfaces:**
+
 - `PostgresActionPolicyStore.getEffectiveForActor(scope, actionIds): Promise<ActionPermissionDecision[]>` — область только из проверенного пользовательского контекста.
 - `readForControl(principal, page)`, `applyForControl(principal, { actionIds, enabled, reason })`, `listSubjects(principal, page)` и `purge(principal, correlationId)` — только для проверенного управляющего/служебного контекста задачи 1. Постраничные чтения имеют устойчивую сортировку, ограничение 100 и непрозрачный курсор; курсор не расширяет подписанную область.
 - `SaasActionRunnerOptions.actionPolicy` принимает чтение решения; `SaasRuntimeDatabase` и фабрика передают его как существующие хранилища, без обратного запроса к базе сервера помощника.
@@ -224,6 +227,7 @@ LEFT JOIN integration_runtime.action_defaults AS defaults ON defaults.action_id 
 ### Task 3: Бекенд ИИ-маркетолога использует решения OpenConnector, не рассчитывает их
 
 **Files:**
+
 - Modify: `../ai-backend-marketing-agent/packages/runtime/src/integrations/action-execution-service.ts`
 - Modify: `../ai-backend-marketing-agent/packages/runtime/src/integrations/action-policy.ts`
 - Modify: `../ai-backend-marketing-agent/packages/runtime/src/integrations/tool-search-processor.ts`
@@ -238,6 +242,7 @@ LEFT JOIN integration_runtime.action_defaults AS defaults ON defaults.action_id 
 - Modify: `../ai-backend-marketing-agent/apps/integration-admin/test/admin-access.test.ts`
 
 **Interfaces:**
+
 - Пакетный ответ `ActionPermissionDecision[]` — единственные сведения о включении действий. Шлюз объединяет их с подписями интерфейса и статистикой, но не выполняет правило «индивидуальное → общее» сам.
 - Существующий реестр инструментов и его `Record<toolId, true>` сохраняются; пакетный сетевой запрос выполняется до чистого ограниченного фильтра, не внутри него и не для каждого кандидата отдельно.
 
@@ -256,6 +261,7 @@ LEFT JOIN integration_runtime.action_defaults AS defaults ON defaults.action_id 
 ### Task 4: Прямо переключить владельца прав и сохранить жизненный цикл
 
 **Files:**
+
 - Create: `../ai-backend-marketing-agent/infra/postgres/migrations/1793923300000_action_permission_ownership_cutover.sql`
 - Create: `../ai-backend-marketing-agent/packages/runtime/src/integrations/action-approval-repository.ts`
 - Modify: `../ai-backend-marketing-agent/packages/runtime/src/db/schema/index.ts`
@@ -267,6 +273,7 @@ LEFT JOIN integration_runtime.action_defaults AS defaults ON defaults.action_id 
 - Modify: `../ai-backend-marketing-agent/packages/runtime/test/integration-lifecycle-coordinator.test.ts`, `../ai-backend-marketing-agent/packages/runtime/test/integration-reconciliation.test.ts`, `../ai-backend-marketing-agent/packages/runtime/test/integration-action-recovery-postgres.test.ts`
 
 **Interfaces:**
+
 - `getApprovalOverride(scope, actionId): Promise<"always" | null>` читает только дополнительное требование согласия на стороне помощника. Настройка `inherit` удаляет дополнительную запись; обязательное базовое подтверждение она не отменяет.
 - Персональные включения/запреты и их аудит создаются только через договор OpenConnector. Экспорт, инвентаризация и удаление используют этот же сетевой договор, без доступа к чужой базе.
 
@@ -294,6 +301,7 @@ DROP TABLE app.integration_action_grants;
 ```
 
 Только `DROP` этой конкретной устаревшей таблицы, без `CASCADE` и очистки остальных данных. Обновить описания схемы, доменные типы, репозитории и всех читателей без псевдонимов. Не переписывать ранее применённые исторические миграции. Сервер сохраняет обязательные базовые подтверждения независимо от пустоты новой таблицы.
+
 - [ ] **Step 3: Удалить старый путь разрешений целиком.** У рабочего сервера нет чтения/записи локального `enabled`; поиск, исполнение, панель, счётчики, экспорт и удаление получают разрешения по HTTP. Удалить старые методы разрешений из объединённого репозитория, оставив журнал запусков и отдельный репозиторий дополнительных подтверждений. Не оставлять двойную запись, старый объединённый формат или возврат к старой таблице. Историческая миграция остаётся историей, не рабочим источником прав.
 - [ ] **Step 4: Сохранить блокировку удаляемого участника в владельце членства.** Использовать текущий `access_state`, активное членство и непроходящую по времени отметку `memberships.integration_access_blocked_at`. Ставить её в транзакции открытия удаления до внешних действий, включая случай без собственных подключений. Добавить `requireIntegrationAccess` к существующему чтению членства только для путей OpenConnector и требовать также `requireActiveAccess=true`. До переключения незавершённые тестовые удаления должны быть завершены или отменены, а не перенесены. Шлюз не выдаёт новые команды изменения личных политик для заблокированной цели. Это состояние членства, не разрешения функций.
 - [ ] **Step 5: Включить новые данные в существующий жизненный цикл.** Экспорт, счётчики и курсоры OpenConnector учитывают индивидуальные правила и их целевой аудит, в том числе аудит без оставшегося правила и пользователя без подключения. Подписанная очистка удаляет только целевую область; общие настройки и общий аудит не удаляются с клиентом. Перед финальной сверкой учесть завершение ранее выданных управляющих команд в пределах срока подписи, допуска часов и ограниченного времени обработки. Проверить стабильность инвентаря; удаление сущностей на сервере остаётся последним после подтверждённой удалённой очистки.
@@ -303,12 +311,14 @@ DROP TABLE app.integration_action_grants;
 ### Task 5: Расширить существующую панель и пакетные операции
 
 **Files:**
+
 - Modify: `web/src/saas/actions-page.tsx`, `web/src/saas/admin-ui.tsx`
 - Modify: `web/src/saas/admin-api.ts`, `web/src/saas/admin-model.ts`
 - Modify: `web/src/saas/admin-api.test.ts`, `web/src/saas/scope-selector.test.ts`
 - Modify: `web/src/saas/locales/ru.json`, `web/src/saas/locales/en.json`
 
 **Interfaces:**
+
 - Те же режимы `/actions?mode=defaults` и `/actions?mode=individual`; общий режим не является фиктивным `AdminScope`.
 - Существующие одноимённые служебные обращения панели остаются её защищённой границей, но данные включения возвращает OpenConnector. Поля индивидуального, общего и итогового значения/источника различаются.
 
@@ -325,6 +335,7 @@ DROP TABLE app.integration_action_grants;
 ### Task 6: Доказать переносимость и отсутствие деградации
 
 **Files:**
+
 - Modify: `../ai-backend-marketing-agent/apps/api/test/saas-stack.e2e.test.ts`
 - Modify: `../ai-backend-marketing-agent/scripts/run-saas-clean-stack.ts`
 - Modify: `../ai-backend-marketing-agent/packages/runtime/test/integration-action-recovery-postgres.test.ts`

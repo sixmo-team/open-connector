@@ -26,7 +26,6 @@ import { MemorySecretCodec, MemoryLocalConnectionRequests } from "../saas/testin
 import { OAuthClientConfigService } from "./oauth-client-config-service.ts";
 import { OAuthFlowService } from "./oauth-flow-service.ts";
 
-
 const oauthProvider: ProviderDefinition = {
   service: "example",
   displayName: "Example",

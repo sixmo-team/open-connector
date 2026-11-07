@@ -3,8 +3,8 @@
 Thanks for contributing to OOMOL Connect.
 
 ## Development Setup
-Use Node.js 24.22.2 or later in the Node 24 line. See `README.md` for the single scoped service and protected console.
 
+Use Node.js 24.22.2 or later in the Node 24 line. See `README.md` for the single scoped service and protected console.
 
 ```bash
 npm install

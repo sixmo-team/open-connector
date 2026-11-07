@@ -430,7 +430,8 @@ async function createCredentialConnection(
   } catch (error) {
     return error instanceof JsonBodyTooLargeError ? payloadTooLarge(context) : invalidInput(context);
   }
-  if (scope.connectorConnectionId || input.localConnectionId !== scope.localConnectionId) return forbidden(context);
+  if (!scope.localConnectionId || scope.connectorConnectionId || input.localConnectionId !== scope.localConnectionId)
+    return forbidden(context);
   if (!options.oauthCredentials) return context.json({ error: "service_unavailable" }, 503);
   const runtime = options.runtimeDatabaseFactory?.forScope(scope);
   if (!runtime) return runtimeUnavailable(context);
@@ -456,6 +457,12 @@ async function createCredentialConnection(
               connectionName: input.connectionName,
               values: input.credentials,
               signal: scope.requestSignal ?? context.req.raw.signal,
+              credentialCacheOwner: {
+                tenantId: scope.tenantId,
+                workspaceId: scope.workspaceId,
+                credentialOwnerId: scope.subjectUserId,
+                connectionId: scope.localConnectionId,
+              },
             });
     const summary = await runtime.connectionStore.getSafeConnection(connected.id);
     if (!summary) throw new Error("Stored connection metadata is unavailable");
@@ -522,6 +529,12 @@ async function replaceCredentialConnection(
         values: input.credentials,
         expectedConnection: target,
         signal: scope.requestSignal ?? context.req.raw.signal,
+        credentialCacheOwner: {
+          tenantId: scope.tenantId,
+          workspaceId: scope.workspaceId,
+          credentialOwnerId: scope.subjectUserId,
+          connectionId: scope.localConnectionId,
+        },
       });
     }
     const summary = await runtime.connectionStore.getSafeConnection(connectionId);

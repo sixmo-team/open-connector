@@ -12,6 +12,7 @@ import type {
   AuthType,
   CredentialDefinition,
   CredentialProfile,
+  CredentialCacheOwner,
   CredentialValidationResult,
   CredentialValidatorOptions,
   CustomCredentialAuthDefinition,
@@ -69,6 +70,8 @@ export interface ConnectWithCredentialInput {
   connectionName?: string;
   values?: Record<string, unknown>;
   signal?: AbortSignal;
+  /** Verified host authority; never accept this field from a connection request body. */
+  credentialCacheOwner?: Readonly<CredentialCacheOwner>;
   expectedConnection?: StoredConnection;
   comment?: string | null;
 }
@@ -113,6 +116,7 @@ interface LocalResolvedConnection {
   source: "local";
   summary?: ConnectionSummary;
   credential?: ResolvedCredential;
+  credentialCacheOwner?: Readonly<CredentialCacheOwner>;
 }
 
 interface MarketplaceResolvedConnection {
@@ -188,7 +192,9 @@ export class ConnectionService {
     const summaries: ConnectionSummary[] = [];
     for (const provider of this.catalog.providers) {
       if (!services || services.has(provider.service))
-        summaries.push(...await this.summarizeProviderConnections(provider, configuredByService.get(provider.service) ?? []));
+        summaries.push(
+          ...(await this.summarizeProviderConnections(provider, configuredByService.get(provider.service) ?? [])),
+        );
     }
     return summaries;
   }
@@ -205,18 +211,29 @@ export class ConnectionService {
     connections: readonly StoredConnection[],
   ): Promise<ConnectionSummary[]> {
     if (!connections.length)
-      return this.supportsAuth(provider, "no_auth") ? [this.createNoAuthConnectionSummary(provider, defaultConnectionName)] : [];
+      return this.supportsAuth(provider, "no_auth")
+        ? [this.createNoAuthConnectionSummary(provider, defaultConnectionName)]
+        : [];
     const summaries: ConnectionSummary[] = [];
     for (const connection of connections) summaries.push(await this.summarizeStoredConnection(provider, connection));
     return summaries;
   }
-  private async summarizeStoredConnection(provider: RuntimeProviderDefinition, connection: StoredConnection): Promise<ConnectionSummary> {
+  private async summarizeStoredConnection(
+    provider: RuntimeProviderDefinition,
+    connection: StoredConnection,
+  ): Promise<ConnectionSummary> {
     if (connection.source === "saas") return this.createManagedConnectionSummary(connection);
     if (hasMarketplaceBinding(connection)) {
-      if (!this.marketplace) throw new ConnectionError("connection_not_found", "Scoped Marketplace execution is not configured.");
+      if (!this.marketplace)
+        throw new ConnectionError("connection_not_found", "Scoped Marketplace execution is not configured.");
       return this.marketplace.getConnectionSummary(connection);
     }
-    return this.createConfiguredConnectionSummary(provider, connection.id, connection.connectionName, connection.credential);
+    return this.createConfiguredConnectionSummary(
+      provider,
+      connection.id,
+      connection.connectionName,
+      connection.credential,
+    );
   }
 
   async listAuthenticatedServices(services: string[]): Promise<string[]> {
@@ -241,8 +258,11 @@ export class ConnectionService {
       throw new ConnectionError("connection_not_found", `${service} connection not found: ${name}.`);
     }
 
-    return stored ? this.summarizeStoredConnection(provider, stored)
-      : this.supportsAuth(provider, "no_auth") ? this.createNoAuthConnectionSummary(provider, name) : undefined;
+    return stored
+      ? this.summarizeStoredConnection(provider, stored)
+      : this.supportsAuth(provider, "no_auth")
+        ? this.createNoAuthConnectionSummary(provider, name)
+        : undefined;
   }
 
   async resolveConnection(
@@ -273,6 +293,7 @@ export class ConnectionService {
       source: "local",
       summary,
       credential,
+      credentialCacheOwner: stored?.credentialCacheOwner,
     };
   }
 
@@ -322,7 +343,9 @@ export class ConnectionService {
       throw new ConnectionError("unsupported_auth_type", `${service} does not support no_auth.`);
     }
 
-    const stored = await this.store.set(service, normalizeConnectionName(input.connectionName), { authType: "no_auth" });
+    const stored = await this.store.set(service, normalizeConnectionName(input.connectionName), {
+      authType: "no_auth",
+    });
     return this.createConfiguredConnectionSummary(provider, stored.id, stored.connectionName, stored.credential);
   }
 
@@ -375,12 +398,11 @@ export class ConnectionService {
         "custom_credential",
         auth.fields,
         values,
-        await this.validateCustomCredential(service, { values }, input.signal),
+        await this.validateCustomCredential(service, { values }, input.signal, input.credentialCacheOwner),
       ),
     };
     return this.saveCredential(provider, credential, input);
   }
-
 
   async setOAuthCredential(
     service: string,
@@ -675,7 +697,6 @@ export class ConnectionService {
     };
   }
 
-
   /** Rejects provider setup when none of its catalog actions can execute in this runtime. */
   assertProviderAvailable(service: string): void {
     this.getAvailableProvider(service);
@@ -739,12 +760,13 @@ export class ConnectionService {
     service: string,
     input: CustomCredentialValidationInput,
     signal?: AbortSignal,
+    credentialCacheOwner?: Readonly<CredentialCacheOwner>,
   ): Promise<CredentialValidationResult> {
     this.assertNotCancelled(signal);
     const validators = await this.providerLoader.loadCredentialValidators(service);
     return this.runCredentialValidator(
       service,
-      () => validators?.customCredential?.(input, this.createValidatorOptions(signal)),
+      () => validators?.customCredential?.(input, { ...this.createValidatorOptions(signal), credentialCacheOwner }),
       signal,
     );
   }

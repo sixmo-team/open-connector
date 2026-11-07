@@ -48,20 +48,19 @@ reconnecting the account.
 
 Every action uses the exact scoped connection and current OpenConnector permission after backend identity, business and consent checks. These inputs describe native provider behavior, not a direct HTTP/SDK/MCP execution path.
 
-| Action | Input and behavior |
-| --- | --- |
-| `instagram.get_current_user` | Empty object; selected professional account |
-| `instagram.list_media` | `limit`, optional `after`; use the returned cursor, never an arbitrary paging URL |
-| `instagram.get_media` | Exact owned `mediaId` |
-| `instagram.list_media_comments` | `mediaId`, optional `limit`; top-level comments, not a full reply tree |
-| `instagram.get_media_insights` | `mediaId`, `metrics`, optional `period`; Meta validates media/metric/breakdown combinations |
-| `instagram.publish_media` | `kind` image/video/reel/carousel with public media URLs and supported caption/cover/alt-text fields; 2–10 carousel children |
-| `instagram.create_comment` | Owned `mediaId`, `message` |
-| `instagram.reply_to_comment` | Exact parent `commentId`, `message` |
-| `instagram.send_message` | Instagram-scoped `recipientId`, `text`, subject to the boundary below |
+| Action                          | Input and behavior                                                                                                          |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `instagram.get_current_user`    | Empty object; selected professional account                                                                                 |
+| `instagram.list_media`          | `limit`, optional `after`; use the returned cursor, never an arbitrary paging URL                                           |
+| `instagram.get_media`           | Exact owned `mediaId`                                                                                                       |
+| `instagram.list_media_comments` | `mediaId`, optional `limit`; top-level comments, not a full reply tree                                                      |
+| `instagram.get_media_insights`  | `mediaId`, `metrics`, optional `period`; Meta validates media/metric/breakdown combinations                                 |
+| `instagram.publish_media`       | `kind` image/video/reel/carousel with public media URLs and supported caption/cover/alt-text fields; 2–10 carousel children |
+| `instagram.create_comment`      | Owned `mediaId`, `message`                                                                                                  |
+| `instagram.reply_to_comment`    | Exact parent `commentId`, `message`                                                                                         |
+| `instagram.send_message`        | Instagram-scoped `recipientId`, `text`, subject to the boundary below                                                       |
 
 Resume `publish_media` with `kind: "container"` and the actual existing `containerId` only when the earlier safe error marks it `resumable: true`. Child-container errors are not resumable. Resumption avoids creating another container and duplicate posts.
-
 
 ## Alternative: Facebook Login Access Token
 
