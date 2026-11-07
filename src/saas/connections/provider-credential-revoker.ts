@@ -67,7 +67,6 @@ const googleServices = [
   "google_analytics",
   "google_search_console",
   "google_bigquery",
-  "google_routes",
   "google_address_validation",
   "youtube",
 ] as const;
@@ -88,8 +87,8 @@ const googleRevocation = {
 /** Reviewed, non-secret revocation capabilities kept outside every public provider DTO. */
 const providerCredentialRevocationDefinitions: readonly ProviderCredentialRevocationDefinition[] = Object.freeze([
   ...googleServices.map((service) => ({ service, ...googleRevocation })),
-  {
-    service: "slack",
+  ...["slack", "slackbot"].map((service): ProviderCredentialRevocationDefinition => ({
+    service,
     endpoint: "https://slack.com/api/auth.revoke",
     method: "POST",
     contentType: "application/x-www-form-urlencoded",
@@ -102,7 +101,7 @@ const providerCredentialRevocationDefinitions: readonly ProviderCredentialRevoca
       successValue: true,
       alreadyRevoked: { field: "error", values: ["token_revoked"] },
     },
-  },
+  })),
   {
     service: "dropbox",
     endpoint: "https://api.dropboxapi.com/2/auth/token/revoke",
@@ -136,27 +135,13 @@ export class ProviderSaasCredentialRevoker implements SaasProviderCredentialRevo
   async revoke(input: SaasProviderCredentialRevocationInput): Promise<ProviderCredentialRevocationOutcome> {
     const definition = this.definitions.find((item) => item.service === input.service);
     if (!definition || input.credential.authType !== "oauth2") return "unsupported";
-    const selectedToken = (
+    const token = (
       definition.tokenKind === "access_token"
         ? input.credential.accessToken
         : input.credential.refreshToken || input.credential.accessToken
     ).trim();
-    const tokens = new Set(selectedToken ? [selectedToken] : []);
-    let outcome: ProviderCredentialRevocationOutcome = "revoked";
-    if (input.service === "slack" && input.credential.providerSecret?.userGrant !== undefined) {
-      const userGrant = input.credential.providerSecret.userGrant;
-      const userToken =
-        typeof userGrant === "object" &&
-        userGrant !== null &&
-        !Array.isArray(userGrant) &&
-        "accessToken" in userGrant &&
-        typeof userGrant.accessToken === "string"
-          ? userGrant.accessToken.trim()
-          : "";
-      if (userToken) tokens.add(userToken);
-      else outcome = "failed";
-    }
-    if (tokens.size === 0) return outcome === "failed" ? "failed" : "unsupported";
+    if (!token) return "unsupported";
+    if (Buffer.byteLength(token) > this.maxRequestBytes) return "failed";
     let endpoint: URL;
     try {
       endpoint = new URL(definition.endpoint);
@@ -165,46 +150,35 @@ export class ProviderSaasCredentialRevoker implements SaasProviderCredentialRevo
     }
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password) return "failed";
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(this.timeoutMs)]);
-
-    for (const token of tokens) {
-      if (new TextEncoder().encode(token).byteLength > this.maxRequestBytes) {
-        outcome = "failed";
-        continue;
-      }
-      const headers = new Headers({ "content-type": definition.contentType });
-      let body: string;
-      if (definition.auth.type === "body") {
-        body = new URLSearchParams({ [definition.auth.field]: token }).toString();
-      } else {
-        headers.set("authorization", `Bearer ${token}`);
-        body = "null";
-      }
-      let revoked = false;
-      for (let attempt = 0; attempt < 2 && !signal.aborted; attempt++) {
-        try {
-          const response = await this.fetchFn(endpoint.toString(), {
-            method: definition.method,
-            headers,
-            body,
-            redirect: "error",
-            signal,
-          });
-          const bytes = await readBoundedResponseBytes(response, {
-            maxBytes: this.maxResponseBytes,
-            fieldName: "Provider revocation response",
-            createError: (message) => new Error(message),
-          });
-          if (responseMatches(definition.response, response.status, new TextDecoder().decode(bytes))) {
-            revoked = true;
-            break;
-          }
-        } catch {
-          if (signal.aborted) break;
-        }
-      }
-      if (!revoked) outcome = "failed";
+    const headers = new Headers({ "content-type": definition.contentType });
+    let body: string;
+    if (definition.auth.type === "body") {
+      body = new URLSearchParams({ [definition.auth.field]: token }).toString();
+    } else {
+      headers.set("authorization", `Bearer ${token}`);
+      body = "null";
     }
-    return outcome;
+    if (Buffer.byteLength(body) > this.maxRequestBytes) return "failed";
+    for (let attempt = 0; attempt < 2 && !signal.aborted; attempt++) {
+      try {
+        const response = await this.fetchFn(endpoint.toString(), {
+          method: definition.method,
+          headers,
+          body,
+          redirect: "error",
+          signal,
+        });
+        const bytes = await readBoundedResponseBytes(response, {
+          maxBytes: this.maxResponseBytes,
+          fieldName: "Provider revocation response",
+          createError: (message) => new Error(message),
+        });
+        if (responseMatches(definition.response, response.status, new TextDecoder().decode(bytes))) return "revoked";
+      } catch {
+        if (signal.aborted) break;
+      }
+    }
+    return "failed";
   }
 }
 

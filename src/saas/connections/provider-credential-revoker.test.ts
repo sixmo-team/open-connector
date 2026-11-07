@@ -38,19 +38,19 @@ describe("ProviderSaasCredentialRevoker", () => {
     expect(fetchFn.mock.calls[1]?.[1]?.body).toBe("token=access-secret");
   });
 
-  it("revokes Slack bot and separately stored user grants", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async () => new Response('{"ok":true}', { status: 200 }));
+  it("revokes separate Slack user and bot connections with their own access token", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response('{"ok":true,"revoked":true}', { status: 200 }));
     const revoker = new ProviderSaasCredentialRevoker({ fetchFn, lookup: null });
-    const credential = {
-      ...oauthCredential,
-      providerSecret: { userGrant: { accessToken: "user-access-secret" } },
-    };
 
-    await expect(revoker.revoke(request("slack", credential))).resolves.toBe("revoked");
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    await expect(
+      revoker.revoke(request("slack", { ...oauthCredential, accessToken: "user-access-secret" })),
+    ).resolves.toBe("revoked");
+    await expect(
+      revoker.revoke(request("slackbot", { ...oauthCredential, accessToken: "bot-access-secret" })),
+    ).resolves.toBe("revoked");
     expect(fetchFn.mock.calls.map(([url, init]) => [url, init?.body])).toEqual([
-      ["https://slack.com/api/auth.revoke", "token=access-secret"],
       ["https://slack.com/api/auth.revoke", "token=user-access-secret"],
+      ["https://slack.com/api/auth.revoke", "token=bot-access-secret"],
     ]);
     for (const [, init] of fetchFn.mock.calls) {
       expect(init).toMatchObject({ method: "POST", redirect: "error" });
@@ -59,39 +59,14 @@ describe("ProviderSaasCredentialRevoker", () => {
     }
   });
 
-  it("revokes identical Slack bot and user tokens only once", async () => {
+  it("accepts an already revoked Slack bot token without another revocation attempt", async () => {
     const fetchFn = vi.fn<typeof fetch>(
       async () => new Response('{"ok":false,"error":"token_revoked"}', { status: 200 }),
     );
     const revoker = new ProviderSaasCredentialRevoker({ fetchFn, lookup: null });
-    const credential = {
-      ...oauthCredential,
-      providerSecret: { userGrant: { accessToken: oauthCredential.accessToken } },
-    };
 
-    await expect(revoker.revoke(request("slack", credential))).resolves.toBe("revoked");
+    await expect(revoker.revoke(request("slackbot"))).resolves.toBe("revoked");
     expect(fetchFn).toHaveBeenCalledOnce();
-  });
-
-  it("reports partial Slack revocation failure only as a safe unresolved outcome", async () => {
-    const userToken = "user-access-secret";
-    const fetchFn = vi
-      .fn<typeof fetch>()
-      .mockRejectedValueOnce(new Error(`provider rejected ${oauthCredential.accessToken} and ${userToken}`))
-      .mockRejectedValueOnce(new Error("provider retry failed"))
-      .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
-    const revoker = new ProviderSaasCredentialRevoker({ fetchFn, lookup: null });
-    const credential = {
-      ...oauthCredential,
-      providerSecret: { userGrant: { accessToken: userToken } },
-    };
-
-    const outcome = await revoker.revoke(request("slack", credential));
-
-    expect(fetchFn).toHaveBeenCalledTimes(3);
-    expect(outcome).toBe("failed");
-    expect(JSON.stringify({ outcome })).not.toContain(oauthCredential.accessToken);
-    expect(JSON.stringify({ outcome })).not.toContain(userToken);
   });
 
   it("uses Dropbox's bearer plus JSON-null shape", async () => {
@@ -147,6 +122,13 @@ describe("ProviderSaasCredentialRevoker", () => {
     const fetchFn = vi.fn(async () => new Response(null, { status: 200 }));
     const revoker = new ProviderSaasCredentialRevoker({ fetchFn, lookup: null, maxRequestBytes: 4 });
     await expect(revoker.revoke(request("gmail"))).resolves.toBe("failed");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("bounds the encoded revocation body before egress", async () => {
+    const fetchFn = vi.fn(async () => new Response(null, { status: 200 }));
+    const revoker = new ProviderSaasCredentialRevoker({ fetchFn, lookup: null, maxRequestBytes: 8 });
+    await expect(revoker.revoke(request("gmail", { ...oauthCredential, refreshToken: "&&" }))).resolves.toBe("failed");
     expect(fetchFn).not.toHaveBeenCalled();
   });
 

@@ -21,6 +21,7 @@
 - Removed obsolete global Node/SQLite/D1/Cloudflare listeners and state, static-token/bootstrap tools, inbound MCP/OAuth authorization server, Bun binary/headless npm packaging and old public console/deployment guides. Native provider transports, outbound MCP clients, optional SDKs, OAuth and shared trigger protocols remain reusable behind scoped admission.
 - Exact managed-account deletion accepts an already-absent account on retry after a lost local commit. Rejected credentials, mismatched responses and unknown authorization requests still fail closed.
 - Managed-connection lifecycle recognizes the no-local-secret marker instead of requesting an invalid vault revision and blocking workspace deletion. Positive local secret revisions keep their existing ownership checks.
+- Restored metadata-only Feishu permission export, provider generation and local action-search commands without restoring the retired global server or permission model.
 
 ### Security
 
@@ -30,6 +31,7 @@
 - Transit-file metadata belongs to the initiating actor, not the owner of a shared credential; expired leases are purged for either bound actor or credential owner.
 - Shopify client-credential tokens are partitioned by verified tenant, workspace, credential owner and connection lineage. Pending mints remain within their original bounded processing root, and cancelled work cannot populate the cache.
 - Gmail attachment reads honor processing cancellation before send/draft writes. Native OAuth accepts Amazon's authorization-code alias while rejecting duplicate or conflicting callback codes before consuming state.
+- Revocation follows the separate canonical Slack user and bot providers, and rejects oversized form-encoded bodies before network dispatch.
 
 - The egress guard now always blocks the Azure platform endpoint `168.63.129.16` and the
   IPv6 metadata endpoints of Google Cloud (`fd20:ce::254`) and Oracle Cloud

@@ -43,7 +43,7 @@ console.log(
 );
 if (failures > 0) {
   console.error(
-    "Investigate src/server/api/action-example.ts first: provider schemas are based on official API documentation, " +
+    "Investigate scripts/action-example.ts first: provider schemas are based on official API documentation, " +
       "so example failures usually indicate a generation bug. Change a schema only when official documentation " +
       "or other API contract evidence confirms it is incorrect; do not relax constraints just to pass this check.",
   );
