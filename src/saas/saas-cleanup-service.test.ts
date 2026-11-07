@@ -33,11 +33,14 @@ async function setup() {
     wait: undefined as Promise<void> | undefined,
     deletes: 0,
   };
+  const deletedAccounts = new Set<string>();
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
     await behavior.wait;
     if (behavior.status !== 200) return new Response("private upstream message", { status: behavior.status });
     if (init?.method === "DELETE") {
       behavior.deletes++;
+      if (deletedAccounts.has(String(url))) return new Response("Account not found", { status: 404 });
+      deletedAccounts.add(String(url));
       return Response.json({
         success: true,
         data: { connectedAccountId: String(url).split("/").at(-1)!.split("?")[0], deleted: true },

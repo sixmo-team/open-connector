@@ -60,6 +60,8 @@ docker compose up -d postgres seaweedfs seaweedfs-audit omniroute api ngrok open
 
 Do not use an unqualified `docker compose up` for production and do not add `openbao` or `openbao-init` to that service list. `OPEN_CONNECTOR_OPENBAO_ADDR` and the backend production `OPENBAO_ADDR` must resolve to the external TLS service. The rendered boundary check rejects the local Compose OpenBao hostname, plaintext HTTP, and the wrong token-file path.
 
+Managed-account cleanup deletes the exact project/provider/external-user/account tuple. A `404` for this delete means already absent, including a retry after remote deletion but a failed local commit. It does not make request discovery, account reads, rejected keys or mismatched responses successful. Unverifiable tasks remain pending/manual; finish native cleanup before removing project configuration.
+
 ## Pre-deployment evidence
 
 1. Record the current backend and connector image digests as `PRIOR_BACKEND_IMAGE` and `PRIOR_CONNECTOR_IMAGE`. Resolve the candidate tags to digests before putting them in Compose; never deploy a tag alone.

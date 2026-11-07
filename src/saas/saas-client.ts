@@ -239,14 +239,20 @@ export class SaasClient {
   async deleteAccount(project: ManagedProject, selector: SaasAccountSelector, signal?: AbortSignal): Promise<void> {
     const { z, identifier } = await getSchemas();
     const query = new URLSearchParams({ providerConfigId: selector.providerConfigId, userId: selector.externalUserId });
-    const result = await this.request(
-      project,
-      `/connected-accounts/${encodePathSegment(selector.connectedAccountId)}?${query}`,
-      z.strictObject({ connectedAccountId: identifier, deleted: z.literal(true) }),
-      { method: "DELETE", signal },
-    );
-    if (result.connectedAccountId !== selector.connectedAccountId)
-      throw new SaasError("oauth_source_mismatch", "SaaS deletion result identity does not match.", 409);
+    try {
+      const result = await this.request(
+        project,
+        `/connected-accounts/${encodePathSegment(selector.connectedAccountId)}?${query}`,
+        z.strictObject({ connectedAccountId: identifier, deleted: z.literal(true) }),
+        { method: "DELETE", signal },
+      );
+      if (result.connectedAccountId !== selector.connectedAccountId)
+        throw new SaasError("oauth_source_mismatch", "SaaS deletion result identity does not match.", 409);
+    } catch (error) {
+      // Exact scoped deletion is complete when a previous attempt already removed the account.
+      if (error instanceof SaasError && error.code === "oauth_source_not_found") return;
+      throw error;
+    }
   }
 
   async executeAction(
