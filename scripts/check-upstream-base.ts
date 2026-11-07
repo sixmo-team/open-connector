@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const APPROVED_UPSTREAM_BASE = "bf94ce83e70a62df34140d2b1c7687eda7b49f82";
+/** Accepted multitenant adaptation, whose history contains the separately reviewed upstream source. */
+export const APPROVED_UPSTREAM_BASE = "7c45c86999b4c97005d964fc57a6373489acdf86";
 
 const lowercaseShaPattern = /^[0-9a-f]{40}$/;
 
