@@ -32,6 +32,7 @@
 - Shopify client-credential tokens are partitioned by verified tenant, workspace, credential owner and connection lineage. Pending mints remain within their original bounded processing root, and cancelled work cannot populate the cache.
 - Gmail attachment reads honor processing cancellation before send/draft writes. Native OAuth accepts Amazon's authorization-code alias while rejecting duplicate or conflicting callback codes before consuming state.
 - Revocation follows the separate canonical Slack user and bot providers, and rejects oversized form-encoded bodies before network dispatch.
+- Updated only transitive `ip-address` and `qs` within their existing parent ranges to fix [IPv6 boundary/parser defects](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5) and [hostile query serialization](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw). Existing transport APIs are unchanged; no new direct dependency or resolution override.
 
 - The egress guard now always blocks the Azure platform endpoint `168.63.129.16` and the
   IPv6 metadata endpoints of Google Cloud (`fd20:ce::254`) and Oracle Cloud
