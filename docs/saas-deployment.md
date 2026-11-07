@@ -62,6 +62,8 @@ Do not use an unqualified `docker compose up` for production and do not add `ope
 
 Managed-account cleanup deletes the exact project/provider/external-user/account tuple. A `404` for this delete means already absent, including a retry after remote deletion but a failed local commit. It does not make request discovery, account reads, rejected keys or mismatched responses successful. Unverifiable tasks remain pending/manual; finish native cleanup before removing project configuration.
 
+Managed connections use `secret_revision=0` to denote the absence of a local credential version. Lifecycle cleanup must not read that marker as a vault version; positive local versions still use the normal exact-owner secret path. The separate managed-account cleanup remains mandatory.
+
 ## Pre-deployment evidence
 
 1. Record the current backend and connector image digests as `PRIOR_BACKEND_IMAGE` and `PRIOR_CONNECTOR_IMAGE`. Resolve the candidate tags to digests before putting them in Compose; never deploy a tag alone.

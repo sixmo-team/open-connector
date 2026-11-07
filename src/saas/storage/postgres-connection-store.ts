@@ -486,12 +486,13 @@ export class PostgresConnectionStore implements IConnectionStore {
       connections.push(
         ...(await Promise.all(
           rows.map(async (row): Promise<LifecyclePurgeConnection> => {
-            const secret = await this.secrets.read(this.scope, row.id, Number(row.secret_revision));
+            const secretRevision = Number(row.secret_revision);
+            const secret = secretRevision > 0 ? await this.secrets.read(this.scope, row.id, secretRevision) : undefined;
             const providerRevocationOutcome = row.safe_metadata.lifecycleProviderRevocationOutcome;
             return {
               id: row.id,
               service: row.service,
-              ...(secret && secret.provider === row.service && secret.revision === Number(row.secret_revision)
+              ...(secret && secret.provider === row.service && secret.revision === secretRevision
                 ? { credential: mergeCredential(secret, row.credential_profile) }
                 : {}),
               providerRevocationOutcome:

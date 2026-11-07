@@ -20,6 +20,7 @@
 - Native compact/lazy catalog loading, action contracts, schema-derived examples and deterministic drift checks are retained. Catalog files remain available for the runtime's lifetime.
 - Removed obsolete global Node/SQLite/D1/Cloudflare listeners and state, static-token/bootstrap tools, inbound MCP/OAuth authorization server, Bun binary/headless npm packaging and old public console/deployment guides. Native provider transports, outbound MCP clients, optional SDKs, OAuth and shared trigger protocols remain reusable behind scoped admission.
 - Exact managed-account deletion accepts an already-absent account on retry after a lost local commit. Rejected credentials, mismatched responses and unknown authorization requests still fail closed.
+- Managed-connection lifecycle recognizes the no-local-secret marker instead of requesting an invalid vault revision and blocking workspace deletion. Positive local secret revisions keep their existing ownership checks.
 
 ### Security
 

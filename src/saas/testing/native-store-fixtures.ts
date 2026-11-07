@@ -123,6 +123,7 @@ export class MemoryConnectionSecrets implements ConnectionSecretStore {
     return { secretRef: key, secretRevision: 1 };
   }
   async read(scope: Readonly<SaasRequestScope>, id: string, revision: number): Promise<ConnectionSecret | undefined> {
+    if (!Number.isSafeInteger(revision) || revision <= 0) throw new TypeError("Secret revision must be positive");
     return this.values.get(`${this.key(scope, id)}/${revision}`);
   }
   async update(

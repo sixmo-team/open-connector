@@ -3,10 +3,11 @@ import type {
   ActionPolicyUserTarget,
   NativeLifecycleServicePrincipal,
 } from "../contracts.ts";
+import type { PostgresConnectionStore } from "../storage/postgres-connection-store.ts";
 
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { withActionPolicyClient } from "../storage/scoped-query.ts";
+import { withActionPolicyClient, withScopedClient } from "../storage/scoped-query.ts";
 import { createNativePostgresHarness } from "../testing/native-store-fixtures.ts";
 
 const harness = createNativePostgresHarness();
@@ -74,6 +75,53 @@ describe.skipIf(!harness.enabled)("actual owned policy lifecycle", () => {
       status: "active",
       subjectUserId: target.userId,
     });
+  });
+
+  it("prepares managed and local credential ownership for exact scoped purge", async () => {
+    const runtime = harness.forScope({ purpose: "connection:write", permissions: ["connection:write"] });
+    const local = await runtime.connectionStore.set("public_data", "local-owned", { authType: "no_auth" });
+    const projectId = randomUUID();
+    await runtime.saasProjects.saveProject({
+      id: projectId,
+      projectId: randomUUID(),
+      baseUrl: "https://saas.example",
+      apiKey: "private-test-key",
+    });
+    const managedId = randomUUID();
+    await withScopedClient(harness.pool, runtime.scope, (client) =>
+      client.query(
+        `INSERT INTO integration_runtime.connections
+          (id,tenant_id,workspace_id,subject_user_id,local_connection_id,service,connection_name,auth_type,revision,
+           secret_ref,secret_revision,status,credential_profile,source,source_reference,source_status)
+         VALUES ($1,$2,$3,$4,$5,'example','managed-owned','oauth2',$6,'managed-source',0,'active',$7,'saas',$8,'active')`,
+        [
+          managedId,
+          runtime.scope.tenantId,
+          runtime.scope.workspaceId,
+          runtime.scope.subjectUserId,
+          randomUUID(),
+          randomUUID(),
+          { authType: "oauth2", scopes: ["read"] },
+          {
+            managedProjectId: projectId,
+            providerConfigId: "config",
+            externalUserId: runtime.saasProjects.externalUserId(),
+            connectedAccountId: "account",
+          },
+        ],
+      ),
+    );
+    const deletion = harness.forScope({
+      ...runtime.scope,
+      purpose: "lifecycle:delete",
+      permissions: ["lifecycle:delete"],
+    });
+    const connections = await (deletion.connectionStore as PostgresConnectionStore).prepareExactOwnedForLifecyclePurge(
+      randomUUID(),
+    );
+    expect(connections.find(({ id }) => id === managedId)).toMatchObject({ id: managedId, service: "example" });
+    expect(connections.find(({ id }) => id === managedId)?.credential).toBeUndefined();
+    expect(connections.find(({ id }) => id === local.id)?.credential).toEqual({ authType: "no_auth" });
   });
 
   it("discovers retirement-only owners without another tenant and binds inventory cursors to its target", async () => {
