@@ -4,13 +4,12 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError } from "../provider-runtime.ts";
 import { executePayrexxAction, payrexxApiBaseUrl, validatePayrexxCredential } from "./runtime.ts";
 
 const service = "payrexx";
@@ -24,7 +23,7 @@ interface ProviderContext {
 
 type Handler = (input: Record<string, unknown>, context: ProviderContext) => Promise<unknown>;
 
-const handlers: Record<string, Handler> = {
+const handlers: ProviderActionHandlers<"payrexx", Handler> = {
   list_payment_providers(input, context) {
     return executePayrexxAction(
       {

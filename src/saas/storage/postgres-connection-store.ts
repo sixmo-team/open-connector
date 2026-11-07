@@ -1,11 +1,22 @@
-import type { IConnectionStore, StoredConnection } from "../../connection-service.ts";
+import type {
+  IConnectionStore,
+  StoredConnection,
+  StoredLocalConnection,
+  StoredSaasConnection,
+} from "../../connection-store.ts";
 import type { CredentialProfile, ResolvedCredential } from "../../core/types.ts";
 import type { ProviderCredentialRevocationOutcome } from "../connections/provider-credential-revoker.ts";
 import type { SaasRequestScope } from "../contracts.ts";
-import type { Pool } from "pg";
+import type { PendingConnectionRequest } from "./connection-request-store.ts";
+import type { Pool, PoolClient } from "pg";
 
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { ConnectionError } from "../../connection-error.ts";
+import { assertProcessingActive } from "../../core/cancellation.ts";
+import { OpenBaoError } from "../secrets/openbao-client.ts";
+import { withSecretCleanup } from "../secrets/secret-codec.ts";
+import { queueSaasConnectionCleanup } from "./postgres-saas-project-store.ts";
 import { withScopedClient } from "./scoped-query.ts";
 
 const connectionIdSchema = z.uuid();
@@ -60,6 +71,7 @@ export type SaasConnectionStatus = "pending" | "active" | "reconnect_required" |
 /** Display-safe connection metadata read without loading credential secrets. */
 export interface SafeStoredConnection {
   id: string;
+  subjectUserId: string;
   localConnectionId: string;
   service: string;
   connectionName: string;
@@ -94,6 +106,11 @@ interface LifecycleConnectionRow extends ConnectionRow {
 
 interface ConnectionRow {
   id: string;
+  subject_user_id: string;
+  source: "local" | "saas";
+  source_reference: StoredSaasConnection["reference"] | null;
+  source_status: StoredSaasConnection["status"] | null;
+  source_comment: string | null;
   revision: string;
   service: string;
   connection_name: string;
@@ -142,6 +159,13 @@ export class LifecyclePurgeClaimConflictError extends Error {
   }
 }
 
+export interface LifecycleConnectionRetirement {
+  localConnectionId: string;
+  service: string;
+  connectionName: string;
+  generation: string;
+}
+
 /** Upstream connection storage bound to one immutable SaaS request scope. */
 export class PostgresConnectionStore implements IConnectionStore {
   private readonly pool: Pool;
@@ -161,13 +185,206 @@ export class PostgresConnectionStore implements IConnectionStore {
         await client.query<ConnectionRow>(
           `${connectionColumns}
            WHERE tenant_id = $1 AND workspace_id = $2
-             AND (visibility = 'workspace' OR subject_user_id = $3)
-             AND service = $4 AND connection_name = $5 AND status = 'active'`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, service, connectionName],
+             AND subject_user_id = $3 AND (visibility = 'workspace' OR subject_user_id = $6)
+             AND service = $4 AND connection_name = $5 AND status = 'active'
+             AND ($7::uuid IS NULL OR local_connection_id = $7) FOR SHARE`,
+          [
+            this.scope.tenantId,
+            this.scope.workspaceId,
+            this.scope.subjectUserId,
+            service,
+            connectionName,
+            this.scope.actorUserId,
+            this.scope.localConnectionId ?? null,
+          ],
         )
       ).rows[0];
       return row ? await this.readStoredConnection(row) : undefined;
     });
+  }
+
+  async getById(id: string): Promise<StoredConnection | undefined> {
+    if (!connectionIdSchema.safeParse(id).success) return undefined;
+    return await withScopedClient(this.pool, this.scope, async (client) => {
+      const row = (
+        await client.query<ConnectionRow>(
+          `${connectionColumns} WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
+          AND id = $4 AND status = 'active' AND (visibility = 'workspace' OR subject_user_id = $5)
+          AND ($6::uuid IS NULL OR local_connection_id = $6) FOR SHARE`,
+          [
+            this.scope.tenantId,
+            this.scope.workspaceId,
+            this.scope.subjectUserId,
+            id,
+            this.scope.actorUserId,
+            this.scope.localConnectionId ?? null,
+          ],
+        )
+      ).rows[0];
+      return row ? await this.readStoredConnection(row) : undefined;
+    });
+  }
+
+  async listExactOwnedRetirementsForLifecycle(
+    cursor: string | undefined,
+    limit: number,
+  ): Promise<{ items: LifecycleConnectionRetirement[]; nextCursor?: string }> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw new Error("Invalid retirement lifecycle page limit");
+    let after: string[] | null = null;
+    if (cursor !== undefined) {
+      try {
+        if (cursor.length > 4096) throw new Error();
+        const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+          scope: unknown;
+          after: unknown;
+        };
+        if (
+          JSON.stringify(decoded.scope) !==
+            JSON.stringify([this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId]) ||
+          !Array.isArray(decoded.after) ||
+          decoded.after.length !== 3 ||
+          decoded.after.some((value) => typeof value !== "string")
+        )
+          throw new Error();
+        after = decoded.after;
+      } catch {
+        throw new Error("Invalid retirement lifecycle cursor");
+      }
+    }
+    return withScopedClient(this.pool, this.scope, async (client) => {
+      const rows = (
+        await client.query<LifecycleConnectionRetirement>(
+          `SELECT local_connection_id AS "localConnectionId",service,connection_name AS "connectionName",generation
+        FROM integration_runtime.connection_retirements WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3
+          AND ($4::uuid IS NULL OR (local_connection_id,service,connection_name)>($4::uuid,$5::text,$6::text))
+        ORDER BY local_connection_id,service,connection_name LIMIT $7`,
+          [
+            this.scope.tenantId,
+            this.scope.workspaceId,
+            this.scope.subjectUserId,
+            ...(after ?? [null, null, null]),
+            limit + 1,
+          ],
+        )
+      ).rows;
+      const items = rows.slice(0, limit);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          rows.length > limit && last
+            ? Buffer.from(
+                JSON.stringify({
+                  scope: [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId],
+                  after: [last.localConnectionId, last.service, last.connectionName],
+                }),
+              ).toString("base64url")
+            : undefined,
+      };
+    });
+  }
+  async countExactOwnedRetirementsForLifecycle(): Promise<number> {
+    return withScopedClient(this.pool, this.scope, async (client) =>
+      Number(
+        (
+          await client.query<{ count: string }>(
+            `SELECT count(*) FROM integration_runtime.connection_retirements
+      WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3`,
+            [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId],
+          )
+        ).rows[0]?.count ?? 0,
+      ),
+    );
+  }
+  async purgeExactOwnedRetirementsForLifecycle(): Promise<number> {
+    return withScopedClient(this.pool, this.scope, async (client) => {
+      const values = [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId];
+      const remaining = await client.query(
+        `SELECT 1 FROM (
+        SELECT tenant_id,workspace_id,subject_user_id FROM integration_runtime.connections
+        UNION ALL SELECT tenant_id,workspace_id,subject_user_id FROM integration_runtime.oauth_states
+        UNION ALL SELECT tenant_id,workspace_id,subject_user_id FROM integration_runtime.connection_requests
+      ) r WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 LIMIT 1`,
+        values,
+      );
+      if (remaining.rowCount)
+        throw new Error("Connections, OAuth states and requests must be drained before retirement markers");
+      return (
+        (
+          await client.query(
+            `DELETE FROM integration_runtime.connection_retirements
+        WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3`,
+            values,
+          )
+        ).rowCount ?? 0
+      );
+    });
+  }
+
+  async getRetirementGeneration(service: string, connectionName: string): Promise<string> {
+    assertSaasConnectionName(connectionName);
+    const generation = await withScopedClient(this.pool, this.scope, (client) =>
+      this.lockGeneration(client, service, connectionName),
+    );
+    if (!generation) throw new ConnectionError("connection_not_found", "Connection lineage ownership changed.");
+    return generation;
+  }
+
+  private async lockGeneration(
+    client: PoolClient,
+    service: string,
+    connectionName: string,
+  ): Promise<string | undefined> {
+    const localId = this.requiredLocalConnectionId();
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      JSON.stringify([this.scope.tenantId, this.scope.workspaceId, localId]),
+    ]);
+    await client.query(
+      `INSERT INTO integration_runtime.connection_retirements
+         (tenant_id,workspace_id,local_connection_id,service,connection_name,generation,subject_user_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id,workspace_id,local_connection_id,service,connection_name) DO NOTHING`,
+      [
+        this.scope.tenantId,
+        this.scope.workspaceId,
+        localId,
+        service,
+        connectionName,
+        randomUUID(),
+        this.scope.subjectUserId,
+      ],
+    );
+    const row = (
+      await client.query<{ generation: string }>(
+        `SELECT generation FROM integration_runtime.connection_retirements
+      WHERE tenant_id=$1 AND workspace_id=$2 AND local_connection_id=$3 AND service=$4 AND connection_name=$5 AND subject_user_id=$6 FOR UPDATE`,
+        [this.scope.tenantId, this.scope.workspaceId, localId, service, connectionName, this.scope.subjectUserId],
+      )
+    ).rows[0];
+    return row?.generation;
+  }
+
+  async setIfCurrentGeneration(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    retirementGeneration: string,
+  ): Promise<StoredLocalConnection | undefined> {
+    return this.writeConnection(service, connectionName, credential, retirementGeneration);
+  }
+
+  async completeOAuthRequest(
+    pending: PendingConnectionRequest,
+    credential: ResolvedCredential,
+  ): Promise<string | undefined> {
+    const result = await this.writeConnection(
+      pending.service,
+      pending.connectionName,
+      credential,
+      pending.retirementGeneration,
+      pending,
+    );
+    return result?.id;
   }
 
   async listSafeConnections(): Promise<SafeStoredConnection[]> {
@@ -179,7 +396,7 @@ export class PostgresConnectionStore implements IConnectionStore {
              AND (visibility = 'workspace' OR subject_user_id = $3)
              AND status = 'active'
            ORDER BY service, connection_name`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId],
+          [this.scope.tenantId, this.scope.workspaceId, this.scope.actorUserId],
         )
       ).rows;
       return rows.map(toSafeStoredConnection);
@@ -335,15 +552,23 @@ export class PostgresConnectionStore implements IConnectionStore {
   }
 
   async getSafeConnection(connectionId: string): Promise<SafeStoredConnection | undefined> {
+    if (!connectionIdSchema.safeParse(connectionId).success) return undefined;
     const localConnectionId = this.requiredLocalConnectionId();
     return await withScopedClient(this.pool, this.scope, async (client) => {
       const row = (
         await client.query<ConnectionRow>(
           `${safeConnectionColumns}
            WHERE tenant_id = $1 AND workspace_id = $2
-             AND (visibility = 'workspace' OR subject_user_id = $3)
+             AND subject_user_id = $3 AND (visibility = 'workspace' OR subject_user_id = $6)
              AND id = $4 AND local_connection_id = $5 AND status = 'active'`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, connectionId, localConnectionId],
+          [
+            this.scope.tenantId,
+            this.scope.workspaceId,
+            this.scope.subjectUserId,
+            connectionId,
+            localConnectionId,
+            this.scope.actorUserId,
+          ],
         )
       ).rows[0];
       return row ? toSafeStoredConnection(row) : undefined;
@@ -366,12 +591,44 @@ export class PostgresConnectionStore implements IConnectionStore {
     });
   }
 
-  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredLocalConnection> {
+    const result = await this.writeConnection(service, connectionName, credential);
+    if (!result) throw new ConnectionError("connection_changed", "The connection changed.");
+    return result;
+  }
+
+  private async writeConnection(
+    service: string,
+    connectionName: string,
+    credential: ResolvedCredential,
+    generation?: string,
+    pending?: PendingConnectionRequest,
+  ): Promise<StoredLocalConnection | undefined> {
     assertSaasConnectionName(connectionName);
     const localConnectionId = this.requiredLocalConnectionId();
     const outcome: { reconciliation?: PendingConnectionReconciliation } = {};
     try {
       return await withScopedClient(this.pool, this.scope, async (client) => {
+        assertProcessingActive(this.scope);
+        const currentGeneration = await this.lockGeneration(client, service, connectionName);
+        if (currentGeneration === undefined || (generation !== undefined && generation !== currentGeneration))
+          return undefined;
+        if (pending) {
+          const request = await client.query(
+            `SELECT 1 FROM integration_runtime.connection_requests WHERE tenant_id=$1 AND workspace_id=$2
+              AND subject_user_id=$3 AND local_connection_id=$4 AND id=$5 AND oauth_session_id=$6
+              AND phase='processing' AND status='initiated' AND expires_at>now() FOR UPDATE`,
+            [
+              this.scope.tenantId,
+              this.scope.workspaceId,
+              this.scope.subjectUserId,
+              localConnectionId,
+              pending.connectionRequestId,
+              this.scope.oauthSessionId,
+            ],
+          );
+          if (request.rowCount !== 1) return undefined;
+        }
         const existing = (
           await client.query<ConnectionRow>(
             `${connectionColumns}
@@ -388,12 +645,28 @@ export class PostgresConnectionStore implements IConnectionStore {
             ],
           )
         ).rows[0];
+        if (existing && (existing.source === "saas" || existing.status !== "active")) return undefined;
+        if (
+          pending?.target &&
+          (!existing || existing.id !== pending.target.id || existing.revision !== pending.target.revision)
+        )
+          return undefined;
+        if (pending && !pending.target && existing) return undefined;
         const id = existing?.id ?? randomUUID();
         const revision = randomUUID();
         const profile = profileOf(credential);
         const metadata = {};
 
         if (existing) {
+          outcome.reconciliation = {
+            id,
+            service,
+            connectionName,
+            authType: credential.authType,
+            secretRef: existing.secret_ref,
+            secretRevision: Number(existing.secret_revision) + 1,
+            cleanup: "preserved",
+          };
           const secretRevision = await this.secrets.update(
             this.scope,
             id,
@@ -402,6 +675,15 @@ export class PostgresConnectionStore implements IConnectionStore {
             credential,
           );
           if (secretRevision === false) throw new Error("Connection credential changed concurrently");
+          outcome.reconciliation = {
+            id,
+            service,
+            connectionName,
+            authType: credential.authType,
+            secretRef: existing.secret_ref,
+            secretRevision,
+            cleanup: "preserved",
+          };
           try {
             await client.query(
               `UPDATE integration_runtime.connections
@@ -422,7 +704,7 @@ export class PostgresConnectionStore implements IConnectionStore {
                 profile ?? null,
                 metadata,
                 profile?.displayName ?? null,
-                profile?.accountId ?? null,
+                verifiedAccountId(credential),
                 JSON.stringify(profile?.grantedScopes ?? []),
                 localConnectionId,
               ],
@@ -440,7 +722,31 @@ export class PostgresConnectionStore implements IConnectionStore {
             throw new ConnectionMetadataReconciliationError("preserved", false);
           }
         } else {
-          const secret = await this.secrets.create(this.scope, id, service, credential);
+          let secret: { secretRef: string; secretRevision: number };
+          try {
+            secret = await this.secrets.create(this.scope, id, service, credential);
+          } catch (error) {
+            if (error instanceof OpenBaoError && error.code !== "OPENBAO_CONFLICT")
+              outcome.reconciliation = {
+                id,
+                service,
+                connectionName,
+                authType: credential.authType,
+                secretRef: error.path,
+                secretRevision: 1,
+                cleanup: "delete_pending",
+              };
+            throw error;
+          }
+          outcome.reconciliation = {
+            id,
+            service,
+            connectionName,
+            authType: credential.authType,
+            secretRef: secret.secretRef,
+            secretRevision: secret.secretRevision,
+            cleanup: "delete_pending",
+          };
           try {
             await client.query(
               `INSERT INTO integration_runtime.connections (
@@ -464,7 +770,7 @@ export class PostgresConnectionStore implements IConnectionStore {
                 profile ?? null,
                 metadata,
                 profile?.displayName ?? null,
-                profile?.accountId ?? null,
+                verifiedAccountId(credential),
                 JSON.stringify(profile?.grantedScopes ?? []),
               ],
             );
@@ -482,37 +788,62 @@ export class PostgresConnectionStore implements IConnectionStore {
           }
         }
 
+        if (pending) {
+          const completed = await client.query(
+            `UPDATE integration_runtime.connection_requests SET phase='completed',status='connected',app_id=$6,updated_at=now()
+             WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND local_connection_id=$4
+               AND id=$5 AND phase='processing'`,
+            [
+              this.scope.tenantId,
+              this.scope.workspaceId,
+              this.scope.subjectUserId,
+              localConnectionId,
+              pending.connectionRequestId,
+              id,
+            ],
+          );
+          if (completed.rowCount !== 1) throw new Error("OAuth request completion lost its claim");
+        }
         return { id, revision, service, connectionName, credential };
       });
     } catch (error) {
       const reconciliation = outcome.reconciliation;
       if (reconciliation === undefined) throw error;
-      if (reconciliation.cleanup === "delete_pending") {
-        try {
-          await this.secrets.delete(this.scope, reconciliation.id);
-          reconciliation.cleanup = "deleted";
-        } catch {
-          reconciliation.cleanup = "delete_failed";
+      throw await withSecretCleanup(this.scope, async (cleanupScope) => {
+        if (reconciliation.cleanup === "delete_pending") {
+          try {
+            await this.secrets.delete(cleanupScope, reconciliation.id);
+            reconciliation.cleanup = "deleted";
+          } catch {
+            reconciliation.cleanup = "delete_failed";
+          }
         }
-      }
-      const markerWritten = await this.writeReconciliationMarker(reconciliation);
-      throw new ConnectionMetadataReconciliationError(reconciliation.cleanup, markerWritten);
+        const markerWritten = await this.writeReconciliationMarker(reconciliation);
+        return new ConnectionMetadataReconciliationError(reconciliation.cleanup, markerWritten);
+      });
     }
   }
 
-  async updateCredential(input: StoredConnection): Promise<boolean> {
+  async updateCredential(input: StoredLocalConnection, refresh = false): Promise<boolean> {
     assertSaasConnectionName(input.connectionName);
+    if (refresh && input.credential.authType !== "oauth2") return false;
     const localConnectionId = this.requiredLocalConnectionId();
     const outcome: { reconciliation?: PendingConnectionReconciliation } = {};
     try {
       return await withScopedClient(this.pool, this.scope, async (client) => {
+        assertProcessingActive(this.scope);
+        if ((await this.lockGeneration(client, input.service, input.connectionName)) === undefined) return false;
         const existing = (
           await client.query<ConnectionRow>(
             `${connectionColumns}
              WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
                AND id = $4 AND revision = $5 AND service = $6 AND connection_name = $7
-               AND local_connection_id = $8 AND auth_type = $9
-               AND status IN ('active', 'expired', 'failed', 'reconnect_required')
+               AND local_connection_id = $8 AND (NOT $9::boolean OR auth_type='oauth2')
+               AND (visibility='workspace' OR subject_user_id=$10)
+               AND source = 'local'
+               AND ${refresh ? "status = 'active'" : "status IN ('active', 'expired', 'failed', 'reconnect_required')"}
+               AND NOT safe_metadata ? 'lifecyclePurgeCorrelationId'
+               AND NOT safe_metadata ? 'reconciliation'
              FOR UPDATE`,
             [
               this.scope.tenantId,
@@ -523,12 +854,22 @@ export class PostgresConnectionStore implements IConnectionStore {
               input.service,
               input.connectionName,
               localConnectionId,
-              input.credential.authType,
+              refresh,
+              this.scope.actorUserId,
             ],
           )
         ).rows[0];
         if (!existing) return false;
 
+        outcome.reconciliation = {
+          id: input.id,
+          service: input.service,
+          connectionName: input.connectionName,
+          authType: input.credential.authType,
+          secretRef: existing.secret_ref,
+          secretRevision: Number(existing.secret_revision) + 1,
+          cleanup: "preserved",
+        };
         const secretRevision = await this.secrets.update(
           this.scope,
           input.id,
@@ -537,18 +878,30 @@ export class PostgresConnectionStore implements IConnectionStore {
           input.credential,
         );
         if (secretRevision === false) return false;
+        outcome.reconciliation = {
+          id: input.id,
+          service: input.service,
+          connectionName: input.connectionName,
+          authType: input.credential.authType,
+          secretRef: existing.secret_ref,
+          secretRevision,
+          cleanup: "preserved",
+        };
         const profile = profileOf(input.credential);
         try {
           const result = await client.query(
             `UPDATE integration_runtime.connections
-             SET revision = $10, secret_revision = $11,
+             SET revision = $10, secret_revision = $11, auth_type=$9,
                  credential_profile = $12, auth_metadata = $13, display_name = $14,
                  provider_account_id = $15, granted_scopes = $16, status = 'active',
                  revoked_at = NULL, updated_at = now()
              WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
                AND id = $4 AND revision = $5 AND service = $6 AND connection_name = $7
-               AND local_connection_id = $8 AND auth_type = $9
-               AND status IN ('active', 'expired', 'failed', 'reconnect_required')`,
+               AND local_connection_id = $8 AND (NOT $17::boolean OR auth_type='oauth2')
+               AND (visibility='workspace' OR subject_user_id=$18)
+               AND source = 'local'
+               AND ${refresh ? "status = 'active'" : "status IN ('active', 'expired', 'failed', 'reconnect_required')"}
+               AND NOT safe_metadata ? 'lifecyclePurgeCorrelationId'`,
             [
               this.scope.tenantId,
               this.scope.workspaceId,
@@ -564,8 +917,10 @@ export class PostgresConnectionStore implements IConnectionStore {
               profile ?? null,
               {},
               profile?.displayName ?? null,
-              profile?.accountId ?? null,
+              verifiedAccountId(input.credential),
               JSON.stringify(profile?.grantedScopes ?? []),
+              refresh,
+              this.scope.actorUserId,
             ],
           );
           if (result.rowCount !== 1) throw new Error("Connection metadata update lost its scope");
@@ -591,9 +946,44 @@ export class PostgresConnectionStore implements IConnectionStore {
     }
   }
 
-  async delete(service: string, connectionName: string): Promise<void> {
+  async delete(
+    service: string,
+    connectionName: string,
+    target?: Pick<StoredConnection, "id" | "revision">,
+  ): Promise<void> {
     assertSaasConnectionName(connectionName);
     const id = await withScopedClient(this.pool, this.scope, async (client) => {
+      await this.lockGeneration(client, service, connectionName);
+      const current = (
+        await client.query<ConnectionRow>(
+          `${connectionColumns}
+        WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND local_connection_id=$4
+          AND service=$5 AND connection_name=$6 FOR UPDATE`,
+          [
+            this.scope.tenantId,
+            this.scope.workspaceId,
+            this.scope.subjectUserId,
+            this.requiredLocalConnectionId(),
+            service,
+            connectionName,
+          ],
+        )
+      ).rows[0];
+      if (target && (!current || current.id !== target.id || current.revision !== target.revision))
+        throw new ConnectionError("connection_changed", "The connection changed.");
+      await client.query(
+        `UPDATE integration_runtime.connection_retirements SET generation=$6
+        WHERE tenant_id=$1 AND workspace_id=$2 AND local_connection_id=$3 AND service=$4 AND connection_name=$5`,
+        [
+          this.scope.tenantId,
+          this.scope.workspaceId,
+          this.requiredLocalConnectionId(),
+          service,
+          connectionName,
+          randomUUID(),
+        ],
+      );
+      if (current) await queueSaasConnectionCleanup(client, this.scope, current.id);
       const row = (
         await client.query<{ id: string }>(
           `UPDATE integration_runtime.connections
@@ -601,36 +991,42 @@ export class PostgresConnectionStore implements IConnectionStore {
                safe_metadata = '{"reconciliation":"secret_delete_pending"}'::jsonb,
                updated_at = now()
            WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
-             AND service = $4 AND connection_name = $5
+             AND service = $4 AND connection_name = $5 AND local_connection_id=$6
            RETURNING id`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, service, connectionName],
+          [
+            this.scope.tenantId,
+            this.scope.workspaceId,
+            this.scope.subjectUserId,
+            service,
+            connectionName,
+            this.requiredLocalConnectionId(),
+          ],
         )
       ).rows[0];
       return row?.id;
     });
     if (!id) return;
 
-    try {
-      await this.secrets.delete(this.scope, id);
-    } catch (error) {
-      await withScopedClient(this.pool, this.scope, async (client) => {
+    await withSecretCleanup(this.scope, async (cleanupScope) => {
+      try {
+        await this.secrets.delete(cleanupScope, id);
+      } catch (error) {
+        await withScopedClient(this.pool, cleanupScope, async (client) => {
+          await client.query(
+            `UPDATE integration_runtime.connections SET safe_metadata='{"reconciliation":"secret_delete_failed"}'::jsonb,updated_at=now()
+            WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND id=$4`,
+            [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, id],
+          );
+        });
+        throw error;
+      }
+      await withScopedClient(this.pool, cleanupScope, async (client) => {
         await client.query(
-          `UPDATE integration_runtime.connections
-           SET safe_metadata = '{"reconciliation":"secret_delete_failed"}'::jsonb, updated_at = now()
-           WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3 AND id = $4`,
+          `DELETE FROM integration_runtime.connections WHERE tenant_id=$1 AND workspace_id=$2
+          AND subject_user_id=$3 AND id=$4 AND status='revoked'`,
           [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, id],
         );
       });
-      throw error;
-    }
-
-    await withScopedClient(this.pool, this.scope, async (client) => {
-      await client.query(
-        `DELETE FROM integration_runtime.connections
-         WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
-           AND id = $4 AND status = 'revoked'`,
-        [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, id],
-      );
     });
   }
   async transferById(connectionId: string, targetSubjectUserId: string): Promise<SafeStoredConnection | undefined> {
@@ -662,7 +1058,7 @@ export class PostgresConnectionStore implements IConnectionStore {
       const transferred = (
         await client.query<ConnectionRow>(
           `UPDATE integration_runtime.connections
-           SET subject_user_id = $5, updated_at = now()
+           SET subject_user_id = $5, revision = gen_random_uuid()::text, updated_at = now()
            WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
              AND id = $4 AND local_connection_id = $6
              AND visibility = 'workspace' AND status = 'active'
@@ -689,10 +1085,16 @@ export class PostgresConnectionStore implements IConnectionStore {
       throw new Error("Connection visibility changes require an owner or admin");
     }
     return await withScopedClient(this.pool, this.scope, async (client) => {
+      await client.query(
+        `DELETE FROM integration_runtime.refresh_leases WHERE tenant_id=$1 AND workspace_id=$2
+        AND subject_user_id=$3 AND connection_id=$4`,
+        [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, connectionId],
+      );
       const row = (
         await client.query<ConnectionRow>(
           `UPDATE integration_runtime.connections
            SET visibility = $6,
+               revision = CASE WHEN visibility = $6 THEN revision ELSE gen_random_uuid()::text END,
                updated_at = CASE WHEN visibility = $6 THEN updated_at ELSE now() END
            WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
              AND id = $4 AND local_connection_id = $5 AND status = 'active'
@@ -753,8 +1155,8 @@ export class PostgresConnectionStore implements IConnectionStore {
     const localConnectionId = this.requiredLocalConnectionId();
     const pending = await withScopedClient(this.pool, this.scope, async (client) => {
       return (
-        await client.query<{ outcome: string }>(
-          `SELECT safe_metadata->>'providerRevocationOutcome' AS outcome
+        await client.query<Pick<ConnectionRow, "id" | "source"> & { outcome: string }>(
+          `SELECT id, source, safe_metadata->>'providerRevocationOutcome' AS outcome
            FROM integration_runtime.connections
            WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
              AND id = $4 AND local_connection_id = $5 AND status = 'revoked'`,
@@ -766,7 +1168,7 @@ export class PostgresConnectionStore implements IConnectionStore {
     if (pending.outcome !== "revoked" && pending.outcome !== "unsupported") {
       throw new Error("Connection revocation outcome is invalid");
     }
-    return await this.finalizeRevocation(connectionId, localConnectionId, pending.outcome);
+    return await this.finalizeRevocation(pending, localConnectionId, pending.outcome);
   }
 
   async deleteById(
@@ -774,9 +1176,9 @@ export class PostgresConnectionStore implements IConnectionStore {
     outcome: Exclude<ProviderCredentialRevocationOutcome, "failed">,
   ): Promise<boolean> {
     const localConnectionId = this.requiredLocalConnectionId();
-    const id = await withScopedClient(this.pool, this.scope, async (client) => {
+    const pending = await withScopedClient(this.pool, this.scope, async (client) => {
       const row = (
-        await client.query<{ id: string }>(
+        await client.query<Pick<ConnectionRow, "id" | "source">>(
           `UPDATE integration_runtime.connections
            SET status = 'revoked', revoked_at = now(),
                safe_metadata = jsonb_build_object(
@@ -786,7 +1188,7 @@ export class PostgresConnectionStore implements IConnectionStore {
                updated_at = now()
            WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
              AND id = $4 AND local_connection_id = $5 AND status = 'reconnect_required'
-           RETURNING id`,
+           RETURNING id, source`,
           [
             this.scope.tenantId,
             this.scope.workspaceId,
@@ -797,65 +1199,70 @@ export class PostgresConnectionStore implements IConnectionStore {
           ],
         )
       ).rows[0];
-      return row?.id;
+      return row;
     });
-    if (!id) return await this.hasRevocationReceipt(connectionId);
-    return await this.finalizeRevocation(id, localConnectionId, outcome);
+    if (!pending) return await this.hasRevocationReceipt(connectionId);
+    return await this.finalizeRevocation(pending, localConnectionId, outcome);
   }
 
   private async finalizeRevocation(
-    connectionId: string,
+    connection: Pick<ConnectionRow, "id" | "source">,
     localConnectionId: string,
     outcome: Exclude<ProviderCredentialRevocationOutcome, "failed">,
   ): Promise<boolean> {
-    try {
-      await this.secrets.delete(this.scope, connectionId);
-    } catch (error) {
-      await withScopedClient(this.pool, this.scope, async (client) => {
-        await client.query(
-          `UPDATE integration_runtime.connections
+    const connectionId = connection.id;
+    return await withSecretCleanup(this.scope, async (cleanupScope) => {
+      if (connection.source === "local") {
+        try {
+          await this.secrets.delete(cleanupScope, connectionId);
+        } catch (error) {
+          await withScopedClient(this.pool, cleanupScope, async (client) => {
+            await client.query(
+              `UPDATE integration_runtime.connections
            SET safe_metadata = safe_metadata || '{"reconciliation":"secret_delete_failed"}'::jsonb,
                updated_at = now()
            WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
              AND id = $4 AND local_connection_id = $5 AND status = 'revoked'`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, connectionId, localConnectionId],
-        );
-      });
-      throw error;
-    }
+              [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, connectionId, localConnectionId],
+            );
+          });
+          throw error;
+        }
+      }
 
-    await withScopedClient(this.pool, this.scope, async (client) => {
-      const parameters = [
-        this.scope.tenantId,
-        this.scope.workspaceId,
-        this.scope.subjectUserId,
-        connectionId,
-        localConnectionId,
-      ];
-      const deleted = await client.query(
-        `DELETE FROM integration_runtime.connections
+      await withScopedClient(this.pool, cleanupScope, async (client) => {
+        const parameters = [
+          this.scope.tenantId,
+          this.scope.workspaceId,
+          this.scope.subjectUserId,
+          connectionId,
+          localConnectionId,
+        ];
+        const deleted = await client.query(
+          `DELETE FROM integration_runtime.connections
          WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
            AND id = $4 AND local_connection_id = $5 AND status = 'revoked'`,
-        parameters,
-      );
-      if (deleted.rowCount !== 1) {
-        const receipt = await client.query(
-          `SELECT 1 FROM integration_runtime.connection_revocation_receipts
-           WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
-             AND connector_connection_id = $4 AND local_connection_id = $5`,
           parameters,
         );
-        if (receipt.rowCount === 1) return;
-        throw new Error("Connection revocation state changed during cleanup");
-      }
-      await client.query(
-        `INSERT INTO integration_runtime.connection_revocation_receipts
+        if (deleted.rowCount !== 1) {
+          const receipt = await client.query(
+            `SELECT 1 FROM integration_runtime.connection_revocation_receipts
+           WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
+             AND connector_connection_id = $4 AND local_connection_id = $5`,
+            parameters,
+          );
+          if (receipt.rowCount === 1) return;
+          throw new Error("Connection revocation state changed during cleanup");
+        }
+        await client.query(
+          `INSERT INTO integration_runtime.connection_revocation_receipts
            (tenant_id, workspace_id, subject_user_id, connector_connection_id, local_connection_id, outcome)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [...parameters, outcome],
-      );
+          [...parameters, outcome],
+        );
+      });
+      return true;
     });
-    return true;
   }
 
   async list(): Promise<StoredConnection[]> {
@@ -864,11 +1271,17 @@ export class PostgresConnectionStore implements IConnectionStore {
         await client.query<ConnectionRow>(
           `${connectionColumns}
            WHERE tenant_id = $1 AND workspace_id = $2
-             AND (visibility = 'workspace' OR subject_user_id = $3)
+             AND subject_user_id = $3 AND (visibility = 'workspace' OR subject_user_id = $5)
              AND ($4::uuid IS NULL OR local_connection_id = $4)
              AND connection_name <> 'default' AND status = 'active'
-           ORDER BY service, connection_name`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, this.scope.localConnectionId ?? null],
+           ORDER BY service, connection_name FOR SHARE`,
+          [
+            this.scope.tenantId,
+            this.scope.workspaceId,
+            this.scope.subjectUserId,
+            this.scope.localConnectionId ?? null,
+            this.scope.actorUserId,
+          ],
         )
       ).rows;
       const stored = await Promise.all(rows.map((row) => this.readStoredConnection(row)));
@@ -896,20 +1309,22 @@ export class PostgresConnectionStore implements IConnectionStore {
   private async writeReconciliationMarker(marker: PendingConnectionReconciliation): Promise<boolean> {
     if (marker.cleanup === "preserved") {
       try {
-        await withScopedClient(this.pool, this.scope, async (client) => {
-          await client.query(
-            `UPDATE integration_runtime.connections
+        await withSecretCleanup(this.scope, (cleanupScope) =>
+          withScopedClient(this.pool, cleanupScope, async (client) => {
+            await client.query(
+              `UPDATE integration_runtime.connections
              SET safe_metadata = $5, updated_at = now()
              WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3 AND id = $4`,
-            [
-              this.scope.tenantId,
-              this.scope.workspaceId,
-              this.scope.subjectUserId,
-              marker.id,
-              { reconciliation: "orphan_secret_version", orphanSecretRevision: marker.secretRevision },
-            ],
-          );
-        });
+              [
+                this.scope.tenantId,
+                this.scope.workspaceId,
+                this.scope.subjectUserId,
+                marker.id,
+                { reconciliation: "orphan_secret_version", orphanSecretRevision: marker.secretRevision },
+              ],
+            );
+          }),
+        );
         return true;
       } catch {
         return false;
@@ -920,9 +1335,10 @@ export class PostgresConnectionStore implements IConnectionStore {
 
   private async writeFailedReconciliationMarker(marker: PendingConnectionReconciliation): Promise<boolean> {
     try {
-      await withScopedClient(this.pool, this.scope, async (client) => {
-        await client.query(
-          `INSERT INTO integration_runtime.connections (
+      await withSecretCleanup(this.scope, (cleanupScope) =>
+        withScopedClient(this.pool, cleanupScope, async (client) => {
+          await client.query(
+            `INSERT INTO integration_runtime.connections (
              id, tenant_id, workspace_id, subject_user_id, local_connection_id, visibility,
              service, connection_name, auth_type, revision, secret_ref, secret_revision, status,
              safe_metadata
@@ -931,26 +1347,27 @@ export class PostgresConnectionStore implements IConnectionStore {
            SET status = 'failed', secret_ref = EXCLUDED.secret_ref,
                secret_revision = EXCLUDED.secret_revision, safe_metadata = EXCLUDED.safe_metadata,
                updated_at = now()`,
-          [
-            marker.id,
-            this.scope.tenantId,
-            this.scope.workspaceId,
-            this.scope.subjectUserId,
-            this.requiredLocalConnectionId(),
-            marker.service,
-            marker.id,
-            marker.authType,
-            randomUUID(),
-            marker.secretRef,
-            marker.secretRevision,
-            {
-              reconciliation: "metadata_write_failed",
-              requestedConnectionName: marker.connectionName,
-              secretCleanup: marker.cleanup,
-            },
-          ],
-        );
-      });
+            [
+              marker.id,
+              this.scope.tenantId,
+              this.scope.workspaceId,
+              this.scope.subjectUserId,
+              this.requiredLocalConnectionId(),
+              marker.service,
+              marker.id,
+              marker.authType,
+              randomUUID(),
+              marker.secretRef,
+              marker.secretRevision,
+              {
+                reconciliation: "metadata_write_failed",
+                requestedConnectionName: marker.connectionName,
+                secretCleanup: marker.cleanup,
+              },
+            ],
+          );
+        }),
+      );
       return true;
     } catch {
       return false;
@@ -958,6 +1375,21 @@ export class PostgresConnectionStore implements IConnectionStore {
   }
 
   private async readStoredConnection(row: ConnectionRow): Promise<StoredConnection | undefined> {
+    if (row.source === "saas") {
+      if (!row.source_reference || !row.credential_profile || !row.source_status) return undefined;
+      return {
+        source: "saas",
+        id: row.id,
+        revision: row.revision,
+        service: row.service,
+        connectionName: row.connection_name,
+        reference: row.source_reference,
+        profile: row.credential_profile,
+        status: row.source_status,
+        comment: row.source_comment,
+      };
+    }
+    assertProcessingActive(this.scope);
     const secret = await this.secrets.read(this.scope, row.id, Number(row.secret_revision));
     if (!secret || secret.provider !== row.service || secret.revision !== Number(row.secret_revision)) return undefined;
     return {
@@ -975,10 +1407,11 @@ export class PostgresConnectionStore implements IConnectionStore {
   }
 }
 
-const connectionColumnNames = "id, revision, service, connection_name, secret_ref, secret_revision, credential_profile";
+const connectionColumnNames =
+  "id, revision, service, connection_name, secret_ref, secret_revision, credential_profile, subject_user_id, local_connection_id, visibility, status, source, source_reference, source_status, source_comment";
 const connectionColumns = `SELECT ${connectionColumnNames} FROM integration_runtime.connections`;
 const safeConnectionColumnNames =
-  "id, local_connection_id, service, connection_name, visibility, status, credential_profile, created_at, updated_at";
+  "id, subject_user_id, local_connection_id, service, connection_name, visibility, status, credential_profile, created_at, updated_at";
 const safeConnectionColumns = `SELECT ${safeConnectionColumnNames} FROM integration_runtime.connections`;
 
 function profileOf(credential: ResolvedCredential): CredentialProfile | undefined {
@@ -988,6 +1421,7 @@ function profileOf(credential: ResolvedCredential): CredentialProfile | undefine
 function toSafeStoredConnection(row: ConnectionRow): SafeStoredConnection {
   return {
     id: row.id,
+    subjectUserId: row.subject_user_id,
     localConnectionId: row.local_connection_id,
     service: row.service,
     connectionName: row.connection_name,
@@ -999,7 +1433,13 @@ function toSafeStoredConnection(row: ConnectionRow): SafeStoredConnection {
   };
 }
 
-function mergeCredential(secret: ConnectionSecret, profile: CredentialProfile | null): ResolvedCredential {
+function verifiedAccountId(credential: ResolvedCredential): string | null {
+  return credential.authType !== "no_auth" && credential.metadata.providerAccountVerified === true
+    ? credential.profile.accountId
+    : null;
+}
+
+export function mergeCredential(secret: ConnectionSecret, profile: CredentialProfile | null): ResolvedCredential {
   if (secret.authType === "no_auth") return { authType: "no_auth" };
   if (!profile) throw new Error("Stored authenticated connection has no safe credential profile");
   if (secret.authType === "api_key") {

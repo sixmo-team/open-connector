@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { EveniumActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalIntegerLike, optionalRecord, optionalString } from "../../core/cast.ts";
@@ -11,9 +12,8 @@ import {
   ProviderRequestError,
 } from "../provider-runtime.ts";
 
-const eveniumApiBaseUrl = "https://evenium.com";
+export const eveniumApiBaseUrl = "https://evenium.com";
 const eveniumValidationPath = "/api/1/events";
-const eveniumDefaultTimeoutMs = 30_000;
 
 type EveniumRequestMode = "validate" | "execute";
 type EveniumContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
@@ -25,7 +25,7 @@ interface EveniumRequestOptions {
   mode: EveniumRequestMode;
 }
 
-export const eveniumActionHandlers: Record<EveniumActionName, EveniumActionHandler> = {
+export const eveniumActionHandlers: ProviderActionHandlers<"evenium", EveniumActionHandler> = {
   async list_events(input, context) {
     const payload = await requestEveniumObject(
       {
@@ -172,7 +172,7 @@ async function requestEveniumObject(
 }
 
 async function requestEveniumJson(options: EveniumRequestOptions, context: EveniumContext): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, eveniumDefaultTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const url = new URL(options.path, eveniumApiBaseUrl);
     for (const [key, value] of Object.entries(options.query ?? {})) {

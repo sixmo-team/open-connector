@@ -1,20 +1,22 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { WorkpathActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, positiveInteger, requiredRecord } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "workpath";
 const workpathApiBaseUrl = "https://connect.workpath.com/api/v3";
 const workpathValidationPath = "/users";
-const workpathDefaultRequestTimeoutMs = 30_000;
 
 type WorkpathRequestMode = "validate" | "execute";
 type WorkpathActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
@@ -39,7 +41,7 @@ interface WorkpathPagination {
   link: string | null;
 }
 
-export const workpathActionHandlers: Record<WorkpathActionName, WorkpathActionHandler> = {
+export const workpathActionHandlers: ProviderActionHandlers<"workpath", WorkpathActionHandler> = {
   async list_goals(input, context) {
     assertDateRangePair(input);
     const result = await workpathRequest(context, {
@@ -131,6 +133,17 @@ export const workpathActionHandlers: Record<WorkpathActionName, WorkpathActionHa
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, workpathActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: workpathApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const result = await workpathRequest(
@@ -183,7 +196,7 @@ async function workpathRequest(
     }
   }
 
-  const timeout = createProviderTimeout(context.signal, workpathDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: "GET",
@@ -210,10 +223,10 @@ async function workpathRequest(
       throw error;
     }
 
-    if (timeout.didTimeout() || isAbortLikeError(error) || isTimeoutLikeError(error)) {
+    if (timeout.didTimeout() || isAbortLikeError(error)) {
       throw new ProviderRequestError(
         504,
-        `Workpath ${input.path} request timed out after ${Math.ceil(workpathDefaultRequestTimeoutMs / 1000)} seconds`,
+        `Workpath ${input.path} request timed out after ${Math.ceil(defaultProviderRequestTimeoutMs / 1000)} seconds`,
       );
     }
 
@@ -320,12 +333,4 @@ function extractWorkpathErrorMessage(payload: unknown): string | undefined {
     firstErrorMessage ??
     optionalString(optionalRecord(object.error)?.message)
   );
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function isTimeoutLikeError(error: unknown): boolean {
-  return error instanceof Error && error.name === "TimeoutError";
 }

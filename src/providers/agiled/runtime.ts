@@ -1,11 +1,10 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { AgiledActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 
 export const agiledApiBaseUrl = "https://my.agiled.app/api/v1";
-export const agiledDefaultRequestTimeoutMs = 30_000;
 
 interface AgiledActionContext {
   apiKey: string;
@@ -26,7 +25,7 @@ interface AgiledRequestOptions {
 
 type AgiledActionHandler = (input: Record<string, unknown>, context: AgiledActionContext) => Promise<unknown>;
 
-export const agiledActionHandlers: Record<AgiledActionName, AgiledActionHandler> = {
+export const agiledActionHandlers: ProviderActionHandlers<"agiled", AgiledActionHandler> = {
   list_contacts(_input, context) {
     return listAgiledItems("contacts", "/contacts", context);
   },
@@ -191,7 +190,7 @@ function buildRequestOptions(context: AgiledActionContext): AgiledRequestOptions
 }
 
 async function requestAgiledJson(path: string, options: AgiledRequestOptions): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(agiledDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
 
   try {

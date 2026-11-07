@@ -4,8 +4,11 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
-import { defineProviderExecutors, defineProviderProxy, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   dopplerMarketingAutomationApiBaseUrl,
   executeDopplerMarketingAutomationAction,
@@ -23,7 +26,7 @@ interface ProviderContext {
 
 type Handler = (input: Record<string, unknown>, context: ProviderContext) => Promise<unknown>;
 
-const handlers: Record<string, Handler> = {
+const handlers: ProviderActionHandlers<"doppler_marketing_automation", Handler> = {
   list_lists(input, context) {
     return executeDopplerMarketingAutomationAction(
       {

@@ -4,21 +4,23 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
-import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { compactObject, optionalInteger, optionalRecord, optionalString, rawStringOrNull } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineProviderExecutors,
-  defineProviderProxy,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
-  requireApiKeyCredential,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
-const gainsightNxtRequestTimeoutMs = 30_000;
 const gainsightNxtMaxResponseBytes = 10 * 1024 * 1024;
 const companyPath = "/v1/data/objects/Company";
 const companyQueryPath = "/v1/data/objects/query/Company";
@@ -35,7 +37,7 @@ type GainsightNxtActionHandler = (
   context: GainsightNxtActionContext,
 ) => Promise<unknown>;
 
-export const gainsightNxtActionHandlers: Record<string, GainsightNxtActionHandler> = {
+export const gainsightNxtActionHandlers: ProviderActionHandlers<"gainsight_nxt", GainsightNxtActionHandler> = {
   async insert_companies(input, context) {
     const payload = await requestGainsightJson({
       ...context,
@@ -127,7 +129,7 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
 export const credentialValidators: CredentialValidators = {
   async apiKey(input) {
     if (!input.apiKey.trim()) {
-      throw invalidInput("gainsight_nxt access key is required");
+      throw providerInputError("gainsight_nxt access key is required");
     }
     const baseUrl = normalizeBaseUrl(input.values.baseUrl);
     const hostname = new URL(baseUrl).hostname;
@@ -156,7 +158,7 @@ async function requestGainsightJson(input: {
   signal?: AbortSignal;
   url?: URL;
 }) {
-  const timeout = createProviderTimeout(input.signal, gainsightNxtRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   const url = input.url ?? buildGainsightUrl(input.baseUrl, input.path ?? "");
 
   try {
@@ -232,7 +234,7 @@ function createGainsightError(status: number, payload: unknown, phase: Gainsight
     return new ProviderRequestError(status || 400, message);
   }
 
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function readGainsightErrorMessage(payload: unknown) {
@@ -256,7 +258,7 @@ function normalizeCompanyMutationResponse(payload: Record<string, unknown>) {
   const data = optionalRecord(payload.data);
   return {
     result: payload.result === true,
-    requestId: readNullableString(payload.requestId),
+    requestId: rawStringOrNull(payload.requestId),
     data: {
       count: readNullableInteger(data?.count),
       records: readRecordArray(data?.records),
@@ -269,7 +271,7 @@ function normalizeCompanyMutationResponse(payload: Record<string, unknown>) {
 function normalizeCompanyQueryResponse(payload: Record<string, unknown>) {
   return {
     result: payload.result === true,
-    requestId: readNullableString(payload.requestId),
+    requestId: rawStringOrNull(payload.requestId),
     records: readRecordArray(payload.data),
     rawResponse: payload,
   };
@@ -278,8 +280,8 @@ function normalizeCompanyQueryResponse(payload: Record<string, unknown>) {
 function normalizeCompanyDeleteResponse(payload: Record<string, unknown>) {
   return {
     result: payload.result === true,
-    requestId: readNullableString(payload.requestId),
-    data: readNullableString(payload.data),
+    requestId: rawStringOrNull(payload.requestId),
+    data: rawStringOrNull(payload.data),
     rawResponse: payload,
   };
 }
@@ -312,18 +314,18 @@ function readRecordArray(value: unknown) {
 function normalizeBaseUrl(value: unknown) {
   const raw = optionalString(value)?.trim() ?? "";
   if (!raw) {
-    throw invalidInput("baseUrl is required");
+    throw providerInputError("baseUrl is required");
   }
 
   const url = assertPublicHttpUrl(raw, {
     fieldName: "baseUrl",
-    createError: invalidInput,
+    createError: providerInputError,
   });
   if (url.protocol !== "https:") {
-    throw invalidInput("baseUrl must be a valid https URL");
+    throw providerInputError("baseUrl must be a valid https URL");
   }
   if (url.username || url.password || url.search || url.hash || url.pathname.replaceAll("/", "")) {
-    throw invalidInput("baseUrl must be a clean Gainsight API domain URL");
+    throw providerInputError("baseUrl must be a clean Gainsight API domain URL");
   }
 
   return url.origin;
@@ -332,7 +334,7 @@ function normalizeBaseUrl(value: unknown) {
 function requireNonEmptyString(value: unknown, fieldName: string) {
   const parsed = readOptionalTrimmedString(value);
   if (!parsed) {
-    throw invalidInput(`${fieldName} is required`);
+    throw providerInputError(`${fieldName} is required`);
   }
   return parsed;
 }
@@ -341,17 +343,13 @@ function readOptionalTrimmedString(value: unknown) {
   return optionalString(value)?.trim() || undefined;
 }
 
-function readNullableString(value: unknown) {
-  return typeof value === "string" ? value : null;
-}
-
 function readNullableInteger(value: unknown) {
   return optionalInteger(value) ?? null;
 }
 
 function trimStringArray(value: unknown, fieldName: string): string[] {
   if (!Array.isArray(value)) {
-    throw invalidInput(`${fieldName} must be an array`);
+    throw providerInputError(`${fieldName} must be an array`);
   }
   return value.map((item) => requireNonEmptyString(item, fieldName));
 }
@@ -381,8 +379,4 @@ function normalizeWhere(value: unknown): unknown {
     expression:
       where.expression === undefined ? undefined : requireNonEmptyString(where.expression, "where.expression"),
   });
-}
-
-function invalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

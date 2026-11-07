@@ -1,5 +1,6 @@
-import type { BearerProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { TypeformActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { BearerProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -9,17 +10,22 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerInputError,
+  ProviderRequestError,
+  providerResponseError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 export const typeformApiBaseUrl: string = "https://api.typeform.com";
 const typeformValidationPath = "/me";
-const typeformDefaultRequestTimeoutMs = 30_000;
 
 type TypeformRequestPhase = "validate" | "execute";
 type TypeformQueryValue = string | number | undefined;
 type TypeformActionHandler = ProviderRuntimeHandler<BearerProviderContext>;
 
-export const typeformActionHandlers: Record<TypeformActionName, TypeformActionHandler> = {
+export const typeformActionHandlers: ProviderActionHandlers<"typeform", TypeformActionHandler> = {
   async get_current_user(_input, context) {
     return {
       user: await requestTypeformObject({
@@ -49,7 +55,7 @@ export const typeformActionHandlers: Record<TypeformActionName, TypeformActionHa
     });
   },
   async get_form(input, context) {
-    const formId = requiredString(input.formId, "formId", badInput);
+    const formId = requiredString(input.formId, "formId", providerInputError);
     return {
       form: await requestTypeformObject({
         accessToken: context.accessToken,
@@ -62,7 +68,7 @@ export const typeformActionHandlers: Record<TypeformActionName, TypeformActionHa
     };
   },
   list_form_responses(input, context) {
-    const formId = requiredString(input.formId, "formId", badInput);
+    const formId = requiredString(input.formId, "formId", providerInputError);
     return requestTypeformList({
       accessToken: context.accessToken,
       path: `/forms/${encodeURIComponent(formId)}/responses`,
@@ -105,7 +111,7 @@ export const typeformActionHandlers: Record<TypeformActionName, TypeformActionHa
     });
   },
   async get_workspace(input, context) {
-    const workspaceId = requiredString(input.workspaceId, "workspaceId", badInput);
+    const workspaceId = requiredString(input.workspaceId, "workspaceId", providerInputError);
     return {
       workspace: await requestTypeformObject({
         accessToken: context.accessToken,
@@ -170,7 +176,7 @@ async function requestTypeformList(input: {
   const object = requireObject(payload, "Typeform list response");
 
   return {
-    items: objectArray(object.items, "items", providerOutput),
+    items: objectArray(object.items, "items", providerResponseError),
     pageCount: requireNonNegativeInteger(object.page_count, "page_count"),
     totalItems: requireNonNegativeInteger(object.total_items, "total_items"),
   };
@@ -205,7 +211,7 @@ async function requestTypeformJson(input: {
     }
   }
 
-  const timeoutHandle = createProviderTimeout(input.signal, typeformDefaultRequestTimeoutMs);
+  const timeoutHandle = createProviderTimeout(input.signal);
 
   try {
     const response = await input.fetcher(url, {
@@ -301,7 +307,7 @@ function mapTypeformError(input: {
 
   if (input.phase === "validate") {
     if (input.status === 401 || input.status === 403) {
-      return new ProviderRequestError(400, message);
+      return providerInputError(message);
     }
 
     return new ProviderRequestError(input.status, message);
@@ -312,7 +318,7 @@ function mapTypeformError(input: {
   }
 
   if (input.status === 400 || (input.status === 404 && input.notFoundAsInvalidInput)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(input.status, message);
@@ -365,7 +371,7 @@ function readOptionalStringArray(value: unknown, fieldName: string): string[] | 
     throw new ProviderRequestError(400, `${fieldName} must be an array`);
   }
 
-  return value.map((item) => requiredString(item, fieldName, badInput));
+  return value.map((item) => requiredString(item, fieldName, providerInputError));
 }
 
 function joinCommaSeparated(value: string[] | undefined): string | undefined {
@@ -402,12 +408,4 @@ function requireNonNegativeInteger(value: unknown, fieldName: string): number {
     throw new ProviderRequestError(502, `invalid Typeform ${fieldName} value`);
   }
   return parsed;
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerOutput(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

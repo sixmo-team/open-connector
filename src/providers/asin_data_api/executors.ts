@@ -1,5 +1,6 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -9,13 +10,10 @@ import {
   requiredString,
   stringArray,
 } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  ProviderRequestError,
-  providerUserAgent,
-  requireApiKeyCredential,
-  setSearchParams,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent, setSearchParams } from "../provider-runtime.ts";
 
 const service = "asin_data_api";
 const asinDataApiBaseUrl = "https://api.asindataapi.com";
@@ -46,11 +44,11 @@ const updateDestinationFieldNames = [
   "s3_secret_access_key",
 ];
 
-export const asinDataApiActionHandlers: Record<string, AsinDataApiActionHandler> = {
+export const asinDataApiActionHandlers: ProviderActionHandlers<"asin_data_api", AsinDataApiActionHandler> = {
   async clear_collection_requests(input, context) {
-    const collectionId = requiredString(input.collection_id, "collection_id", invalidInputError);
-    const requestIds = stringArray(input.request_ids, "request_ids", invalidInputError).map((requestId, index) =>
-      requiredString(requestId, `request_ids[${index}]`, invalidInputError),
+    const collectionId = requiredString(input.collection_id, "collection_id", providerInputError);
+    const requestIds = stringArray(input.request_ids, "request_ids", providerInputError).map((requestId, index) =>
+      requiredString(requestId, `request_ids[${index}]`, providerInputError),
     );
     const deletedRequests = [];
     const failedRequestIds = [];
@@ -84,7 +82,7 @@ export const asinDataApiActionHandlers: Record<string, AsinDataApiActionHandler>
 
   async delete_destination(input, context) {
     const payload = await requestAsinDataApiJson({
-      path: `/destinations/${encodeURIComponent(requiredString(input.destination_id, "destination_id", invalidInputError))}`,
+      path: `/destinations/${encodeURIComponent(requiredString(input.destination_id, "destination_id", providerInputError))}`,
       method: "DELETE",
       context,
       phase: "execute",
@@ -95,7 +93,7 @@ export const asinDataApiActionHandlers: Record<string, AsinDataApiActionHandler>
 
   async get_collection(input, context) {
     const payload = await requestAsinDataApiJson({
-      path: `/collections/${encodeURIComponent(requiredString(input.collection_id, "collection_id", invalidInputError))}`,
+      path: `/collections/${encodeURIComponent(requiredString(input.collection_id, "collection_id", providerInputError))}`,
       method: "GET",
       context,
       phase: "execute",
@@ -105,7 +103,7 @@ export const asinDataApiActionHandlers: Record<string, AsinDataApiActionHandler>
   },
 
   async list_collection_requests(input, context) {
-    const collectionId = requiredString(input.collection_id, "collection_id", invalidInputError);
+    const collectionId = requiredString(input.collection_id, "collection_id", providerInputError);
     const page = optionalInteger(input.page) ?? 1;
     const payload = await requestAsinDataApiJson({
       path: `/collections/${encodeURIComponent(collectionId)}/requests/${encodeURIComponent(String(page))}`,
@@ -136,7 +134,7 @@ export const asinDataApiActionHandlers: Record<string, AsinDataApiActionHandler>
 
   async update_destination(input, context) {
     const payload = await requestAsinDataApiJson({
-      path: `/destinations/${encodeURIComponent(requiredString(input.destination_id, "destination_id", invalidInputError))}`,
+      path: `/destinations/${encodeURIComponent(requiredString(input.destination_id, "destination_id", providerInputError))}`,
       method: "PUT",
       context,
       body: pickUpdateDestinationBody(input),
@@ -158,6 +156,16 @@ export const executors: ProviderExecutors = defineProviderExecutors<ApiKeyProvid
       signal: context.signal,
       transitFiles: context.transitFiles,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: asinDataApiBaseUrl,
+  auth: { type: "api_key_query", name: "api_key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 
@@ -366,10 +374,6 @@ function compactStringObject(input: Record<string, string | undefined>): Record<
 
 function compactHeaders(input: Record<string, string | undefined>): Headers {
   return new Headers(compactObject(input) as Record<string, string>);
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
 
 function isAbortError(error: unknown): boolean {

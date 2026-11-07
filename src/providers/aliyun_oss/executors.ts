@@ -4,22 +4,28 @@ import type {
   ExecutionContext,
   ProviderExecutors,
   ProviderProxyExecutor,
+  TransitFileWriter,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import AliOss from "ali-oss";
-import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
+import { compactObject, optionalInteger, optionalRecord, optionalString, requiredRawString } from "../../core/cast.ts";
+import { assertGuardedEgressUrl } from "../../core/guarded-fetch.ts";
+import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed, storeResponseInTransit } from "../../core/request.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  providerFetch,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  providerFetch,
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 const service = "aliyun_oss";
@@ -116,6 +122,7 @@ interface AliyunOssContext {
   values: Record<string, string>;
   metadata: Record<string, unknown>;
   fetcher: typeof fetch;
+  transitFiles?: TransitFileWriter;
   signal?: AbortSignal;
 }
 
@@ -179,7 +186,7 @@ const aliyunOssProxySignedQueryParameters = new Set([
   "x-oss-traffic-limit",
 ]);
 
-export const aliyunOssActionHandlers: Record<string, AliyunOssActionHandler> = {
+export const aliyunOssActionHandlers: ProviderActionHandlers<"aliyun_oss", AliyunOssActionHandler> = {
   list_buckets(input, context) {
     return aliyunListBuckets(input, context);
   },
@@ -188,6 +195,9 @@ export const aliyunOssActionHandlers: Record<string, AliyunOssActionHandler> = {
   },
   head_object(input, context) {
     return aliyunHeadObject(input, context);
+  },
+  download_object(input, context) {
+    return aliyunDownloadObject(input, context);
   },
   put_object(input, context) {
     return aliyunPutObject(input, context);
@@ -203,6 +213,7 @@ export const aliyunOssActionHandlers: Record<string, AliyunOssActionHandler> = {
 export const executors: ProviderExecutors = defineProviderExecutors<AliyunOssContext>({
   service,
   handlers: aliyunOssActionHandlers,
+  allowPrivateNetwork: isPrivateNetworkAccessAllowed,
   async createContext(context: ExecutionContext, fetcher: typeof fetch): Promise<AliyunOssContext> {
     const credential = await context.getCredential(service);
     if (credential?.authType !== "custom_credential") {
@@ -212,6 +223,7 @@ export const executors: ProviderExecutors = defineProviderExecutors<AliyunOssCon
       values: credential.values,
       metadata: credential.metadata,
       fetcher,
+      transitFiles: context.transitFiles,
       signal: context.signal,
     };
   },
@@ -247,7 +259,7 @@ export const proxy: ProviderProxyExecutor = async (input, context) => {
       }
     }
 
-    const client = createAliyunOssClient({
+    const client = await createAliyunOssClient({
       accessKeyId: requireAliyunField(credential.values.accessKeyId, "accessKeyId"),
       accessKeySecret: requireAliyunField(credential.values.accessKeySecret, "accessKeySecret"),
       endpoint,
@@ -291,7 +303,7 @@ async function validateAliyunOssCredential(input: Record<string, string>): Promi
   const securityToken = optionalString(input.securityToken);
 
   try {
-    const client = createAliyunOssClient({
+    const client = await createAliyunOssClient({
       accessKeyId,
       accessKeySecret,
       securityToken,
@@ -320,12 +332,18 @@ async function validateAliyunOssCredential(input: Record<string, string>): Promi
   }
 }
 
-function createAliyunOssClient(input: AliyunClientOptions): AliyunOssClient {
+async function createAliyunOssClient(input: AliyunClientOptions): Promise<AliyunOssClient> {
+  const endpoint = normalizeEndpoint(input.endpoint);
+  await assertGuardedEgressUrl(endpoint, {
+    fieldName: "endpoint",
+    createError: providerInputError,
+    allowPrivateNetwork: isPrivateNetworkAccessAllowed(),
+  });
   return new AliOss({
     accessKeyId: input.accessKeyId,
     accessKeySecret: input.accessKeySecret,
     stsToken: input.securityToken,
-    endpoint: stripProtocol(normalizeEndpoint(input.endpoint)),
+    endpoint: stripProtocol(endpoint),
     bucket: input.bucket,
     secure: true,
   }) as unknown as AliyunOssClient;
@@ -333,7 +351,28 @@ function createAliyunOssClient(input: AliyunClientOptions): AliyunOssClient {
 
 function buildAliyunOssProxyBaseUrl(endpoint: string, bucket: string | undefined): string {
   const endpointUrl = new URL(normalizeEndpoint(endpoint));
-  return bucket ? `https://${bucket}.${endpointUrl.host}` : endpointUrl.toString();
+  if (!bucket) {
+    return endpointUrl.toString();
+  }
+
+  const expectedHost = `${bucket}.${endpointUrl.host}`;
+  let url: URL;
+  try {
+    url = new URL(`https://${expectedHost}`);
+  } catch {
+    throw new ProviderRequestError(400, "bucket must not alter the Alibaba Cloud OSS endpoint");
+  }
+  if (
+    url.host !== expectedHost.toLowerCase() ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new ProviderRequestError(400, "bucket must not alter the Alibaba Cloud OSS endpoint");
+  }
+  return url.toString();
 }
 
 function buildAliyunOssProxyResource(url: URL, bucket: string | undefined): string {
@@ -350,8 +389,37 @@ function buildAliyunOssProxySubres(url: URL): Record<string, string> {
   return subres;
 }
 
+function encodeOssObjectKey(value: string): string {
+  return value
+    .split("/")
+    .map((segment) =>
+      encodeURIComponent(segment)
+        .replaceAll("!", "%21")
+        .replaceAll("'", "%27")
+        .replaceAll("(", "%28")
+        .replaceAll(")", "%29")
+        .replaceAll("*", "%2A"),
+    )
+    .join("/");
+}
+
+function readObjectKey(input: Record<string, unknown>): string {
+  const objectKey = requiredRawString(input.objectKey, "objectKey", providerInputError);
+  if (objectKey.length === 0) {
+    throw new ProviderRequestError(400, "objectKey must not be empty");
+  }
+  if (objectKey.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new ProviderRequestError(400, "objectKey must not contain . or .. path segments");
+  }
+  return objectKey;
+}
+
+function defaultObjectFileName(objectKey: string): string {
+  return objectKey.split("/").findLast((segment) => segment.length > 0) ?? "oss-object";
+}
+
 async function aliyunListBuckets(input: Record<string, unknown>, context: AliyunOssContext): Promise<unknown> {
-  const client = createClientForAction(input, context);
+  const client = await createClientForAction(input, context);
   const result = await client.listBuckets(
     compactObject({
       prefix: optionalString(input.prefix),
@@ -370,7 +438,7 @@ async function aliyunListBuckets(input: Record<string, unknown>, context: Aliyun
 
 async function aliyunListObjects(input: Record<string, unknown>, context: AliyunOssContext): Promise<unknown> {
   const bucket = requireAliyunField(input.bucket, "bucket");
-  const client = createClientForAction(input, context, bucket);
+  const client = await createClientForAction(input, context, bucket);
   const result = await client.listV2(
     compactObject({
       prefix: optionalString(input.prefix),
@@ -395,7 +463,7 @@ async function aliyunListObjects(input: Record<string, unknown>, context: Aliyun
 async function aliyunHeadObject(input: Record<string, unknown>, context: AliyunOssContext): Promise<unknown> {
   const bucket = resolveBucket(input, context);
   const objectKey = requireAliyunField(input.objectKey, "objectKey");
-  const client = createClientForAction(input, context, bucket);
+  const client = await createClientForAction(input, context, bucket);
   const result = await client.getObjectMeta(
     objectKey,
     compactObject({
@@ -423,10 +491,79 @@ async function aliyunHeadObject(input: Record<string, unknown>, context: AliyunO
   };
 }
 
+async function aliyunDownloadObject(input: Record<string, unknown>, context: AliyunOssContext): Promise<unknown> {
+  try {
+    if (!context.transitFiles) {
+      throw new ProviderRequestError(400, "aliyun_oss download_object requires local transit file storage");
+    }
+
+    const bucket = resolveBucket(input, context);
+    const objectKey = readObjectKey(input);
+    const endpoint = resolveEndpoint(input, context);
+    const versionId = optionalString(input.versionId);
+    const url = createProviderProxyUrl(
+      buildAliyunOssProxyBaseUrl(endpoint, bucket),
+      `/${encodeOssObjectKey(objectKey)}`,
+      versionId ? { versionId } : undefined,
+    );
+    const client = await createClientForAction(input, context, bucket);
+    const headers = new Headers();
+    headers.set("accept", "*/*");
+    headers.set("user-agent", providerUserAgent);
+    headers.set("x-oss-date", new Date().toUTCString());
+    const securityToken = optionalString(context.values.securityToken);
+    if (securityToken) {
+      headers.set("x-oss-security-token", securityToken);
+    }
+    headers.set(
+      "authorization",
+      client.authorization(
+        "GET",
+        // ali-oss signs the raw object key; the request URL stays percent-encoded.
+        `/${bucket}/${objectKey}`,
+        buildAliyunOssProxySubres(url),
+        Object.fromEntries(headers.entries()),
+      ),
+    );
+
+    const response = await context.fetcher(url, {
+      method: "GET",
+      headers,
+      signal: context.signal,
+    });
+    if (!response.ok) {
+      throw new ProviderRequestError(
+        response.status,
+        await readProviderProxyErrorMessage(response, `Alibaba Cloud OSS download failed with HTTP ${response.status}`),
+      );
+    }
+
+    const name = optionalString(input.fileName) ?? defaultObjectFileName(objectKey);
+    const mimeType = optionalString(response.headers.get("content-type")) ?? "application/octet-stream";
+    const file = await storeResponseInTransit(response, context.transitFiles, {
+      name,
+      mimeType,
+      fieldName: "Alibaba Cloud OSS download",
+      createError: (message) => new ProviderRequestError(413, message),
+      signal: context.signal,
+    });
+
+    return {
+      objectKey,
+      name,
+      mimeType,
+      sizeBytes: file.sizeBytes,
+      file,
+    };
+  } catch (error) {
+    throw normalizeAliyunError(error, "execute");
+  }
+}
+
 async function aliyunPutObject(input: Record<string, unknown>, context: AliyunOssContext): Promise<unknown> {
   const bucket = resolveBucket(input, context);
   const objectKey = requireAliyunField(input.objectKey, "objectKey");
-  const client = createClientForAction(input, context, bucket);
+  const client = await createClientForAction(input, context, bucket);
   const sourceUrl = optionalString(input.sourceUrl);
   // A user-supplied sourceUrl is downloaded with the public-only fetch even when
   // the deployment allows private networks: the private-network opt-in covers the
@@ -487,7 +624,7 @@ async function downloadSourceFile(
 async function aliyunDeleteObject(input: Record<string, unknown>, context: AliyunOssContext): Promise<unknown> {
   const bucket = resolveBucket(input, context);
   const objectKey = requireAliyunField(input.objectKey, "objectKey");
-  const client = createClientForAction(input, context, bucket);
+  const client = await createClientForAction(input, context, bucket);
 
   await client.delete(
     objectKey,
@@ -506,7 +643,7 @@ async function aliyunDeleteObject(input: Record<string, unknown>, context: Aliyu
 async function aliyunGeneratePresignedUrl(input: Record<string, unknown>, context: AliyunOssContext): Promise<unknown> {
   const bucket = resolveBucket(input, context);
   const objectKey = requireAliyunField(input.objectKey, "objectKey");
-  const client = createClientForAction(input, context, bucket);
+  const client = await createClientForAction(input, context, bucket);
   const method = normalizePresignedMethod(input.method);
   const expiresSeconds = normalizeExpiresSeconds(input.expiresSeconds);
   const url = client.signatureUrl(
@@ -527,11 +664,11 @@ async function aliyunGeneratePresignedUrl(input: Record<string, unknown>, contex
   };
 }
 
-function createClientForAction(
+async function createClientForAction(
   input: Record<string, unknown>,
   context: AliyunOssContext,
   bucket?: string,
-): AliyunOssClient {
+): Promise<AliyunOssClient> {
   const endpoint = resolveEndpoint(input, context);
   return createAliyunOssClient({
     accessKeyId: requireAliyunField(context.values.accessKeyId, "accessKeyId"),
@@ -561,7 +698,7 @@ function resolveBucket(input: Record<string, unknown>, context: AliyunOssContext
 }
 
 function missingAliyunField(message: string): never {
-  throw new ProviderRequestError(400, message);
+  throw providerInputError(message);
 }
 
 function normalizeBucket(bucket: AliyunBucket | undefined | null): Record<string, unknown> {
@@ -672,7 +809,7 @@ function normalizeAliyunError(error: unknown, phase: "validate" | "execute"): Pr
   const status = readAliyunErrorStatus(error);
   const message = error instanceof Error && error.message.trim() ? error.message : "aliyun_oss request failed";
   if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 429) {
     return new ProviderRequestError(429, message);
@@ -711,13 +848,12 @@ function parseAndValidateEndpoint(value: string, allowPrivateNetwork = isPrivate
   if (url.pathname !== "/" || url.search || url.hash) {
     throw new ProviderRequestError(400, "endpoint must not include path, query, or hash");
   }
-  // SDK-based actions build an ali-oss client from this endpoint and bypass the
-  // guarded fetch, so this is the sole SSRF guard for those paths. Delegate to
-  // the shared policy (blocks metadata hostnames and IPv6 unconditionally,
-  // private targets unless the deployment opts in) instead of a bespoke check.
+  // URL-literal policy for credential/user endpoints. SDK-based actions also
+  // DNS-check the same host in createAliyunOssClient before constructing ali-oss,
+  // which otherwise bypasses the guarded fetch.
   assertPublicHttpUrl(url.toString(), {
     fieldName: "endpoint",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
     allowPrivateNetwork,
   });
   return url;
@@ -732,7 +868,7 @@ function validateSourceUrl(value: string): string {
   // deployment's private-network opt-in (which only covers the trusted endpoint).
   assertPublicHttpUrl(url.toString(), {
     fieldName: "sourceUrl",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
     allowPrivateNetwork: false,
   });
   return url.toString();

@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
@@ -10,7 +12,7 @@ type BeaconchainActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
 
 export const beaconchainApiBaseUrl = "https://beaconcha.in";
 
-export const beaconchainActionHandlers: Record<string, BeaconchainActionHandler> = {
+export const beaconchainActionHandlers: ProviderActionHandlers<"beaconchain", BeaconchainActionHandler> = {
   get_staking_queues(input, context) {
     return getStakingQueues(input, context);
   },

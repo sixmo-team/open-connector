@@ -3,9 +3,10 @@ import type {
   CredentialValidators,
   ExecutionContext,
   ProviderExecutors,
+  ProviderProxyExecutor,
   TransitFileWriter,
 } from "../../core/types.ts";
-import type { KrakenIoActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { extname } from "node:path";
 import {
@@ -17,18 +18,31 @@ import {
   requiredString,
 } from "../../core/cast.ts";
 import { readBoundedResponseBytes } from "../../core/request.ts";
-import {
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "kraken_io";
 const krakenApiBaseUrl = "https://api.kraken.io";
 const krakenOptimizeUrl = `${krakenApiBaseUrl}/v1/url`;
 const krakenUploadUrl = `${krakenApiBaseUrl}/v1/upload`;
 const krakenUserStatusUrl = `${krakenApiBaseUrl}/user_status`;
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: krakenApiBaseUrl,
+  auth: { type: "none" },
+  skipDnsValidation: true,
+  async customizeRequest({ body, context, headers, setBody }) {
+    const credential = await requireApiKeyCredential(context, service);
+    const apiSecret = requireKrakenApiSecret(credential.values.apiSecret ?? credential.metadata.apiSecret);
+    const record = body == null ? {} : optionalRecord(body);
+    if (!record) throw providerInputError("auth proxy auth requires a JSON object body");
+    setBody({ ...record, auth: { api_key: credential.apiKey, api_secret: apiSecret } });
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
+});
 
 type KrakenRequestPhase = "validate" | "execute";
 type KrakenIoActionHandler = (input: Record<string, unknown>, context: KrakenIoActionContext) => Promise<unknown>;
@@ -41,7 +55,7 @@ interface KrakenIoActionContext {
   signal?: AbortSignal;
 }
 
-export const krakenIoActionHandlers: Record<KrakenIoActionName, KrakenIoActionHandler> = {
+export const krakenIoActionHandlers: ProviderActionHandlers<"kraken_io", KrakenIoActionHandler> = {
   get_user_status(_input, context) {
     return fetchKrakenUserStatus(context.apiKey, context.apiSecret, context.fetcher, context.signal, "execute");
   },

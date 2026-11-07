@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { MoosendActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "moosend";
 const moosendApiBaseUrl = "https://api.moosend.com/v3";
@@ -22,7 +24,7 @@ interface MoosendRequestOptions {
   body?: Record<string, unknown>;
 }
 
-export const moosendActionHandlers: Record<MoosendActionName, MoosendActionHandler> = {
+export const moosendActionHandlers: ProviderActionHandlers<"moosend", MoosendActionHandler> = {
   list_mailing_lists(input, context) {
     return requestMoosendJson({
       context,
@@ -82,6 +84,16 @@ export const moosendActionHandlers: Record<MoosendActionName, MoosendActionHandl
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, moosendActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: moosendApiBaseUrl,
+  auth: { type: "api_key_query", name: "apikey" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -235,10 +247,6 @@ function requireString(value: unknown, fieldName: string): string {
     throw new ProviderRequestError(400, `${fieldName} is required`);
   }
   return text;
-}
-
-function optionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function optionalStringArray(value: unknown): string[] | undefined {

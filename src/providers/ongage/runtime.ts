@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { OngageActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -21,8 +22,6 @@ import {
 } from "../provider-runtime.ts";
 
 export const ongageApiBaseUrl = "https://api.ongage.com";
-
-const ongageRequestTimeoutMs = 30_000;
 
 type OngageRequestPhase = "validate" | "execute";
 type OngageRequestMethod = "GET" | "POST" | "PUT";
@@ -45,7 +44,7 @@ interface OngageResponseEnvelope {
   payload: unknown;
 }
 
-export const ongageActionHandlers: Record<OngageActionName, OngageActionHandler> = {
+export const ongageActionHandlers: ProviderActionHandlers<"ongage", OngageActionHandler> = {
   list_lists: listLists,
   get_list: getList,
   get_contact_by_email: getContactByEmail,
@@ -213,7 +212,7 @@ async function changeContactStatus(input: Record<string, unknown>, context: ApiK
 }
 
 async function requestOngage(input: OngageRequestOptions): Promise<OngageResponseEnvelope> {
-  const timeout = createProviderTimeout(input.signal, ongageRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(buildOngageUrl(input.path, input.query), {
       method: input.method,

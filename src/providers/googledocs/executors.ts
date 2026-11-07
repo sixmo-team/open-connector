@@ -4,25 +4,25 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { GoogledocsActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { integer, objectArray } from "../../core/cast.ts";
+import {
+  googleJsonRequest as googleJsonRequestShared,
+  googleRequest as googleRequestShared,
+} from "../googledrive/runtime-request.ts";
 import {
   asObject,
   asOptionalObject,
   asStringArray,
   compactObject,
-  googleJsonRequest as googleJsonRequestShared,
-  googleRequest as googleRequestShared,
   optionalBoolean,
 } from "../googledrive/runtime-shared.ts";
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  requireOAuthCredential,
-} from "../provider-runtime.ts";
+import { requireOAuthCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError } from "../provider-runtime.ts";
 
 const docsApiBaseUrl = "https://docs.googleapis.com/v1";
 const driveApiBaseUrl = "https://www.googleapis.com/drive/v3";
@@ -80,7 +80,7 @@ type BatchUpdateResponse = {
   writeControl?: Record<string, unknown>;
 };
 
-export const googledocsActionHandlers: Record<GoogledocsActionName, ActionHandler> = {
+export const googledocsActionHandlers: ProviderActionHandlers<"googledocs", ActionHandler> = {
   copy_document(input, { accessToken, fetcher }) {
     return copyDocument(input, accessToken, fetcher);
   },
@@ -273,7 +273,7 @@ export const googledocsActionHandlers: Record<GoogledocsActionName, ActionHandle
       fetcher,
     );
   },
-} satisfies Record<GoogledocsActionName, ActionHandler>;
+};
 
 export const executors: ProviderExecutors = defineProviderExecutors<ActionContext>({
   service: "googledocs",

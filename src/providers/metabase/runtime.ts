@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlerSubset } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
@@ -8,7 +9,7 @@ import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts"
 const apiPathPrefix = "/api";
 const validationPath = "/user/current";
 
-interface MetabaseContext {
+export interface MetabaseContext {
   apiKey: string;
   apiBaseUrl: string;
   fetcher: typeof fetch;
@@ -18,7 +19,7 @@ interface MetabaseContext {
 type MetabasePhase = "validate" | "execute";
 type MetabaseActionHandler = ProviderRuntimeHandler<MetabaseContext>;
 
-export const metabaseActionHandlers: Record<string, MetabaseActionHandler> = {
+export const metabaseActionHandlers: ProviderActionHandlerSubset<"metabase", MetabaseActionHandler> = {
   async get_current_user(_input, context) {
     const payload = await requestMetabaseJson({ path: validationPath, context, phase: "execute" });
     return { user: requireObject(payload, "Metabase user"), raw: toRawObject(payload) };

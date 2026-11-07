@@ -1,11 +1,12 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { ByteformsActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 
-const byteformsApiBaseUrl = "https://api.forms.bytesuite.io";
+export const byteformsApiBaseUrl = "https://api.forms.bytesuite.io";
 const validationPath = "/api/form";
 
 interface ByteformsEnvelope<T> {
@@ -19,7 +20,7 @@ interface ByteformsEnvelope<T> {
 type ByteformsMode = "validate" | "execute";
 type ByteformsActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
 
-export const byteformsActionHandlers: Record<ByteformsActionName, ByteformsActionHandler> = {
+export const byteformsActionHandlers: ProviderActionHandlers<"byteforms", ByteformsActionHandler> = {
   list_forms(_input, context) {
     return listForms(context);
   },
@@ -173,7 +174,7 @@ async function createByteformsError(response: Response, mode: ByteformsMode): Pr
   const message = await readByteformsErrorMessage(response);
 
   if (mode === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status, message);
 }

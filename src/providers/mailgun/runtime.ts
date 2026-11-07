@@ -1,21 +1,12 @@
 import type { CredentialValidationResult, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
-import type { MailgunActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
-import {
-  compactObject,
-  optionalBoolean,
-  optionalInteger,
-  optionalRecord,
-  optionalString,
-  requiredString,
-} from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { encodePathSegment } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { providerUserAgent, ProviderRequestError, requiredInputString } from "../provider-runtime.ts";
 
 const mailgunDefaultApiBaseUrl = "https://api.mailgun.net";
 const mailgunAllowedApiBaseUrls = new Set([mailgunDefaultApiBaseUrl, "https://api.eu.mailgun.net"]);
@@ -38,7 +29,7 @@ export interface MailgunContext {
   signal?: AbortSignal;
 }
 
-export const mailgunActionHandlers: Record<MailgunActionName, MailgunActionHandler> = {
+export const mailgunActionHandlers: ProviderActionHandlers<"mailgun", MailgunActionHandler> = {
   list_domains(input, context) {
     return mailgunGetJson("/v4/domains", context, {
       limit: optionalInteger(input.limit),
@@ -591,10 +582,6 @@ function extractFirstDomainName(payload: unknown): string | undefined {
   return optionalString(first?.name);
 }
 
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function readSuppressionKind(value: unknown): MailgunSuppressionKind {
   if (value === "bounce" || value === "complaint" || value === "unsubscribe" || value === "allowlist") {
     return value;
@@ -657,8 +644,4 @@ function appendPrefixedRecord(form: FormData, prefix: string, value: unknown): v
     }
     form.append(`${prefix}${key}`, typeof child === "string" ? child : JSON.stringify(child));
   }
-}
-
-function encodePathSegment(value: string): string {
-  return encodeURIComponent(value);
 }

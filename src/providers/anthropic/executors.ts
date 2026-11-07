@@ -1,13 +1,11 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  providerUserAgent,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "anthropic";
 const anthropicApiBaseUrl = "https://api.anthropic.com";
@@ -15,7 +13,7 @@ const anthropicApiVersion = "2023-06-01";
 
 type AnthropicActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const anthropicActionHandlers: Record<string, AnthropicActionHandler> = {
+export const anthropicActionHandlers: ProviderActionHandlers<"anthropic", AnthropicActionHandler> = {
   list_models(input, context) {
     return anthropicListModels(input, context);
   },
@@ -211,8 +209,4 @@ async function readAnthropicError(response: Response) {
       message: raw || `anthropic request failed with ${response.status}`,
     };
   }
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

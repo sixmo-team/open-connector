@@ -1,6 +1,11 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { RiveterActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -11,16 +16,28 @@ import {
   requiredRecord,
   requiredString,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 
 const service = "riveter";
 const riveterApiBaseUrl = "https://api.riveterhq.com/v1";
 const validationPath = "/account";
-const requestTimeoutMs = 30_000;
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: riveterApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  },
+});
 
 type RiveterActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const riveterActionHandlers: Record<RiveterActionName, RiveterActionHandler> = {
+export const riveterActionHandlers: ProviderActionHandlers<"riveter", RiveterActionHandler> = {
   get_account(_input, context) {
     return requestRiveterObject({
       method: "GET",
@@ -86,7 +103,7 @@ async function requestRiveterObject(input: {
   body?: Record<string, unknown>;
 }): Promise<Record<string, unknown>> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  const timeout = setTimeout(() => controller.abort(), defaultProviderRequestTimeoutMs);
   const signal = input.context.signal ?? controller.signal;
   try {
     const response = await input.context.fetcher(buildRiveterUrl(input.path), {

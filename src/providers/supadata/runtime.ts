@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
@@ -23,7 +25,7 @@ const supadataActionPaths: Record<string, string> = {
   map_web_links: "/web/map",
 };
 
-export const supadataActionHandlers: Record<string, SupadataActionHandler> = {
+export const supadataActionHandlers: ProviderActionHandlers<"supadata", SupadataActionHandler> = {
   get_account(_input, context) {
     return supadataGet(supadataActionPaths.get_account, {}, context, "execute");
   },

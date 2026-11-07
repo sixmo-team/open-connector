@@ -1,15 +1,12 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
-import type { NamelyActionName } from "./actions.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "namely";
 
@@ -24,7 +21,7 @@ interface NamelyContext {
   signal?: AbortSignal;
 }
 
-export const namelyActionHandlers: Record<NamelyActionName, NamelyActionHandler> = {
+export const namelyActionHandlers: ProviderActionHandlers<"namely", NamelyActionHandler> = {
   async list_profiles(input, context) {
     const raw = await requestNamelyJson({
       context,
@@ -348,8 +345,4 @@ function readFirstObject(value: unknown): Record<string, unknown> | undefined {
     }
   }
   return undefined;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

@@ -1,6 +1,11 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { CustomgptActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -9,9 +14,12 @@ import {
   optionalRecord,
   optionalString,
   positiveInteger,
+  recordOrEmpty,
   requiredString,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "customgpt";
 const customgptApiBaseUrl = "https://app.customgpt.ai";
@@ -20,7 +28,7 @@ type CustomgptRequestPhase = "validate" | "execute";
 type CustomgptActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type CustomgptActionHandler = (input: Record<string, unknown>, context: CustomgptActionContext) => Promise<unknown>;
 
-export const customgptActionHandlers: Record<CustomgptActionName, CustomgptActionHandler> = {
+export const customgptActionHandlers: ProviderActionHandlers<"customgpt", CustomgptActionHandler> = {
   list_agents(input, context) {
     return executeListAgents(input, context);
   },
@@ -46,6 +54,16 @@ export const customgptActionHandlers: Record<CustomgptActionName, CustomgptActio
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, customgptActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: customgptApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const context: CustomgptActionContext = {
@@ -58,7 +76,7 @@ export const credentialValidators: CredentialValidators = {
       context,
       phase: "validate",
     });
-    const user = readObject(unwrapData(payload));
+    const user = recordOrEmpty(unwrapData(payload));
 
     return {
       profile: {
@@ -84,7 +102,7 @@ async function executeListAgents(input: Record<string, unknown>, context: Custom
     context,
     phase: "execute",
   });
-  const raw = readObject(unwrapData(payload));
+  const raw = recordOrEmpty(unwrapData(payload));
 
   return {
     agents: readObjectArray(raw.data),
@@ -101,7 +119,7 @@ async function executeGetAgent(input: Record<string, unknown>, context: Customgp
     context,
     phase: "execute",
   });
-  const agent = readObject(unwrapData(payload));
+  const agent = recordOrEmpty(unwrapData(payload));
 
   return {
     agent,
@@ -120,7 +138,7 @@ async function executeListConversations(
     context,
     phase: "execute",
   });
-  const raw = readObject(unwrapData(payload));
+  const raw = recordOrEmpty(unwrapData(payload));
 
   return {
     conversations: readObjectArray(raw.data),
@@ -143,7 +161,7 @@ async function executeCreateConversation(
     context,
     phase: "execute",
   });
-  const conversation = readObject(unwrapData(payload));
+  const conversation = recordOrEmpty(unwrapData(payload));
 
   return {
     conversation,
@@ -166,7 +184,7 @@ async function executeSendMessage(input: Record<string, unknown>, context: Custo
     context,
     phase: "execute",
   });
-  const message = readObject(unwrapData(payload));
+  const message = recordOrEmpty(unwrapData(payload));
 
   return {
     message,
@@ -189,7 +207,7 @@ async function executeListMessages(input: Record<string, unknown>, context: Cust
     context,
     phase: "execute",
   });
-  const raw = readObject(unwrapData(payload));
+  const raw = recordOrEmpty(unwrapData(payload));
 
   return {
     messages: readObjectArray(raw.data),
@@ -213,8 +231,8 @@ async function executeListDocuments(input: Record<string, unknown>, context: Cus
     context,
     phase: "execute",
   });
-  const raw = readObject(unwrapData(payload));
-  const pages = readObject(raw.pages);
+  const raw = recordOrEmpty(unwrapData(payload));
+  const pages = recordOrEmpty(raw.pages);
 
   return {
     project: readNullableObject(raw.project),
@@ -336,8 +354,8 @@ function extractCustomgptErrorMessage(payload: unknown): string | undefined {
   }
   return (
     optionalString(root.message) ??
-    optionalString(readObject(root.data).message) ??
-    optionalString(readObject(root.error).message)
+    optionalString(recordOrEmpty(root.data).message) ??
+    optionalString(recordOrEmpty(root.error).message)
   );
 }
 
@@ -349,10 +367,6 @@ function unwrapData(payload: unknown): unknown {
   return root.data;
 }
 
-function readObject(value: unknown): Record<string, unknown> {
-  return optionalRecord(value) ?? {};
-}
-
 function readNullableObject(value: unknown): Record<string, unknown> | null {
   return optionalRecord(value) ?? null;
 }
@@ -361,7 +375,7 @@ function readObjectArray(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.map((item) => readObject(item));
+  return value.map((item) => recordOrEmpty(item));
 }
 
 function normalizePagination(input: Record<string, unknown>): Record<string, unknown> {
@@ -431,8 +445,4 @@ function readNullableInteger(value: unknown): number | null {
 
 function readNullableString(value: unknown): string | null {
   return optionalString(value) ?? null;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

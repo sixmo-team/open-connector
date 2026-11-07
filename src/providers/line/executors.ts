@@ -4,8 +4,11 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
-import { defineProviderExecutors, defineProviderProxy, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { executeLineAction, lineApiBaseUrl, validateLineCredential } from "./runtime.ts";
 
 const service = "line";
@@ -19,7 +22,7 @@ interface ProviderContext {
 
 type Handler = (input: Record<string, unknown>, context: ProviderContext) => Promise<unknown>;
 
-const handlers: Record<string, Handler> = {
+const handlers: ProviderActionHandlers<"line", Handler> = {
   get_bot_info(input, context) {
     return executeLineAction("get_bot_info", input, context.apiKey, context.fetcher);
   },

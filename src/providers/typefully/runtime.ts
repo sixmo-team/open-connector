@@ -1,8 +1,10 @@
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 export const typefullyApiBaseUrl = "https://api.typefully.com";
 
@@ -22,7 +24,7 @@ interface TypefullyRequestOptions {
   signal?: AbortSignal;
 }
 
-export const typefullyActionHandlers: Record<string, TypefullyActionHandler> = {
+export const typefullyActionHandlers: ProviderActionHandlers<"typefully", TypefullyActionHandler> = {
   get_current_user(_input, context) {
     return requestTypefullyJson({
       apiKey: context.apiKey,
@@ -72,7 +74,7 @@ export const typefullyActionHandlers: Record<string, TypefullyActionHandler> = {
       apiKey: context.apiKey,
       path: `/v2/social-sets/${encodeURIComponent(requireInputString(input.social_set_id, "social_set_id"))}/drafts`,
       method: "POST",
-      body: requiredRecord(input.body, "body", badInput),
+      body: requiredRecord(input.body, "body", providerInputError),
       fetcher: context.fetcher,
       mode: "execute",
       signal: context.signal,
@@ -100,7 +102,7 @@ export const typefullyActionHandlers: Record<string, TypefullyActionHandler> = {
         exclude_comment_markers:
           typeof input.exclude_comment_markers === "boolean" ? input.exclude_comment_markers : undefined,
       }),
-      body: requiredRecord(input.body, "body", badInput),
+      body: requiredRecord(input.body, "body", providerInputError),
       fetcher: context.fetcher,
       mode: "execute",
       signal: context.signal,
@@ -298,9 +300,5 @@ function requireInputString(value: unknown, fieldName: string): string {
     return String(value);
   }
 
-  return requiredString(value, fieldName, badInput);
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
+  return requiredString(value, fieldName, providerInputError);
 }

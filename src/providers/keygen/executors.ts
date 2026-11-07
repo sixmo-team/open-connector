@@ -1,16 +1,20 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
-import type { KeygenActionName } from "./actions.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 const keygenApiBaseUrl = "https://api.keygen.sh/v1/accounts";
 const keygenValidationPath = "/me";
+const service = "keygen";
 
 type KeygenRequestPhase = "validate" | "execute";
 type KeygenResourceKey =
@@ -64,7 +68,7 @@ const keygenResources = {
   processes: { path: "processes", type: "processes" },
 } satisfies Record<KeygenResourceKey, KeygenResourceConfig>;
 
-export const keygenActionHandlers: Record<KeygenActionName, KeygenActionHandler> = {
+export const keygenActionHandlers: ProviderActionHandlers<"keygen", KeygenActionHandler> = {
   whoami(_input, context) {
     return keygenGetJson(["me"], {}, context, "execute");
   },
@@ -374,16 +378,29 @@ export const keygenActionHandlers: Record<KeygenActionName, KeygenActionHandler>
 };
 
 export const executors: ProviderExecutors = defineProviderExecutors<KeygenRequestContext>({
-  service: "keygen",
+  service,
   handlers: keygenActionHandlers,
   async createContext(context: ExecutionContext, fetcher: typeof fetch): Promise<KeygenRequestContext> {
-    const credential = await requireApiKeyCredential(context, "keygen");
+    const credential = await requireApiKeyCredential(context, service);
     return {
       apiKey: credential.apiKey,
       account: requireKeygenAccount(credential.metadata.account ?? credential.values.account),
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context) {
+    const credential = await requireApiKeyCredential(context, service);
+    const account = requireKeygenAccount(credential.metadata.account ?? credential.values.account);
+    return `${keygenApiBaseUrl}/${encodeURIComponent(account)}`;
+  },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/vnd.api+json");
   },
 });
 
@@ -682,7 +699,7 @@ function createKeygenError(response: Response, payload: unknown, phase: KeygenRe
   }
 
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (phase === "execute" && usedAuth && (response.status === 401 || response.status === 403)) {
@@ -690,11 +707,11 @@ function createKeygenError(response: Response, payload: unknown, phase: KeygenRe
   }
 
   if (phase === "execute" && !usedAuth && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if ([400, 404, 422].includes(response.status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(response.status || 500, message);

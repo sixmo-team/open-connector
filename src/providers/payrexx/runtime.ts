@@ -1,3 +1,4 @@
+import type { ApiKeyActionRequest, ProviderActionHandlers } from "../provider-executors.ts";
 import type { PayrexxActionName } from "./actions.ts";
 
 import {
@@ -8,7 +9,13 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 export interface PayrexxCredentialCheck {
   providerAccountId?: string;
@@ -17,22 +24,12 @@ export interface PayrexxCredentialCheck {
   providerMetadata: Record<string, unknown>;
 }
 
-interface ApiKeyProviderActionInput {
-  apiKey: string;
-  actionName: string;
-  input: Record<string, unknown>;
-  providerMetadata?: Record<string, unknown>;
-  values?: Record<string, string>;
-}
-
 export const payrexxApiBaseUrl = "https://api.payrexx.com/v1.16";
-
-const requestTimeoutMs = 30_000;
 
 type QueryValue = string | number | boolean | undefined;
 type PayrexxPhase = "validate" | "execute";
 type PayrexxHandler = (
-  input: ApiKeyProviderActionInput & {
+  input: ApiKeyActionRequest & {
     actionName: PayrexxActionName;
     input: Record<string, unknown>;
   },
@@ -45,7 +42,7 @@ interface PayrexxResponse {
   message?: unknown;
 }
 
-export const payrexxActionHandlers: Record<PayrexxActionName, PayrexxHandler> = {
+export const payrexxActionHandlers: ProviderActionHandlers<"payrexx", PayrexxHandler> = {
   async list_payment_providers(input, fetcher) {
     const payload = await requestPayrexxJson({
       path: "/PaymentProvider/",
@@ -135,7 +132,7 @@ export async function validatePayrexxCredential(
   input: Record<string, string>,
   fetcher: typeof fetch,
 ): Promise<PayrexxCredentialCheck> {
-  const apiKey = requiredString(input.apiKey, "apiKey", (message) => new ProviderRequestError(400, message));
+  const apiKey = requiredString(input.apiKey, "apiKey", providerInputError);
   const instance = requireInputString(input.instance, "instance");
   const payload = await requestPayrexxJson({
     path: "/PaymentProvider/",
@@ -160,7 +157,7 @@ export async function validatePayrexxCredential(
 }
 
 export async function executePayrexxAction(
-  input: ApiKeyProviderActionInput & {
+  input: ApiKeyActionRequest & {
     actionName: PayrexxActionName;
     input: Record<string, unknown>;
   },
@@ -199,7 +196,7 @@ async function requestPayrexxJson(input: {
     headers.set("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8");
   }
 
-  const timeout = createProviderTimeout(undefined, requestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   try {
     const response = await input.fetcher(url, {
       method: input.method,
@@ -217,7 +214,7 @@ async function requestPayrexxJson(input: {
     if (timeout.didTimeout() && isAbortError(error)) {
       throw new ProviderRequestError(
         502,
-        `payrexx request timed out after ${Math.ceil(requestTimeoutMs / 1000)} seconds`,
+        `payrexx request timed out after ${Math.ceil(defaultProviderRequestTimeoutMs / 1000)} seconds`,
       );
     }
     throw new ProviderRequestError(502, readErrorMessage(error));
@@ -233,7 +230,7 @@ async function readResponseBody(response: Response): Promise<PayrexxResponse> {
       return payload;
     }
   } catch {
-    // 下方使用统一的 provider error。
+    // Use the normalized provider error below.
   }
   return { message: response.statusText || "Payrexx returned an invalid response" };
 }
@@ -247,14 +244,14 @@ function normalizePayrexxError(response: Response, payload: PayrexxResponse, pha
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && response.status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (
     response.status === 401 ||
     response.status === 403 ||
     (response.status === 200 && isCredentialErrorMessage(message))
   ) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
   if (response.status === 404) return new ProviderRequestError(404, message);
   return new ProviderRequestError(response.status >= 500 ? 502 : 400, message);

@@ -1,20 +1,20 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 const service = "intuiface";
 const intuifaceApiOrigin = "https://api.intuiface.com";
 const intuifaceWebTriggersBaseUrl = `${intuifaceApiOrigin}/webtriggers/v1`;
-const intuifaceDefaultRequestTimeoutMs = 30_000;
 
 interface IntuifaceRequestInput {
   method: "GET" | "POST";
@@ -103,7 +103,7 @@ async function requestIntuifaceJson(
   context: ApiKeyProviderContext,
   phase: "validate" | "execute",
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, intuifaceDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   const url = new URL(`${intuifaceWebTriggersBaseUrl}${input.path}`);
   appendQuery(url, input.query);
 
@@ -182,11 +182,11 @@ function toIntuifaceError(response: Response, payload: unknown, phase: "validate
   if (response.status === 429) {
     return new ProviderRequestError(429, message);
   } else if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   } else if (phase === "execute" && (response.status === 401 || response.status === 403)) {
     return new ProviderRequestError(401, message);
   } else if (response.status === 400) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   } else {
     return new ProviderRequestError(response.status || 500, message);
   }

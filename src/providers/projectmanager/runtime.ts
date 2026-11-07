@@ -1,9 +1,10 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ProjectmanagerActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 export const projectmanagerApiBaseUrl = "https://api.projectmanager.com";
 const integrationName = "Oomol Connector";
@@ -18,7 +19,7 @@ type ProjectmanagerActionHandler = (
   context: ProjectmanagerActionContext,
 ) => Promise<unknown>;
 
-export const projectmanagerActionHandlers: Record<ProjectmanagerActionName, ProjectmanagerActionHandler> = {
+export const projectmanagerActionHandlers: ProviderActionHandlers<"projectmanager", ProjectmanagerActionHandler> = {
   list_projects(input, context) {
     return requestProjectmanagerList({
       path: "/api/data/projects",
@@ -76,19 +77,6 @@ export const executors: ProviderExecutors = defineApiKeyProviderExecutors(
     (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>
   >,
 );
-
-export function executeProjectmanagerAction(input: {
-  actionName: ProjectmanagerActionName;
-  input: Record<string, unknown>;
-  apiKey: string;
-  fetcher: typeof fetch;
-}): Promise<unknown> {
-  const handler = projectmanagerActionHandlers[input.actionName];
-  return handler(input.input, {
-    apiKey: input.apiKey,
-    fetcher: input.fetcher,
-  });
-}
 
 function buildOdataQuery(input: Record<string, unknown>) {
   return [

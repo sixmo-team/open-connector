@@ -1,10 +1,8 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type {
-  ApiKeyProviderContext,
-  ProviderFetch,
-  ProviderRuntimeHandler,
-  ProviderTransitFile,
-} from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderTransitFile } from "../provider-files.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalNumber, optionalRawString, optionalRecord } from "../../core/cast.ts";
 import { readBoundedResponseBytes } from "../../core/request.ts";
@@ -22,7 +20,10 @@ const photoroomShadowModeByStyle: Record<string, string> = {
 
 type PhotoroomRequestPhase = "validate" | "execute";
 
-export const photoroomActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const photoroomActionHandlers: ProviderActionHandlers<
+  "photoroom",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   edit_product_image(input, context) {
     return editPhotoroomProductImage(input, context);
   },

@@ -1,4 +1,5 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -8,12 +9,18 @@ import {
   requiredRecord,
   requiredString,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  isAbortLikeError,
+  providerUserAgent,
+  ProviderRequestError,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 const service = "cincopa";
 const apiBaseUrl = "https://api.cincopa.com/v2";
 const validationPath = "/ping.json";
-const requestTimeoutMs = 30_000;
 
 type CincopaMode = "validate" | "execute";
 interface CincopaContext {
@@ -22,8 +29,8 @@ interface CincopaContext {
   signal?: AbortSignal;
 }
 
-export const cincopaActionHandlers: Record<
-  string,
+export const cincopaActionHandlers: ProviderActionHandlers<
+  "cincopa",
   (input: Record<string, unknown>, context: CincopaContext) => Promise<unknown>
 > = {
   async list_galleries(input, context) {
@@ -109,6 +116,16 @@ export const cincopaActionHandlers: Record<
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, cincopaActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: apiBaseUrl,
+  auth: { type: "api_key_query", name: "api_token" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const body = await requestBody(
@@ -154,8 +171,8 @@ async function requestJson(input: {
   query?: Record<string, string | undefined>;
 }): Promise<unknown> {
   const signal = input.context.signal
-    ? AbortSignal.any([input.context.signal, AbortSignal.timeout(requestTimeoutMs)])
-    : AbortSignal.timeout(requestTimeoutMs);
+    ? AbortSignal.any([input.context.signal, AbortSignal.timeout(defaultProviderRequestTimeoutMs)])
+    : AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   let response: Response;
   let payload: unknown;
   try {
@@ -267,8 +284,4 @@ function joinStringArray(value: unknown): string | undefined {
 
 function providerError(message: string): ProviderRequestError {
   return new ProviderRequestError(502, `Cincopa returned invalid ${message}`);
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
 }

@@ -1,0 +1,126 @@
+# Supply the reviewed scoped image by immutable digest; there is no upstream/global image default.
+replicaCount: 1
+image:
+  repository: ""
+  pullPolicy: IfNotPresent
+imageDigest: ""
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+  automountServiceAccountToken: false
+podSecurityContext:
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  capabilities:
+    drop: [ALL]
+
+service:
+  port: 3000
+  annotations: {}
+# No Ingress, NodePort, LoadBalancer, public console or callback listener.
+networkPolicy:
+  # Only existing backend/control pods in this namespace can reach the private service.
+  backendPodSelector: {}
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Existing Secret keys: OPEN_CONNECTOR_POSTGRES_URL (restricted runtime role),
+# OPEN_CONNECTOR_SEAWEEDFS_ACCESS_KEY_ID, OPEN_CONNECTOR_SEAWEEDFS_SECRET_ACCESS_KEY.
+secret:
+  existingSecret: ""
+# Separate existing Secret with open_connector_openbao_token and
+# open_connector_jwks_bearer_token keys; mounted read-only, never environment values.
+authSecret:
+  existingSecret: ""
+# The migration hook gets an owner URL from this separate existing Secret's
+# OPEN_CONNECTOR_POSTGRES_MIGRATOR_URL key; it is never mounted into the server.
+database:
+  migration:
+    enabled: true
+    existingSecret: ""
+    backoffLimit: 0
+
+config:
+  OPEN_CONNECTOR_INTERNAL_URL: ""
+  OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN: ""
+  OPEN_CONNECTOR_OPENBAO_ADDR: ""
+  OPEN_CONNECTOR_JWKS_URL: ""
+  OPEN_CONNECTOR_JWT_ISSUER: ""
+  OPEN_CONNECTOR_JWT_AUDIENCE: open-connector-saas
+  OPEN_CONNECTOR_JWT_ACTIVE_KID: ""
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWKS_URL: ""
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ISSUER: ""
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_AUDIENCE: ""
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ACTIVE_KID: ""
+  OPEN_CONNECTOR_SEAWEEDFS_ENDPOINT: ""
+  OPEN_CONNECTOR_SEAWEEDFS_BUCKET: ""
+  OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK: "false"
+
+probes:
+  liveness:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    path: /ready
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  startup:
+    enabled: true
+    path: /ready
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 30
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: ""
+podDisruptionBudget:
+  enabled: false
+  minAvailable: ""
+  maxUnavailable: ""
+topologySpread:
+  enabled: true
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+# Covers the existing 120s connector processing budget plus orderly shutdown.
+terminationGracePeriodSeconds: 185

@@ -61,6 +61,16 @@ export type AdminActionRisk = "read" | "write" | "destructive" | "access_change"
 export type AdminActionIdempotency = "safe" | "keyed" | "unsafe";
 export type AdminMinimumRole = "viewer" | "member" | "admin" | "owner";
 
+export type AdminActionMode = "defaults" | "individual";
+
+export interface AdminActionPermission {
+  actionId: string;
+  enabled: boolean;
+  source: "individual" | "platform" | "none";
+  individualEnabled: boolean | null;
+  defaultEnabled: boolean | null;
+}
+
 export interface AdminAction {
   actionId: string;
   displayName: string;
@@ -72,11 +82,11 @@ export interface AdminAction {
   minimumRole: AdminMinimumRole;
   maxInputBytes: number;
   maxOutputBytes: number;
-  granted: boolean;
+  permission: AdminActionPermission;
   approvalOverride: "inherit" | "always";
-  calls: number;
-  successes: number;
-  failures: number;
+  calls: number | null;
+  successes: number | null;
+  failures: number | null;
 }
 
 export type AdminConnectionVisibility = "user" | "workspace";

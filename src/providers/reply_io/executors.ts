@@ -1,17 +1,24 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ReplyIoActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "reply_io";
 const replyIoApiBaseUrl = "https://api.reply.io";
 
 type ReplyIoActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const replyIoActionHandlers: Record<ReplyIoActionName, ReplyIoActionHandler> = {
+export const replyIoActionHandlers: ProviderActionHandlers<"reply_io", ReplyIoActionHandler> = {
   async get_current_user(_input, context) {
     return { user: await requestReplyIo(context, { method: "GET", path: "/v3/whoami" }) };
   },
@@ -53,6 +60,21 @@ export const replyIoActionHandlers: Record<ReplyIoActionName, ReplyIoActionHandl
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, replyIoActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: replyIoApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) {
+      headers.set("accept", "application/json");
+    }
+    if (!headers.has("content-type")) {
+      headers.set("content-type", "application/json");
+    }
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   apiKey(input, { fetcher, signal }) {

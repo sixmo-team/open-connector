@@ -60,8 +60,8 @@ export function findRuntimeImageViolations(snapshot: RuntimeImageSnapshot): stri
   }
 
   const paths = new Set(snapshot.paths.map(normalizePath));
-  for (const required of ["app/package.json", "app/src/saas/index.ts"]) {
-    if (!paths.has(required)) violations.push(`missing image runtime path: /${required}`);
+  for (const path of ["app/package.json", "app/src/saas/index.ts", "app/dist/web-saas/saas.html", "app/catalog/apps-index.json"]) {
+    if (!paths.has(path)) violations.push(`missing image runtime path: /${path}`);
   }
   for (const path of paths) {
     if (path.startsWith("app/src/") && /\.test\.[cm]?[jt]s$/.test(path))
@@ -82,7 +82,7 @@ export function findRuntimeImageViolations(snapshot: RuntimeImageSnapshot): stri
   } catch {
     violations.push("image package.json is invalid JSON");
   }
-  if (scripts.start !== "node src/saas/index.ts") violations.push("image package start is not the SaaS runtime");
+  if (scripts.start !== "node --experimental-transform-types src/saas/index.ts") violations.push("image package start is not the SaaS runtime");
   for (const [name, command] of Object.entries(scripts)) {
     for (const marker of forbiddenRuntimeMarkers) {
       if (command.includes(marker)) violations.push(`legacy image package script ${name}: ${marker}`);

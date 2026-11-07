@@ -1,0 +1,28 @@
+# Rendering-only fixture: not a deployable image, credential or live infrastructure.
+image:
+  repository: scoped-connector-test
+imageDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+secret:
+  existingSecret: scoped-runtime-test
+authSecret:
+  existingSecret: scoped-auth-test
+database:
+  migration:
+    existingSecret: scoped-migrator-test
+networkPolicy:
+  backendPodSelector:
+    matchLabels:
+      app.kubernetes.io/name: trusted-control-test
+config:
+  OPEN_CONNECTOR_INTERNAL_URL: https://connector.example.test
+  OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN: https://backend.example.test/integrations
+  OPEN_CONNECTOR_OPENBAO_ADDR: https://bao.example.test
+  OPEN_CONNECTOR_JWKS_URL: https://backend.example.test/internal/jwks
+  OPEN_CONNECTOR_JWT_ISSUER: backend-test
+  OPEN_CONNECTOR_JWT_ACTIVE_KID: execution-test
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWKS_URL: https://backend.example.test/internal/control-jwks
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ISSUER: control-test
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_AUDIENCE: connector-control-test
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ACTIVE_KID: control-test
+  OPEN_CONNECTOR_SEAWEEDFS_ENDPOINT: https://objects.example.test
+  OPEN_CONNECTOR_SEAWEEDFS_BUCKET: scoped-test

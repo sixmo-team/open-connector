@@ -1,7 +1,12 @@
-import type { ReversecontactActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { requiredString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 export interface ReversecontactCredentialCheck {
   providerAccountId?: string;
@@ -23,7 +28,7 @@ interface ApiKeyProviderActionInput {
   input: Record<string, unknown>;
 }
 
-export const reversecontactActionHandlers: Record<ReversecontactActionName, ReversecontactActionHandler> = {
+export const reversecontactActionHandlers: ProviderActionHandlers<"reversecontact", ReversecontactActionHandler> = {
   enrich_person(input, fetcher) {
     const body = normalizePersonInput(input.input);
     return requestReversecontact(personEnrichmentPath, "POST", input.apiKey, body, fetcher);
@@ -129,13 +134,13 @@ function readReversecontactMessage(payload: Record<string, unknown>) {
 
 function mapReversecontactError(status: number, message: string) {
   if (status === 401 || status === 403) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
   if (status === 429) {
     return new ProviderRequestError(429, message);
   }
   if (status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }

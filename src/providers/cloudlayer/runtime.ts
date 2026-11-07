@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { CloudlayerActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -12,7 +12,12 @@ import {
   requiredRecord,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 type CloudlayerRequestPhase = "validate" | "execute";
 
@@ -21,7 +26,10 @@ const cloudlayerAccountPath = "/v2/account";
 const cloudlayerJobsPath = "/v2/jobs";
 const cloudlayerAssetsPath = "/v2/assets";
 
-export const cloudlayerActionHandlers: Record<CloudlayerActionName, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const cloudlayerActionHandlers: ProviderActionHandlers<
+  "cloudlayer",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   async get_account(_input, context) {
     const payload = await requestCloudlayerJson({
       path: cloudlayerAccountPath,
@@ -190,13 +198,13 @@ function createCloudlayerError(
     return new ProviderRequestError(429, message);
   }
   if ((response.status === 401 || response.status === 403) && phase === "validate") {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 401 || response.status === 403) {
     return new ProviderRequestError(401, message);
   }
   if ([400, 404, 422].includes(response.status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status || 500, message);
 }
@@ -302,7 +310,7 @@ function buildCreatePdfJobBody(input: Record<string, unknown>): Record<string, u
     url: url
       ? assertPublicHttpUrl(url, {
           fieldName: "url",
-          createError: (message) => new ProviderRequestError(400, message),
+          createError: providerInputError,
         }).toString()
       : undefined,
     template: optionalString(input.template),
@@ -330,7 +338,7 @@ function buildListPath(path: string, input: Record<string, unknown>): string {
 }
 
 function readRecord(value: unknown): Record<string, unknown> {
-  return requiredRecord(value, "cloudlayer response", (message) => new ProviderRequestError(502, message));
+  return requiredRecord(value, "cloudlayer response", providerResponseError);
 }
 
 function readRequiredString(value: unknown, fieldName: string): string {

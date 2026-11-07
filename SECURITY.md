@@ -141,6 +141,22 @@ the deployment boundary. At minimum:
 See [docs/saas-deployment.md](docs/saas-deployment.md) for the complete production boundary and
 rollback procedure.
 
+## Runtime Security Baseline
+
+CVE-2026-111497 affects native Brotli decoders. This branch requires patched Node.js **24.22.2+ within the Node 24 line**; see the [Node.js advisory](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases). It does not ship Bun, a standalone executable, an npm-embedded global runtime, or a Cloudflare Worker.
+
+- **Docker:** both stages pin Node 24.22.2. Rebuild and redeploy the reviewed immutable image; existing containers never update automatically. Verify the running container's `node --version`.
+- **Source development:** update the Node 24 runtime and restart the service. Package managers can merely warn about `engines`, so verify the actual executable rather than trusting the manifest.
+
+Provider actions, downloads, and proxy requests use guarded fetch, whose underlying runtime
+can automatically decode upstream `Content-Encoding: br` responses. The SSRF guard restricts
+network destinations; it does not prevent a public upstream from sending malicious compressed
+bytes. Encoding negotiation remains unchanged: requesting only gzip/deflate cannot stop a
+malicious upstream from returning Brotli, and checking response headers after `fetch` is not a
+reliable barrier before native decoding. A patched runtime is required.
+
+The scoped inbound server does not install a Brotli request decompressor. Operators must independently update any proxy or middleware that decompresses inbound bodies; a patched connector cannot qualify a different process's decoder.
+
 ## Handling Credentials in the Codebase
 
 For contributors and anyone working with this repository:

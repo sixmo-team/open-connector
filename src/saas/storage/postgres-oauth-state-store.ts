@@ -1,8 +1,11 @@
-import type { IOAuthStateStore, OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts";
+import type { IOAuthStateStore, OAuthAuthorizationState, OAuthStateBinding } from "../../oauth/oauth-flow-service.ts";
 import type { SaasRequestScope } from "../contracts.ts";
 import type { Pool } from "pg";
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { assertProcessingActive } from "../../core/cancellation.ts";
+import { OpenBaoError } from "../secrets/openbao-client.ts";
+import { withSecretCleanup } from "../secrets/secret-codec.ts";
 import { withScopedClient } from "./scoped-query.ts";
 
 export interface OAuthStateSecretStore {
@@ -11,8 +14,12 @@ export interface OAuthStateSecretStore {
     oauthSessionId: string,
     pkceCodeVerifier: string | undefined,
     expiresAt: string,
+    authorizationState?: OAuthAuthorizationState,
   ): Promise<{ secretRef: string; secretRevision: number }>;
-  take(scope: Readonly<SaasRequestScope>, oauthSessionId: string): Promise<{ pkceCodeVerifier?: string } | undefined>;
+  take(
+    scope: Readonly<SaasRequestScope>,
+    oauthSessionId: string,
+  ): Promise<{ pkceCodeVerifier?: string; authorizationState?: OAuthAuthorizationState } | undefined>;
   delete(scope: Readonly<SaasRequestScope>, oauthSessionId: string): Promise<void>;
 }
 
@@ -84,17 +91,48 @@ export class PostgresOAuthStateStore implements IOAuthStateStore {
   }
 
   async set(state: OAuthAuthorizationState): Promise<void> {
-    const id = this.scope.oauthSessionId ?? randomUUID();
+    assertProcessingActive(this.scope);
+    const id = this.scope.oauthSessionId;
+    if (!id || !this.scope.localConnectionId || this.scope.actorUserId !== this.scope.subjectUserId)
+      throw new Error("OAuth requires an exact interactive session and local connection");
     const stateHash = hashState(state.state);
     const expiresAt = new Date(new Date(state.createdAt).getTime() + this.stateMaxAgeMs).toISOString();
-    const secret = await this.secrets.put(this.scope, id, state.pkceCodeVerifier, expiresAt);
+    let secret: { secretRef: string; secretRevision: number };
+    try {
+      secret = await this.secrets.put(this.scope, id, state.pkceCodeVerifier, expiresAt, state);
+    } catch (error) {
+      if (!(error instanceof OpenBaoError) || error.code === "OPENBAO_CONFLICT") throw error;
+      throw await withSecretCleanup(this.scope, async (cleanupScope) => {
+        let cleanupFailed = false;
+        try {
+          await this.secrets.delete(cleanupScope, id);
+        } catch {
+          cleanupFailed = true;
+        }
+        const markerWritten =
+          cleanupFailed &&
+          (await this.writeReconciliationMarker({
+            id,
+            stateHash,
+            service: state.service,
+            connectionName: state.connectionName,
+            secretRef: error.path,
+            expiresAt,
+            createdAt: state.createdAt,
+          }));
+        return new OAuthStateMetadataReconciliationError(cleanupFailed, markerWritten);
+      });
+    }
     try {
       await withScopedClient(this.pool, this.scope, async (client) => {
-        await client.query(
+        const inserted = await client.query(
           `INSERT INTO integration_runtime.oauth_states (
              id, tenant_id, workspace_id, subject_user_id, connection_id, service, connection_name,
-             state_hash, secret_ref, status, expires_at, created_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11)`,
+             state_hash, secret_ref, status, expires_at, created_at, local_connection_id, retirement_generation
+           ) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13
+             WHERE EXISTS (SELECT 1 FROM integration_runtime.connection_retirements r
+               WHERE r.tenant_id=$2 AND r.workspace_id=$3 AND r.subject_user_id=$4 AND r.local_connection_id=$12
+                 AND r.service=$6 AND r.connection_name=$7 AND r.generation=$13)`,
           [
             id,
             this.scope.tenantId,
@@ -107,29 +145,42 @@ export class PostgresOAuthStateStore implements IOAuthStateStore {
             secret.secretRef,
             expiresAt,
             state.createdAt,
+            this.scope.localConnectionId,
+            state.retirementGeneration,
           ],
         );
+        if (inserted.rowCount !== 1) throw new Error("Connection retired before OAuth state admission");
       });
     } catch {
-      try {
-        await this.secrets.take(this.scope, id);
-      } catch {
-        const markerWritten = await this.writeReconciliationMarker({
-          id,
-          stateHash,
-          service: state.service,
-          connectionName: state.connectionName,
-          secretRef: secret.secretRef,
-          expiresAt,
-          createdAt: state.createdAt,
-        });
-        throw new OAuthStateMetadataReconciliationError(true, markerWritten);
-      }
-      throw new OAuthStateMetadataReconciliationError(false, false);
+      throw await withSecretCleanup(this.scope, async (cleanupScope) => {
+        try {
+          await this.secrets.delete(cleanupScope, id);
+        } catch {
+          const markerWritten = await this.writeReconciliationMarker({
+            id,
+            stateHash,
+            service: state.service,
+            connectionName: state.connectionName,
+            secretRef: secret.secretRef,
+            expiresAt,
+            createdAt: state.createdAt,
+          });
+          return new OAuthStateMetadataReconciliationError(true, markerWritten);
+        }
+        return new OAuthStateMetadataReconciliationError(false, false);
+      });
     }
   }
 
-  async take(state: string): Promise<OAuthAuthorizationState | undefined> {
+  async take(state: string, binding?: OAuthStateBinding): Promise<OAuthAuthorizationState | undefined> {
+    assertProcessingActive(this.scope);
+    if (
+      !this.scope.oauthSessionId ||
+      !this.scope.localConnectionId ||
+      this.scope.actorUserId !== this.scope.subjectUserId
+    )
+      return undefined;
+    if (binding && binding.oauthSessionId !== this.scope.oauthSessionId) return undefined;
     const row = await withScopedClient(this.pool, this.scope, async (client) => {
       return (
         await client.query<{
@@ -137,19 +188,35 @@ export class PostgresOAuthStateStore implements IOAuthStateStore {
           service: string;
           connection_name: string | null;
           created_at: Date | string;
+          retirement_generation: string;
         }>(
           `UPDATE integration_runtime.oauth_states
            SET status = 'reserved', updated_at = now()
            WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
              AND state_hash = $4 AND status = 'pending' AND expires_at > now()
-           RETURNING id, service, connection_name, created_at`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, hashState(state)],
+             AND id = $5 AND local_connection_id = $6
+             AND ($7::text IS NULL OR connection_name = $7)
+             AND EXISTS (SELECT 1 FROM integration_runtime.connection_retirements r
+               WHERE r.tenant_id=oauth_states.tenant_id AND r.workspace_id=oauth_states.workspace_id
+                 AND r.subject_user_id=oauth_states.subject_user_id AND r.local_connection_id=oauth_states.local_connection_id
+                 AND r.service=oauth_states.service AND r.connection_name=oauth_states.connection_name
+                 AND r.generation=oauth_states.retirement_generation)
+           RETURNING id, service, connection_name, created_at, retirement_generation`,
+          [
+            this.scope.tenantId,
+            this.scope.workspaceId,
+            this.scope.subjectUserId,
+            hashState(state),
+            this.scope.oauthSessionId,
+            this.scope.localConnectionId,
+            binding?.connectionName ?? null,
+          ],
         )
       ).rows[0];
     });
     if (!row) return undefined;
 
-    let secret: { pkceCodeVerifier?: string } | undefined;
+    let secret: { pkceCodeVerifier?: string; authorizationState?: OAuthAuthorizationState } | undefined;
     try {
       secret = await this.secrets.take(this.scope, row.id);
     } catch {
@@ -180,13 +247,43 @@ export class PostgresOAuthStateStore implements IOAuthStateStore {
     }
     if (!secret) return undefined;
 
-    return {
-      service: row.service,
-      ...(row.connection_name === null ? {} : { connectionName: row.connection_name }),
-      state,
-      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at).toISOString(),
-      ...(secret.pkceCodeVerifier === undefined ? {} : { pkceCodeVerifier: secret.pkceCodeVerifier }),
-    };
+    const pending = secret.authorizationState;
+    if (
+      !pending ||
+      pending.state !== state ||
+      pending.service !== row.service ||
+      pending.connectionName !== row.connection_name ||
+      pending.retirementGeneration !== row.retirement_generation
+    )
+      return undefined;
+    return pending;
+  }
+
+  async deleteCreatedBefore(cutoff: string): Promise<void> {
+    if (!Number.isFinite(Date.parse(cutoff))) throw new Error("Invalid OAuth state cutoff");
+    const rows = await withScopedClient(
+      this.pool,
+      this.scope,
+      async (client) =>
+        (
+          await client.query<{ id: string }>(
+            `UPDATE integration_runtime.oauth_states
+        SET status='expired',updated_at=now() WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3
+          AND created_at<$4 RETURNING id`,
+            [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, cutoff],
+          )
+        ).rows,
+    );
+    for (const row of rows) {
+      await this.secrets.delete(this.scope, row.id);
+      await withScopedClient(this.pool, this.scope, async (client) => {
+        await client.query(
+          `DELETE FROM integration_runtime.oauth_states WHERE tenant_id=$1 AND workspace_id=$2
+          AND subject_user_id=$3 AND id=$4 AND status='expired'`,
+          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, row.id],
+        );
+      });
+    }
   }
 
   async listExactOwnedForLifecycle(cursor: string | undefined, limit: number): Promise<LifecycleOAuthStatePage> {
@@ -234,17 +331,19 @@ export class PostgresOAuthStateStore implements IOAuthStateStore {
     phase: OAuthStateConsumeReconciliationError["phase"],
   ): Promise<boolean> {
     try {
-      return await withScopedClient(this.pool, this.scope, async (client) => {
-        const result = await client.query(
-          `UPDATE integration_runtime.oauth_states
+      return await withSecretCleanup(this.scope, (cleanupScope) =>
+        withScopedClient(this.pool, cleanupScope, async (client) => {
+          const result = await client.query(
+            `UPDATE integration_runtime.oauth_states
            SET status = 'failed', callback_result_fingerprint = $5,
                consumed_at = now(), updated_at = now()
            WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3
              AND id = $4 AND status IN ('reserved', 'completed', 'expired')`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, id, `reconcile:${phase}`],
-        );
-        return result.rowCount === 1;
-      });
+            [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, id, `reconcile:${phase}`],
+          );
+          return result.rowCount === 1;
+        }),
+      );
     } catch {
       return false;
     }
@@ -252,30 +351,32 @@ export class PostgresOAuthStateStore implements IOAuthStateStore {
 
   private async writeReconciliationMarker(marker: OAuthStateReconciliation): Promise<boolean> {
     try {
-      await withScopedClient(this.pool, this.scope, async (client) => {
-        await client.query(
-          `INSERT INTO integration_runtime.oauth_states (
+      await withSecretCleanup(this.scope, (cleanupScope) =>
+        withScopedClient(this.pool, cleanupScope, async (client) => {
+          await client.query(
+            `INSERT INTO integration_runtime.oauth_states (
              id, tenant_id, workspace_id, subject_user_id, connection_id, service, connection_name,
              state_hash, secret_ref, status, expires_at, created_at
            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'failed', $10, $11)
            ON CONFLICT (id) DO UPDATE
            SET status = 'failed', secret_ref = EXCLUDED.secret_ref,
                expires_at = EXCLUDED.expires_at, updated_at = now()`,
-          [
-            marker.id,
-            this.scope.tenantId,
-            this.scope.workspaceId,
-            this.scope.subjectUserId,
-            this.scope.connectorConnectionId ?? null,
-            marker.service,
-            marker.connectionName ?? null,
-            marker.stateHash,
-            marker.secretRef,
-            marker.expiresAt,
-            marker.createdAt,
-          ],
-        );
-      });
+            [
+              marker.id,
+              this.scope.tenantId,
+              this.scope.workspaceId,
+              this.scope.subjectUserId,
+              this.scope.connectorConnectionId ?? null,
+              marker.service,
+              marker.connectionName ?? null,
+              marker.stateHash,
+              marker.secretRef,
+              marker.expiresAt,
+              marker.createdAt,
+            ],
+          );
+        }),
+      );
       return true;
     } catch {
       return false;

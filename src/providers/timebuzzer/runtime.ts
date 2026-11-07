@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -19,9 +20,11 @@ import {
 
 export const timebuzzerApiBaseUrl = "https://my.timebuzzer.com";
 const apiPath = "/open-api";
-const timeoutMs = 30_000;
 
-export const timebuzzerActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const timebuzzerActionHandlers: ProviderActionHandlers<
+  "timebuzzer",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   get_current_user: (_input, context) => requestTimebuzzer("/account/me", {}, context, "execute"),
   async list_layers(_input, context) {
     return { layers: requireArray(await requestTimebuzzer("/layers", {}, context, "execute"), "layers") };
@@ -126,7 +129,7 @@ async function requestTimebuzzer(
 ): Promise<unknown> {
   const url = new URL(`${apiPath}${path}`, timebuzzerApiBaseUrl);
   for (const [name, value] of Object.entries(options.query ?? {})) url.searchParams.set(name, value);
-  const timeout = createProviderTimeout(context.signal, timeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: options.method ?? "GET",

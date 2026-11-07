@@ -1,19 +1,22 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalRawString, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalRawString, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  requiredInputString,
+  providerInputError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "pinboard";
 const pinboardApiBaseUrl = "https://api.pinboard.in/v1";
-const requestTimeoutMs = 30_000;
 
 interface PinboardBookmark {
   url: string;
@@ -36,7 +39,7 @@ interface PinboardRequestInput {
 type PinboardRequestPhase = "validate" | "execute";
 type PinboardActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-const pinboardActionHandlers: Record<string, PinboardActionHandler> = {
+const pinboardActionHandlers: ProviderActionHandlers<"pinboard", PinboardActionHandler> = {
   async get_last_update(_input, context) {
     const payload = await requestPinboardJson({ path: "/posts/update" }, context, "execute");
     return { updateTime: readUpdateTime(payload) };
@@ -76,8 +79,8 @@ const pinboardActionHandlers: Record<string, PinboardActionHandler> = {
       {
         path: "/posts/add",
         query: {
-          url: readRequiredInputString(input.url, "url"),
-          description: readRequiredInputString(input.title, "title"),
+          url: requiredInputString(input.url, "url"),
+          description: requiredInputString(input.title, "title"),
           extended: optionalString(input.description),
           tags: readTagQuery(input.tags, "tags", 100),
           dt: optionalString(input.createdAt),
@@ -95,7 +98,7 @@ const pinboardActionHandlers: Record<string, PinboardActionHandler> = {
     const payload = await requestPinboardJson(
       {
         path: "/posts/delete",
-        query: { url: readRequiredInputString(input.url, "url") },
+        query: { url: requiredInputString(input.url, "url") },
       },
       context,
       "execute",
@@ -164,7 +167,7 @@ async function requestPinboardJson(
     }
   }
 
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: "GET",
@@ -184,7 +187,10 @@ async function requestPinboardJson(
       throw error;
     }
     if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, `Pinboard request timed out after ${requestTimeoutMs / 1000} seconds`);
+      throw new ProviderRequestError(
+        504,
+        `Pinboard request timed out after ${defaultProviderRequestTimeoutMs / 1000} seconds`,
+      );
     }
     throw new ProviderRequestError(
       502,
@@ -219,7 +225,7 @@ function createPinboardError(
     return new ProviderRequestError(phase === "validate" ? 400 : status, message);
   }
   if (status === 400 || status === 404) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status || 502, message);
 }
@@ -291,7 +297,7 @@ function readResultOutput(payload: unknown): { resultCode: string } {
     throw new ProviderRequestError(502, "Pinboard result response is missing result code");
   }
   if (resultCode !== "done") {
-    throw new ProviderRequestError(400, resultCode);
+    throw providerInputError(resultCode);
   }
   return { resultCode };
 }
@@ -322,10 +328,6 @@ function readProviderObject(value: unknown, label: string): Record<string, unkno
     throw new ProviderRequestError(502, `${label} must be a JSON object`);
   }
   return object;
-}
-
-function readRequiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function readOptionalInteger(value: unknown): string | undefined {
@@ -382,7 +384,7 @@ function readOptionalTagArray(value: unknown, fieldName: string, maxCount: numbe
 }
 
 function readTag(value: unknown, fieldName: string): string {
-  const tag = readRequiredInputString(value, fieldName);
+  const tag = requiredInputString(value, fieldName);
   if (tag.includes(",")) {
     throw new ProviderRequestError(400, `${fieldName} may not contain commas`);
   }

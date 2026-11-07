@@ -1,32 +1,27 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import {
-  optionalBoolean,
-  optionalInteger,
-  optionalNumber,
-  optionalRecord,
-  optionalString,
-  requiredString,
-} from "../../core/cast.ts";
+import { optionalBoolean, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
+  requiredInputString,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 const service = "ritekit";
 const apiBaseUrl = "https://api.ritekit.com";
-const requestTimeoutMs = 30_000;
 const maxResponseBytes = 10 * 1024 * 1024;
 type RiteKitPhase = "validate" | "execute";
 type QueryEntry = [string, unknown];
 
-export const riteKitActionHandlers: Record<
-  string,
+export const riteKitActionHandlers: ProviderActionHandlers<
+  "ritekit",
   (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>
 > = {
   async get_hashtag_stats(input, context) {
@@ -43,14 +38,16 @@ export const riteKitActionHandlers: Record<
   },
   async auto_hashtag(input, context) {
     const payload = await requestRiteKit(context, "/v1/stats/auto-hashtag", [
-      ["post", readInputText(input.post, "post")],
+      ["post", requiredInputString(input.post, "post")],
       ["maxHashtags", input.maxHashtags],
       ["hashtagPosition", input.hashtagPosition],
     ]);
     return { code: readInteger(payload.code), message: readText(payload.message), post: readText(payload.post) ?? "" };
   },
   async suggest_hashtags_for_text(input, context) {
-    return requestSuggestions(context, "/v1/stats/hashtag-suggestions", [["text", readInputText(input.text, "text")]]);
+    return requestSuggestions(context, "/v1/stats/hashtag-suggestions", [
+      ["text", requiredInputString(input.text, "text")],
+    ]);
   },
   async suggest_hashtags_for_url(input, context) {
     return requestSuggestions(context, "/v2/stats/hashtags-for-url", [["url", input.pageUrl]]);
@@ -71,7 +68,7 @@ export const riteKitActionHandlers: Record<
   },
   async clean_banned_instagram_hashtags(input, context) {
     const payload = await requestRiteKit(context, "/v2/instagram/hashtags-cleaner", [
-      ["post", readInputText(input.post, "post")],
+      ["post", requiredInputString(input.post, "post")],
     ]);
     return {
       message: readText(payload.message),
@@ -136,7 +133,7 @@ async function requestRiteKit(
   for (const [name, value] of query) {
     if (value != null && value !== "") url.searchParams.set(name, String(value));
   }
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: "GET",
@@ -180,8 +177,7 @@ function createError(status: number, payload: unknown, phase: RiteKitPhase): Pro
     optionalString(record?.error_description) ??
     `RiteKit request failed with status ${effectiveStatus || 500}`;
   if (effectiveStatus === 429) return new ProviderRequestError(429, message);
-  if (phase === "validate" && effectiveStatus >= 400 && effectiveStatus < 500)
-    return new ProviderRequestError(400, message);
+  if (phase === "validate" && effectiveStatus >= 400 && effectiveStatus < 500) return providerInputError(message);
   if (effectiveStatus === 401 || effectiveStatus === 403) return new ProviderRequestError(effectiveStatus, message);
   if (effectiveStatus >= 400 && effectiveStatus < 500) return new ProviderRequestError(effectiveStatus, message);
   return new ProviderRequestError(effectiveStatus >= 400 ? effectiveStatus : 502, message);
@@ -242,10 +238,7 @@ function readStrings(value: unknown): string[] {
 }
 function readInputStrings(value: unknown): string[] {
   if (!Array.isArray(value)) throw new ProviderRequestError(400, "tags must be an array");
-  return value.map((item) => readInputText(item, "tag"));
-}
-function readInputText(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
+  return value.map((item) => requiredInputString(item, "tag"));
 }
 function readText(value: unknown): string | null {
   return optionalString(value) ?? null;

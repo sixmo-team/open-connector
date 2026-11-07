@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
-import type { ManatalActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalRecord } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
@@ -20,7 +21,7 @@ interface ManatalRequestOptions {
 export const manatalApiBaseUrl = "https://api.manatal.com/open/v3";
 export const manatalValidationPath = "/users/";
 
-export const manatalActionHandlers: Record<ManatalActionName, ManatalActionHandler> = {
+export const manatalActionHandlers: ProviderActionHandlers<"manatal", ManatalActionHandler> = {
   list_candidates(input, context) {
     return listRecords({
       context,

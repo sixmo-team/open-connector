@@ -1,6 +1,6 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { PilvioActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -12,14 +12,15 @@ import {
   requiredRecord,
   requiredString,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 export const pilvioApiBaseUrl = "https://api.pilvio.com/v1";
 
 type Context = ApiKeyProviderContext;
 
-export const pilvioActionHandlers: Record<
-  PilvioActionName,
+export const pilvioActionHandlers: ProviderActionHandlers<
+  "pilvio",
   (input: Record<string, unknown>, context: Context) => Promise<unknown>
 > = {
   async get_current_user(_input, context) {

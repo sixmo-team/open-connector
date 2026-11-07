@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { CollegiateActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "collegiate";
 const collegiateApiBaseUrl = "https://www.dictionaryapi.com/api/v3/references/collegiate/json";
@@ -16,7 +18,7 @@ const collegiateValidationTerm = "test";
 type CollegiateContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type CollegiateActionHandler = (input: Record<string, unknown>, context: CollegiateContext) => Promise<unknown>;
 
-export const collegiateActionHandlers: Record<CollegiateActionName, CollegiateActionHandler> = {
+export const collegiateActionHandlers: ProviderActionHandlers<"collegiate", CollegiateActionHandler> = {
   async lookup_word(input, context) {
     const term = requiredString(input.term, "term", (message) => new ProviderRequestError(400, message));
     const payload = await collegiateLookup(term, context, "execute");
@@ -53,7 +55,7 @@ export const credentialValidators: CredentialValidators = {
       grantedScopes: [],
       metadata: {
         apiBaseUrl: collegiateApiBaseUrl,
-        dictionaryCode: "collegiate",
+        dictionaryCode: service,
         validationEndpoint: `/api/v3/references/collegiate/json/${collegiateValidationTerm}`,
         sampleResultCount: payload.length,
       },
@@ -169,3 +171,9 @@ function resolveAudioSubdirectory(audioFile: string): string {
   const firstCharacter = audioFile[0] ?? "";
   return /[A-Za-z]/.test(firstCharacter) ? firstCharacter.toLowerCase() : "number";
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://www.dictionaryapi.com/api/v3/references/collegiate/json",
+  auth: { type: "api_key_query", name: "key" },
+});

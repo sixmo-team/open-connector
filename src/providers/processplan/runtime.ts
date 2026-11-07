@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
@@ -11,9 +12,11 @@ import {
 } from "../provider-runtime.ts";
 
 export const processplanApiBaseUrl = "https://apius0.processplan.com/api/v4";
-const timeoutMs = 30_000;
 
-export const processplanActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const processplanActionHandlers: ProviderActionHandlers<
+  "processplan",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   async list_process_templates(input, context) {
     return {
       processTemplates: readList(
@@ -111,7 +114,7 @@ async function requestProcessplan(
 ): Promise<unknown> {
   const url = new URL(`${processplanApiBaseUrl}${path}`);
   for (const [name, value] of Object.entries(options.query ?? {})) url.searchParams.set(name, value);
-  const timeout = createProviderTimeout(context.signal, timeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: options.method ?? "GET",

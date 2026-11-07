@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
-import type { WebscrapingAiActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -9,10 +10,15 @@ import {
   optionalRecord,
   optionalString,
   requiredRecord,
-  requiredString,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import { isAbortLikeError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  isAbortLikeError,
+  providerInputError,
+  providerUserAgent,
+  ProviderRequestError,
+  requiredInputString,
+} from "../provider-runtime.ts";
 
 type WebscrapingAiPhase = "validate" | "execute";
 type WebscrapingAiQueryValue = string | number | boolean | readonly string[] | undefined;
@@ -30,7 +36,7 @@ interface WebscrapingAiRequestInput {
 
 export const webscrapingAiApiBaseUrl = "https://api.webscraping.ai";
 
-export const webscrapingAiActionHandlers: Record<WebscrapingAiActionName, WebscrapingAiActionHandler> = {
+export const webscrapingAiActionHandlers: ProviderActionHandlers<"webscraping_ai", WebscrapingAiActionHandler> = {
   async get_account_info(_input, context) {
     return {
       account: await requestWebscrapingAiAccount(context.apiKey, context.fetcher, context.signal, "execute"),
@@ -251,7 +257,7 @@ function readTargetUrl(value: unknown): string {
   const rawUrl = requiredInputString(value, "url");
   const url = assertPublicHttpUrl(rawUrl, {
     fieldName: "url",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
   });
   if (url.username || url.password) {
     throw new ProviderRequestError(400, "url must not include credentials");
@@ -296,13 +302,13 @@ async function createWebscrapingAiError(response: Response, phase: WebscrapingAi
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && response.status === 403) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && response.status === 403) {
     return new ProviderRequestError(403, message);
   }
   if (response.status === 400) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 504) {
     return new ProviderRequestError(504, message);
@@ -334,10 +340,6 @@ function extractWebscrapingAiErrorMessage(body: string): string | undefined {
   return trimmed;
 }
 
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, providerInputError);
-}
-
 function readStringArray(value: unknown, fieldName: string): string[] {
   if (!Array.isArray(value)) {
     throw new ProviderRequestError(400, `${fieldName} must be an array`);
@@ -349,8 +351,4 @@ function readStringArray(value: unknown, fieldName: string): string[] {
     }
     return text;
   });
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

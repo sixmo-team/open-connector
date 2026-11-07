@@ -1,0 +1,22 @@
+apiVersion: v2
+name: open-connector
+description: Private scoped Node 24 OpenConnector with external PostgreSQL, OpenBao and SeaweedFS.
+type: application
+version: 0.2.0
+appVersion: "0.0.0-development"
+home: https://github.com/sixmo-team/open-connector
+sources:
+  - https://github.com/sixmo-team/open-connector
+keywords:
+  - open-connector
+  - oauth
+  - ai-agents
+  - credentials
+  - gateway
+  - connectors
+maintainers:
+  - name: timoa
+    email: dev@timoa.com
+annotations:
+  category: AI Infrastructure
+  licenses: LicenseRef-OpenConnector

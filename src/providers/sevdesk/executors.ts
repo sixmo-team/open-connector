@@ -1,13 +1,16 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
-import type { SevdeskActionName } from "./actions.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { optionalBoolean, optionalIntegerLike, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "sevdesk";
 const sevdeskApiBaseUrl = "https://my.sevdesk.de/api/v1";
@@ -38,7 +41,7 @@ interface SevdeskListPayload {
   total: number | null;
 }
 
-export const sevdeskActionHandlers: Record<SevdeskActionName, SevdeskActionHandler> = {
+export const sevdeskActionHandlers: ProviderActionHandlers<"sevdesk", SevdeskActionHandler> = {
   async list_contacts(input, context): Promise<unknown> {
     const payload = await requestSevdeskJson({
       context,
@@ -121,6 +124,16 @@ export const executors: ProviderExecutors = defineProviderExecutors<SevdeskActio
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: sevdeskApiBaseUrl,
+  auth: { type: "api_key_header", name: "Authorization" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 

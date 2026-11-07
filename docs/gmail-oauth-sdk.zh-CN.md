@@ -1,129 +1,15 @@
-# Gmail OAuth 和 SDK 接入教程
+# Gmail OAuth 与原生动作
 
-这篇教程从你已经拥有 Gmail OAuth client 开始，不包含在 Google Cloud 创建或配置 OAuth app 的步骤。OpenConnector 只需要这个 OAuth app 的 `clientId`、`clientSecret`，以及它允许当前 runtime 使用的 redirect URI。
+本分支只有受保护的 Node 24 多租户服务。OAuth 配置、浏览器授权、精确连接选择和动作执行均经过现有后端及[私有协议](contracts/saas-runtime.openapi.yaml)；没有本地公开控制台、静态 runtime token、默认连接、直接 SDK/MCP 执行入口或明文密钥存储。回调必须使用受控的后端 HTTPS 地址，不能从调用者请求头推断。托管 Gmail 保留真实工作空间项目和授权来源，不会自动退回本地 OAuth。
 
-## 前置条件
+完整的原生附件、MIME、草稿编辑、回复关联、ID 和最小权限规则保留在[英文 Gmail 指南](gmail-oauth-sdk.md)。关键约束：
 
-- 本地 OpenConnector runtime 可以在 Node.js 22 或更新版本上运行。
-- 你已经有 Gmail OAuth `clientId` 和 `clientSecret`。
-- Gmail OAuth app 已经允许当前 runtime 的 redirect URI。这个 URI 是当前 runtime origin 加上 `/oauth/callback`。
+- 附件只选一种内容来源：实际 `contentBase64` 或当前作用域中的 `file: { fileId }`。`filename`、`mimeType` 可覆盖元数据。内联图片使用裸 `contentId`，HTML 引用 `cid:<id>`。
+- 省略 `attachments` 保留现有文件；空数组删除全部。省略正文保留原有纯文本/HTML，提供正文则替换；`isHtml` 需要替换正文。无法安全编辑的 MIME 结构拒绝修改，不会静默丢弃内容。
+- 最多 100 个附件、25,000,000 字节解码附件及 35,000,000 字节完整 MIME。Gmail 自身限制仍适用。
+- `replyToMessageId` 是真实 Gmail 消息 ID；附带 `threadId` 必须匹配。仅给线程 ID 时选择最近的非草稿消息。缺少可用 RFC `Message-ID` 的目标拒绝发送/创建回复。
+- `draftId` 标识稳定草稿；编辑会改变草稿内消息 `messageId`；发送会删除草稿并返回已发送消息 ID。RFC `Message-ID` 邮件头不是 Gmail 消息 ID。
+- 新邮件发送用 `gmail.send`；回复另需 `gmail.readonly`；普通草稿用 `gmail.compose`；回复草稿/更换回复目标另需读取权限。`gmail.modify` 覆盖这些流程。权限名前缀为 `https://www.googleapis.com/auth/`。
+- 连接验证调用 `users.getProfile`；只有 `gmail.send` 不足，需要额外 `gmail.readonly`，或使用 `gmail.compose`/`gmail.modify`。更新实际 OAuth scopes 后重新授权同一账号。
 
-如果 runtime 通过 tunnel 或其他公网 origin 访问，启动前先设置 `OOMOL_CONNECT_ORIGIN`。redirect URI 会基于这个 origin 拼接 `/oauth/callback`。
-
-```bash
-OOMOL_CONNECT_ORIGIN="https://your-runtime.example" npm run dev
-```
-
-普通本地开发可以直接启动 runtime：
-
-```bash
-npm install
-npm run dev
-```
-
-下面的示例默认使用 `http://localhost:3000`。如果你配置了 `OOMOL_CONNECT_ADMIN_TOKEN` 或 runtime token，对应的 admin 请求和 `/v1` 请求需要加上 `Authorization: Bearer ...` header。
-
-同一个 runtime 里的所有服务共用同一个 OAuth redirect URI。给 Gmail OAuth app 配置当前 runtime origin 加 `/oauth/callback`。默认本地 origin 下是：
-
-```txt
-http://localhost:3000/oauth/callback
-```
-
-## 1. 保存 Gmail OAuth Client
-
-打开本地控制台 `http://localhost:3000`，进入 Gmail provider 页面，点击 **Configure OAuth
-Client**。把 Gmail OAuth `clientId` 填入 **Client ID**，把 `clientSecret` 填入 **Client
-Secret**，然后点击 **Save OAuth Client**。
-
-![Gmail OAuth client 表单](../assets/gmail-oauth-client.png)
-
-保存后，Gmail provider 页面应允许你继续发起连接流程。
-
-## 2. 授权 Gmail 账号
-
-OAuth client 配置完成后，Gmail provider 页面会显示 **Connect Gmail**。点击这个按钮启动 OAuth
-授权流程。
-
-![Gmail 连接按钮](../assets/gmail-connect.png)
-
-在浏览器里完成 Gmail consent。Gmail 跳回 runtime 后，OpenConnector 会把 OAuth credential 保存为默认 Gmail connection。
-
-回调完成后，Gmail provider 页面会显示已通过 OAuth 连接。
-
-![Gmail 连接成功状态](../assets/gmail-connected.png)
-
-## 3. 创建 Runtime Token
-
-从你自己的代码调用 runtime 前，先在本地控制台创建 runtime token。打开 Access 页面，点击 **Create Token**，给 client 命名，然后复制只显示一次的 token。
-
-![创建 runtime token 弹窗](../assets/create-runtime-token.png)
-
-在运行你的应用的 shell 里设置这个 token：
-
-```bash
-export OOMOL_CONNECT_RUNTIME_TOKEN="oct_..."
-```
-
-## 4. 用 HTTP 验证 Gmail Action
-
-使用上一步创建的 runtime token，通过 runtime API 调用一个 Gmail Action：
-
-```bash
-curl -s -X POST http://localhost:3000/v1/actions/gmail.search_threads \
-  -H "authorization: Bearer $OOMOL_CONNECT_RUNTIME_TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"input":{"query":"newer_than:7d","maxResults":5}}'
-```
-
-## 5. 用 SDK 调用 Gmail
-
-在你的 TypeScript 项目里安装 SDK：
-
-```bash
-npm install @oomol-lab/connector
-```
-
-自托管 OpenConnector runtime 使用 `OpenConnector`。`baseUrl` 是 server origin，不是 `/v1` URL。传入前面创建的 runtime token。
-
-```ts
-import { OpenConnector } from "@oomol-lab/connector";
-
-const open = new OpenConnector({
-  baseUrl: process.env.OPENCONNECTOR_BASE_URL ?? "http://localhost:3000",
-  runtimeToken: process.env.OOMOL_CONNECT_RUNTIME_TOKEN,
-});
-
-const { threads } = await open.execute("gmail.search_threads", {
-  query: "newer_than:7d",
-  maxResults: 5,
-});
-
-console.log(threads);
-```
-
-namespace 写法调用的是同一个 Action：
-
-```ts
-const { threads } = await open.gmail.search_threads({
-  query: "from:someone@example.com",
-  maxResults: 5,
-});
-```
-
-如果希望获得精确的 Gmail Action 类型，可以安装可选的 types 包，并在进程里导入一次 Gmail registry：
-
-```bash
-npm install -D @oomol-lab/connector-types
-```
-
-```ts
-import "@oomol-lab/connector-types/gmail";
-```
-
-## 常见问题
-
-- `redirect_uri_mismatch`：确认 Gmail OAuth app 允许当前 runtime origin 加 `/oauth/callback`。
-- `oauth_client_config_not_found`：启动授权前，先在本地控制台保存 Gmail OAuth client。
-- `connection_not_found`：先在浏览器里完成授权，再调用 Gmail Action。
-- `unauthorized`：在 Access 页面创建 runtime token，并通过 `OOMOL_CONNECT_RUNTIME_TOKEN` 传给 SDK。
-- `insufficient_permissions`：OAuth app 具备 Action 所需 scope 后，重新授权 Gmail。
+动作参数与供应商 scopes 不会启用 OpenConnector 函数。后端先验证身份、业务规则和人类确认，连接器再检查当前函数规则与真实作用域连接。超时或丢失写入响应不等于操作失败，不应自动重复发送邮件。

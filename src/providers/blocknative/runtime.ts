@@ -1,17 +1,18 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { BlocknativeActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
-const blocknativeApiBaseUrl = "https://api.blocknative.com";
+export const blocknativeApiBaseUrl = "https://api.blocknative.com";
 
 type BlocknativeRequestPhase = "validate" | "execute";
 type BlocknativeQueryValue = number | string | readonly number[] | readonly string[] | undefined;
 type BlocknativeActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
 
-export const blocknativeActionHandlers: Record<BlocknativeActionName, BlocknativeActionHandler> = {
+export const blocknativeActionHandlers: ProviderActionHandlers<"blocknative", BlocknativeActionHandler> = {
   list_supported_chains(_input, context) {
     return listSupportedChains(context);
   },

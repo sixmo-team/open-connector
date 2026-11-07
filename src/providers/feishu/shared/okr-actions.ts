@@ -2,15 +2,6 @@ import type { ActionDefinition } from "../../../core/types.ts";
 
 import { s } from "../../../core/json-schema.ts";
 import { defineProviderAction } from "../../../core/provider-definition.ts";
-export const feishuOkrProviderPermissions: readonly string[] = [
-  "okr:okr.period:readonly",
-  "okr:okr.content:readonly",
-  "okr:okr.content:writeonly",
-  "okr:okr.progress:readonly",
-  "okr:okr.progress:writeonly",
-  "okr:okr.progress:delete",
-  "okr:okr.setting:read",
-];
 const userIdType = s.stringEnum("The identifier type used for user fields.", ["open_id", "union_id", "user_id"]);
 const departmentIdType = s.stringEnum("The identifier type used for departments.", [
   "department_id",
@@ -18,6 +9,14 @@ const departmentIdType = s.stringEnum("The identifier type used for departments.
 ]);
 const targetType = s.stringEnum("The OKR target level.", ["objective", "key_result"]);
 const targetId = s.string("The objective or key-result ID.", { minLength: 1 });
+const commentId = s.nonEmptyString("The OKR comment ID.");
+const commentTargetType = s.stringEnum("The OKR entity type that owns the comment.", [
+  "cycle",
+  "progress",
+  "objective",
+  "key_result",
+]);
+const commentContent = s.looseRequiredObject("The Feishu OKR ContentBlock payload for the comment.", {});
 const pageSize = s.positiveInteger("The maximum number of results on this page.", {
   maximum: 50,
 });
@@ -92,29 +91,32 @@ const categoryPageOutput = s.object(
     optional: [],
   },
 );
-export function createFeishuOkrActions(service: string): readonly ActionDefinition[] {
-  return [
+export function createFeishuOkrActions(
+  service: string,
+  identity: "tenant" | "user" = "user",
+): readonly ActionDefinition[] {
+  const actions: ActionDefinition[] = [
     defineProviderAction(service, {
       name: "list_okr_cycles",
+      operationType: "read",
       description: "List Feishu OKR cycles visible to a user.",
       requiredScopes: ["okr:okr.period:readonly"],
       providerPermissions: ["okr:okr.period:readonly"],
       inputSchema: s.object(
         "Choose a user and configure pagination.",
         {
-          userId: s.string("The user whose cycles should be listed.", { minLength: 1 }),
+          userId: s.nonEmptyString("The user whose cycles should be listed."),
           userIdType,
-          pageSize,
+          pageSize: extendedPageSize,
           pageToken,
         },
-        {
-          optional: ["userId", "userIdType", "pageSize", "pageToken"],
-        },
+        { optional: ["userIdType", "pageSize", "pageToken"] },
       ),
       outputSchema: pageOutput,
     }),
     defineProviderAction(service, {
       name: "get_okr_cycle_detail",
+      operationType: "read",
       description: "List every objective in an OKR cycle and fetch the key results below each objective.",
       requiredScopes: ["okr:okr.content:readonly"],
       providerPermissions: ["okr:okr.content:readonly"],
@@ -141,6 +143,7 @@ export function createFeishuOkrActions(service: string): readonly ActionDefiniti
     }),
     defineProviderAction(service, {
       name: "create_okr",
+      operationType: "write",
       description: "Create one Feishu objective or key result from plain text.",
       requiredScopes: ["okr:okr.content:writeonly"],
       providerPermissions: ["okr:okr.content:writeonly"],
@@ -176,6 +179,7 @@ export function createFeishuOkrActions(service: string): readonly ActionDefiniti
     }),
     defineProviderAction(service, {
       name: "batch_create_okrs",
+      operationType: "write",
       description: "Create objectives and their key results sequentially, with optional rollback on failure.",
       requiredScopes: ["okr:okr.content:writeonly"],
       providerPermissions: ["okr:okr.content:writeonly"],
@@ -231,6 +235,7 @@ export function createFeishuOkrActions(service: string): readonly ActionDefiniti
     }),
     defineProviderAction(service, {
       name: "patch_okr",
+      operationType: "write",
       description: "Update content, notes, score, or deadline on an objective or key result.",
       requiredScopes: ["okr:okr.content:writeonly"],
       providerPermissions: ["okr:okr.content:writeonly"],
@@ -239,31 +244,24 @@ export function createFeishuOkrActions(service: string): readonly ActionDefiniti
         {
           targetType,
           targetId,
-          text: s.string("Replacement target text.", { minLength: 1 }),
+          text: s.nonEmptyString("Replacement target text."),
           mentions,
           notes: s.string("Replacement notes."),
-          score: s.number("The new OKR score."),
-          deadline: s.string("The new deadline accepted by Feishu.", { minLength: 1 }),
+          score: s.number("The new OKR score.", { minimum: 0, maximum: 1, multipleOf: 0.1 }),
+          deadline: s.nonEmptyString("The new deadline accepted by Feishu."),
           userIdType,
         },
-        {
-          optional: ["text", "mentions", "notes", "score", "deadline", "userIdType"],
-        },
+        { optional: ["text", "mentions", "notes", "score", "deadline", "userIdType"] },
       ),
-      outputSchema: s.object(
-        "The patch result.",
-        {
-          targetType: s.string("The patched target level."),
-          targetId: s.string("The patched target ID."),
-          patchedFields: s.array("The fields sent to Feishu.", s.string("A patched field name.")),
-        },
-        {
-          optional: [],
-        },
-      ),
+      outputSchema: s.requiredObject("The patch result.", {
+        targetType: s.string("The patched target level."),
+        targetId: s.string("The patched target ID."),
+        patchedFields: s.array("The fields sent to Feishu.", s.string("A patched field name.")),
+      }),
     }),
     defineProviderAction(service, {
       name: "list_okr_alignments",
+      operationType: "read",
       description: "List the objectives aligned from or to a Feishu OKR objective.",
       requiredScopes: ["okr:okr.content:readonly"],
       providerPermissions: ["okr:okr.content:readonly"],
@@ -287,6 +285,7 @@ export function createFeishuOkrActions(service: string): readonly ActionDefiniti
     }),
     defineProviderAction(service, {
       name: "create_okr_alignment",
+      operationType: "write",
       description: "Align one Feishu OKR objective to another objective.",
       requiredScopes: ["okr:okr.content:writeonly"],
       providerPermissions: ["okr:okr.content:writeonly"],
@@ -319,6 +318,7 @@ export function createFeishuOkrActions(service: string): readonly ActionDefiniti
     }),
     defineProviderAction(service, {
       name: "delete_okr_alignment",
+      operationType: "destructive",
       description: "Delete a Feishu OKR objective alignment.",
       requiredScopes: ["okr:okr.content:writeonly"],
       providerPermissions: ["okr:okr.content:writeonly"],
@@ -344,6 +344,7 @@ export function createFeishuOkrActions(service: string): readonly ActionDefiniti
     }),
     defineProviderAction(service, {
       name: "list_okr_categories",
+      operationType: "read",
       description: "List enabled and disabled Feishu OKR categories configured by the tenant.",
       requiredScopes: ["okr:okr.setting:read"],
       providerPermissions: ["okr:okr.setting:read"],
@@ -361,83 +362,53 @@ export function createFeishuOkrActions(service: string): readonly ActionDefiniti
       outputSchema: categoryPageOutput,
     }),
     ...progressActions(service),
+    ...commentReadActions(service),
     defineProviderAction(service, {
       name: "reorder_okrs",
+      operationType: "destructive",
       description: "Replace the objective or key-result order with an explicit ID sequence.",
       requiredScopes: ["okr:okr.content:writeonly"],
       providerPermissions: ["okr:okr.content:writeonly"],
-      inputSchema: s.object(
-        "Describe the desired order.",
-        {
-          targetType,
-          parentId: s.string("The cycle ID or objective ID containing the targets.", {
-            minLength: 1,
-          }),
-          orderedIds: s.array(
-            "All target IDs in the desired order.",
-            s.string("An objective or key-result ID.", { minLength: 1 }),
-            { minItems: 1 },
-          ),
-        },
-        {
-          optional: [],
-        },
-      ),
-      outputSchema: s.object(
-        "The reorder result.",
-        {
-          targetType: s.string("The reordered target level."),
-          orderedIds: s.array("The applied target order.", s.string("A target ID.")),
-        },
-        {
-          optional: [],
-        },
-      ),
+      inputSchema: s.requiredObject("Describe the desired order.", {
+        targetType,
+        parentId: s.nonEmptyString("The cycle ID or objective ID containing the targets."),
+        orderedIds: s.array(
+          "All target IDs in the desired order.",
+          s.nonEmptyString("An objective or key-result ID."),
+          { minItems: 1 },
+        ),
+      }),
+      outputSchema: s.requiredObject("The reorder result.", {
+        targetType: s.string("The reordered target level."),
+        orderedIds: s.array("The applied target order.", s.string("A target ID.")),
+      }),
     }),
     defineProviderAction(service, {
       name: "update_okr_weights",
+      operationType: "destructive",
       description: "Replace objective or key-result weights with explicit ID and weight pairs.",
       requiredScopes: ["okr:okr.content:writeonly"],
       providerPermissions: ["okr:okr.content:writeonly"],
-      inputSchema: s.object(
-        "Describe the desired weights.",
-        {
-          targetType,
-          parentId: s.string("The cycle ID or objective ID containing the targets.", {
-            minLength: 1,
+      inputSchema: s.requiredObject("Describe the desired weights.", {
+        targetType,
+        parentId: s.nonEmptyString("The cycle ID or objective ID containing the targets."),
+        weights: s.array(
+          "Target weights.",
+          s.requiredObject("One target weight.", {
+            id: s.nonEmptyString("The objective or key-result ID."),
+            weight: s.number("The target weight."),
           }),
-          weights: s.array(
-            "Target weights.",
-            s.object(
-              "One target weight.",
-              {
-                id: s.string("The objective or key-result ID.", { minLength: 1 }),
-                weight: s.number("The target weight."),
-              },
-              {
-                optional: [],
-              },
-            ),
-            { minItems: 1 },
-          ),
-        },
-        {
-          optional: [],
-        },
-      ),
-      outputSchema: s.object(
-        "The weight update result.",
-        {
-          targetType: s.string("The updated target level."),
-          weights: s.array("The applied weights.", looseItem),
-        },
-        {
-          optional: [],
-        },
-      ),
+          { minItems: 1 },
+        ),
+      }),
+      outputSchema: s.requiredObject("The weight update result.", {
+        targetType: s.string("The updated target level."),
+        weights: s.array("The applied weights.", looseItem),
+      }),
     }),
     defineProviderAction(service, {
       name: "update_okr_indicator",
+      operationType: "write",
       description: "Find the first indicator for an objective or key result and update its current value.",
       requiredScopes: ["okr:okr.content:writeonly"],
       providerPermissions: ["okr:okr.content:writeonly"],
@@ -464,7 +435,132 @@ export function createFeishuOkrActions(service: string): readonly ActionDefiniti
       ),
     }),
   ];
+  if (identity === "user") actions.push(...commentWriteActions(service));
+  return actions;
 }
+function commentReadActions(service: string): readonly ActionDefinition[] {
+  return [
+    defineProviderAction(service, {
+      name: "list_okr_comments",
+      operationType: "read",
+      description: "List one page of comments attached to a Feishu OKR entity.",
+      requiredScopes: ["okr:okr.comment.readonly"],
+      providerPermissions: ["okr:okr.comment.readonly"],
+      inputSchema: s.object(
+        "Identify the commented OKR entity and configure pagination.",
+        {
+          targetType: commentTargetType,
+          targetId: s.nonEmptyString("The cycle, progress, objective, or key-result ID."),
+          pageSize: extendedPageSize,
+          pageToken,
+          userIdType,
+        },
+        { optional: ["pageSize", "pageToken", "userIdType"] },
+      ),
+      outputSchema: pageOutput,
+    }),
+    defineProviderAction(service, {
+      name: "get_okr_comment",
+      operationType: "read",
+      description: "Get one Feishu OKR comment by ID.",
+      requiredScopes: ["okr:okr.comment.readonly"],
+      providerPermissions: ["okr:okr.comment.readonly"],
+      inputSchema: s.object("Identify the OKR comment.", { commentId, userIdType }, { optional: ["userIdType"] }),
+      outputSchema: s.object("The requested OKR comment.", { comment: looseItem }, { optional: [] }),
+    }),
+  ];
+}
+
+function commentWriteActions(service: string): readonly ActionDefinition[] {
+  const mutationOutput = s.object(
+    "The affected OKR comments.",
+    {
+      comments: s.array("The comments affected by this operation.", looseItem),
+    },
+    { optional: [] },
+  );
+  return [
+    defineProviderAction(service, {
+      name: "create_okr_comment",
+      operationType: "write",
+      description: "Create or reply to a Feishu OKR comment.",
+      requiredScopes: ["okr:okr.comment.writeonly"],
+      providerPermissions: ["okr:okr.comment.writeonly"],
+      inputSchema: s.object(
+        "Describe the OKR comment.",
+        {
+          targetType: commentTargetType,
+          targetId: s.nonEmptyString("The cycle, progress, objective, or key-result ID."),
+          content: commentContent,
+          selectedText: s.nonEmptyString("The selected objective or key-result text to comment on."),
+          refCommentId: s.nonEmptyString("The existing comment ID to reply to."),
+          userIdType,
+        },
+        { optional: ["selectedText", "refCommentId", "userIdType"] },
+      ),
+      outputSchema: s.object(
+        "The created OKR comment identifiers.",
+        {
+          commentId: s.string("The created comment ID."),
+          selectionId: s.nullable(s.string("The created selection ID, when applicable.")),
+        },
+        { optional: [] },
+      ),
+    }),
+    defineProviderAction(service, {
+      name: "update_okr_comment",
+      operationType: "write",
+      description: "Replace the content of a Feishu OKR comment.",
+      requiredScopes: ["okr:okr.comment.writeonly"],
+      providerPermissions: ["okr:okr.comment.writeonly"],
+      inputSchema: s.object(
+        "Identify the comment and provide replacement content.",
+        { commentId, content: commentContent, userIdType },
+        { optional: ["userIdType"] },
+      ),
+      outputSchema: s.object("The updated OKR comment.", { comment: looseItem }, { optional: [] }),
+    }),
+    defineProviderAction(service, {
+      name: "solve_okr_comment",
+      operationType: "write",
+      description: "Mark a Feishu OKR comment or its selection thread as solved.",
+      requiredScopes: ["okr:okr.comment.writeonly"],
+      providerPermissions: ["okr:okr.comment.writeonly"],
+      inputSchema: commentMutationInput("Identify the OKR comment to solve."),
+      outputSchema: mutationOutput,
+    }),
+    defineProviderAction(service, {
+      name: "reopen_okr_comment",
+      operationType: "write",
+      description: "Reopen a solved Feishu OKR comment or selection thread.",
+      requiredScopes: ["okr:okr.comment.writeonly"],
+      providerPermissions: ["okr:okr.comment.writeonly"],
+      inputSchema: commentMutationInput("Identify the OKR comment to reopen."),
+      outputSchema: mutationOutput,
+    }),
+    defineProviderAction(service, {
+      name: "delete_okr_comment",
+      operationType: "destructive",
+      description: "Permanently delete a Feishu OKR comment.",
+      requiredScopes: ["okr:okr.comment.delete"],
+      providerPermissions: ["okr:okr.comment.delete"],
+      inputSchema: s.object("Identify the OKR comment to delete.", { commentId }, { optional: [] }),
+      outputSchema: s.object(
+        "The comment deletion result.",
+        {
+          deleted: s.boolean("Whether the comment was deleted."),
+          commentId: s.string("The deleted comment ID."),
+        },
+        { optional: [] },
+      ),
+    }),
+  ];
+}
+
+function commentMutationInput(description: string) {
+  return s.object(description, { commentId, userIdType }, { optional: ["userIdType"] });
+}
+
 function progressActions(service: string): readonly ActionDefinition[] {
   const baseInput = {
     targetType,
@@ -477,6 +573,7 @@ function progressActions(service: string): readonly ActionDefinition[] {
   return [
     defineProviderAction(service, {
       name: "list_okr_progress",
+      operationType: "read",
       description: "List progress records for an objective or key result.",
       requiredScopes: ["okr:okr.progress:readonly"],
       providerPermissions: ["okr:okr.progress:readonly"],
@@ -487,6 +584,7 @@ function progressActions(service: string): readonly ActionDefinition[] {
     }),
     defineProviderAction(service, {
       name: "get_okr_progress",
+      operationType: "read",
       description: "Get one Feishu OKR progress record.",
       requiredScopes: ["okr:okr.progress:readonly"],
       providerPermissions: ["okr:okr.progress:readonly"],
@@ -510,6 +608,7 @@ function progressActions(service: string): readonly ActionDefinition[] {
     }),
     defineProviderAction(service, {
       name: "create_okr_progress",
+      operationType: "write",
       description: "Create a progress record for an objective or key result.",
       requiredScopes: ["okr:okr.progress:writeonly"],
       providerPermissions: ["okr:okr.progress:writeonly"],
@@ -537,6 +636,7 @@ function progressActions(service: string): readonly ActionDefinition[] {
     }),
     defineProviderAction(service, {
       name: "update_okr_progress",
+      operationType: "write",
       description: "Update the content or rate of an OKR progress record.",
       requiredScopes: ["okr:okr.progress:writeonly"],
       providerPermissions: ["okr:okr.progress:writeonly"],
@@ -561,6 +661,7 @@ function progressActions(service: string): readonly ActionDefinition[] {
     }),
     defineProviderAction(service, {
       name: "delete_okr_progress",
+      operationType: "destructive",
       description: "Delete a Feishu OKR progress record.",
       requiredScopes: ["okr:okr.progress:delete"],
       providerPermissions: ["okr:okr.progress:delete"],

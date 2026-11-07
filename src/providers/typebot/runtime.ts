@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import {
   optionalBoolean,
@@ -15,11 +16,11 @@ import {
   ProviderRequestError,
   providerUserAgent,
   readProviderJsonBody,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 export const typebotApiBaseUrl = "https://app.typebot.com/api";
 const validationPath = "/v1/workspaces";
-const timeoutMs = 30_000;
 
 const get =
   (
@@ -29,7 +30,7 @@ const get =
   (input, context) =>
     requestTypebot(path(input), query?.(input), context, "execute");
 
-export const typebotActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const typebotActionHandlers: ProviderActionHandlers<"typebot", ProviderRuntimeHandler<ApiKeyProviderContext>> = {
   list_workspaces: get(() => validationPath),
   get_workspace: get(
     (input) => `/v1/workspaces/${encodeURIComponent(requiredString(input.workspaceId, "workspaceId"))}`,
@@ -86,7 +87,7 @@ async function requestTypebot(
 ): Promise<Record<string, unknown>> {
   const url = new URL(`${typebotApiBaseUrl}${path}`);
   for (const [name, value] of Object.entries(query ?? {})) url.searchParams.set(name, value);
-  const timeout = createProviderTimeout(context.signal, timeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       headers: {
@@ -122,6 +123,6 @@ function typebotError(response: Response, payload: unknown, phase: "validate" | 
   if (response.status === 401 || response.status === 403) {
     return new ProviderRequestError(phase === "validate" ? 400 : response.status, message);
   }
-  if ([400, 404, 422].includes(response.status)) return new ProviderRequestError(400, message);
+  if ([400, 404, 422].includes(response.status)) return providerInputError(message);
   return new ProviderRequestError(response.status >= 500 ? 502 : response.status, message);
 }

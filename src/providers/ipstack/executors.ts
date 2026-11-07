@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { IpstackActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "ipstack";
 const ipstackApiBaseUrl = "https://api.ipstack.com";
@@ -12,7 +14,7 @@ type IpstackRequestPhase = "validate" | "execute";
 type IpstackActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type IpstackActionHandler = (input: Record<string, unknown>, context: IpstackActionContext) => Promise<unknown>;
 
-export const ipstackActionHandlers: Record<IpstackActionName, IpstackActionHandler> = {
+export const ipstackActionHandlers: ProviderActionHandlers<"ipstack", IpstackActionHandler> = {
   lookup_current_ip(input, context) {
     return requestIpstackLookup(
       {
@@ -46,6 +48,16 @@ export const ipstackActionHandlers: Record<IpstackActionName, IpstackActionHandl
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, ipstackActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: ipstackApiBaseUrl,
+  auth: { type: "api_key_query", name: "access_key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {

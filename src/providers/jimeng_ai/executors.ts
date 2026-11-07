@@ -5,24 +5,22 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { JimengAiActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { createHash, createHmac } from "node:crypto";
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireCustomCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyEndpoint,
   normalizeProviderProxyHeaders,
   normalizeProviderProxyQuery,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireCustomCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "jimeng_ai";
 const jimengAiFetch = createProviderFetch({ skipDnsValidation: true });
@@ -76,7 +74,7 @@ type JimengRequestInput = {
   signal?: AbortSignal;
 };
 
-export const jimengAiActionHandlers: Record<JimengAiActionName, JimengActionHandler> = {
+export const jimengAiActionHandlers: ProviderActionHandlers<"jimeng_ai", JimengActionHandler> = {
   submit_image_generation_4_0(input, context) {
     return submitImageTask(input, context, reqKeys.imageGeneration40);
   },

@@ -85,6 +85,7 @@ const dropboxMetadataSchema = s.object(
     url: s.nullableString("The shared link URL when available."),
     expiresAt: s.nullableString("The shared link expiration timestamp in ISO 8601 format when available."),
     sharingInfo: s.nullable(jsonObjectSchema),
+    hasExplicitSharedMembers: nullableBoolean("Whether the file has explicit members, when requested in the listing."),
     linkPermissions: s.nullable(
       s.looseObject(
         {},
@@ -111,6 +112,7 @@ const dropboxMetadataSchema = s.object(
       "url",
       "expiresAt",
       "sharingInfo",
+      "hasExplicitSharedMembers",
       "linkPermissions",
     ],
   },
@@ -206,6 +208,109 @@ const listFolderOutputSchema = s.object(
   },
 );
 
+const listFileMembersInputSchema = s.object(
+  {
+    file: nonEmptyString("The Dropbox file ID or path whose members should be listed."),
+    includeInherited: s.boolean({
+      description: "Include members whose access is inherited from a parent shared folder.",
+      default: true,
+    }),
+    limit: s.integer({
+      description: "The maximum number of members to return per page.",
+      minimum: 1,
+      maximum: 300,
+    }),
+  },
+  {
+    description: "Input payload for listing a Dropbox file's members.",
+    required: ["file"],
+  },
+);
+
+const listFileMembersContinueInputSchema = s.object(
+  {
+    cursor: nonEmptyString("The cursor returned by a previous file-member listing."),
+  },
+  {
+    description: "Input payload for continuing a Dropbox file-member listing.",
+    required: ["cursor"],
+  },
+);
+
+const listFolderMembersInputSchema = s.object(
+  {
+    sharedFolderId: nonEmptyString("The ID of the shared folder whose members should be listed."),
+    path: nonEmptyString(
+      "Optional folder path for including inherited access. Provide it together with sharedFolderId; Dropbox uses the path to identify the folder.",
+    ),
+    limit: s.integer({
+      description: "The maximum number of users, groups, and invitees to return per page.",
+      minimum: 1,
+      maximum: 1000,
+    }),
+  },
+  {
+    description:
+      "Input payload for listing a shared Dropbox folder's members. Without a path, Dropbox returns direct members only.",
+    required: ["sharedFolderId"],
+  },
+);
+
+const listFolderMembersContinueInputSchema = s.object(
+  {
+    cursor: nonEmptyString("The cursor returned by a previous folder-member listing."),
+  },
+  {
+    description: "Input payload for continuing a Dropbox folder-member listing.",
+    required: ["cursor"],
+  },
+);
+
+const fileMembershipSchema = s.object(
+  {
+    access_type: s.object(
+      { ".tag": textSchema("The Dropbox access level, such as owner, editor, or viewer.") },
+      { required: [".tag"], additionalProperties: true },
+    ),
+    is_inherited: s.boolean("Whether this membership is inherited from a parent shared folder."),
+    permissions: s.array(jsonObjectSchema),
+    user: jsonObjectSchema,
+    group: jsonObjectSchema,
+    invitee: jsonObjectSchema,
+  },
+  {
+    description: "A native Dropbox file membership; user, group, or invitee retains its complete provider record.",
+    required: ["access_type", "is_inherited"],
+    additionalProperties: true,
+  },
+);
+
+const listFileMembersOutputSchema = s.object(
+  {
+    users: s.array(fileMembershipSchema, { description: "User memberships of the shared file." }),
+    groups: s.array(fileMembershipSchema, { description: "Group memberships of the shared file." }),
+    invitees: s.array(fileMembershipSchema, { description: "Invited members who have not claimed the file." }),
+    cursor: s.nullableString("Continue with this cursor; null means the membership listing is complete."),
+  },
+  {
+    description: "One file-membership page, including inherited members by default.",
+    required: ["users", "groups", "invitees", "cursor"],
+  },
+);
+
+const listFolderMembersOutputSchema = s.object(
+  {
+    users: s.array(fileMembershipSchema, { description: "User memberships of the shared folder." }),
+    groups: s.array(fileMembershipSchema, { description: "Group memberships of the shared folder." }),
+    invitees: s.array(fileMembershipSchema, { description: "Invited members who have not joined the shared folder." }),
+    cursor: s.nullableString("Continue with this cursor; null means the membership listing is complete."),
+  },
+  {
+    description: "One shared-folder membership page. Inherited members are included only when a path was supplied.",
+    required: ["users", "groups", "invitees", "cursor"],
+  },
+);
+
 const getMetadataInputSchema = s.object(
   {
     path: pathLikeField,
@@ -235,7 +340,7 @@ const metadataResultSchema = s.object(
 const downloadFileInputSchema = s.object(
   {
     path: textSchema("The Dropbox file path, file ID, or revision ID to download."),
-    fileName: textSchema("Optional file name to use for the uploaded transit file."),
+    fileName: nonEmptyString("Optional file name to use for the local transit file."),
   },
   {
     description: "Input payload for downloading a Dropbox file into transit storage.",
@@ -243,19 +348,19 @@ const downloadFileInputSchema = s.object(
   },
 );
 
-const downloadFileOutputSchema = s.object(
-  {
-    fileId: textSchema("The unique identifier of the downloaded Dropbox file."),
-    name: textSchema("The name of the downloaded Dropbox file."),
-    mimeType: textSchema("The MIME type used for the transit upload."),
-    sizeBytes: nullableInteger("The size of the downloaded file content in bytes."),
-    contentBase64: textSchema("The downloaded file content encoded as base64."),
-  },
-  {
-    description: "A Dropbox file downloaded into transit storage.",
-    required: ["fileId", "name", "mimeType", "sizeBytes", "contentBase64"],
-  },
-);
+const downloadFileOutputSchema = s.requiredObject("A Dropbox file downloaded into local transit storage.", {
+  fileId: nonEmptyString("The unique identifier of the downloaded Dropbox file."),
+  name: nonEmptyString("The name of the downloaded Dropbox file."),
+  mimeType: nonEmptyString("The MIME type of the downloaded file."),
+  sizeBytes: s.nonNegativeInteger("The downloaded file size in bytes."),
+  file: s.requiredObject("The downloaded file in local transit storage.", {
+    fileId: nonEmptyString("The local transit file identifier."),
+    downloadUrl: s.url("The local transit URL for downloading the stored file."),
+    sizeBytes: s.nonNegativeInteger("The stored transit file size in bytes."),
+    name: nonEmptyString("The stored transit file name."),
+    mimeType: nonEmptyString("The stored transit file MIME type."),
+  }),
+});
 
 const uploadFileInputSchema = s.object(
   {
@@ -596,7 +701,7 @@ const getSharedLinkFileInputSchema = s.object(
   {
     url: nonEmptyString("The Dropbox shared link URL."),
     path: textSchema("Optional path inside the shared link when the link points to a folder."),
-    fileName: textSchema("Optional file name to use for the uploaded transit file."),
+    fileName: nonEmptyString("Optional file name to use for the local transit file."),
   },
   {
     description: "Input payload for downloading a Dropbox shared-link file into transit storage.",
@@ -705,6 +810,7 @@ const getTagsOutputSchema = s.object(
 export const dropboxActions: ActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_current_account",
+    operationType: "read",
     description: "Get basic profile information for the current Dropbox account.",
     requiredScopes: [dropboxProviderScopes.accountInfoRead],
     providerPermissions: [dropboxProviderScopes.accountInfoRead],
@@ -713,6 +819,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "list_folder",
+    operationType: "read",
     description: "List files and folders inside one Dropbox folder.",
     requiredScopes: [dropboxProviderScopes.filesMetadataRead],
     providerPermissions: [dropboxProviderScopes.filesMetadataRead],
@@ -721,6 +828,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "list_folder_continue",
+    operationType: "read",
     description: "Continue a previous Dropbox folder listing with a cursor.",
     requiredScopes: [dropboxProviderScopes.filesMetadataRead],
     providerPermissions: [dropboxProviderScopes.filesMetadataRead],
@@ -728,7 +836,45 @@ export const dropboxActions: ActionDefinition[] = [
     outputSchema: listFolderOutputSchema,
   }),
   defineProviderAction(service, {
+    name: "list_file_members",
+    operationType: "read",
+    description: "List a Dropbox file's user, group and invited members, including inherited access by default.",
+    requiredScopes: [dropboxProviderScopes.sharingRead],
+    providerPermissions: [dropboxProviderScopes.sharingRead],
+    inputSchema: listFileMembersInputSchema,
+    outputSchema: listFileMembersOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "list_file_members_continue",
+    operationType: "read",
+    description: "Continue a Dropbox file-member listing until the returned cursor is null.",
+    requiredScopes: [dropboxProviderScopes.sharingRead],
+    providerPermissions: [dropboxProviderScopes.sharingRead],
+    inputSchema: listFileMembersContinueInputSchema,
+    outputSchema: listFileMembersOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "list_folder_members",
+    operationType: "read",
+    description:
+      "List a shared Dropbox folder's users, groups, and invitees. Supply a path to include inherited access.",
+    requiredScopes: [dropboxProviderScopes.sharingRead],
+    providerPermissions: [dropboxProviderScopes.sharingRead],
+    inputSchema: listFolderMembersInputSchema,
+    outputSchema: listFolderMembersOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "list_folder_members_continue",
+    operationType: "read",
+    description: "Continue a Dropbox shared-folder member listing until the returned cursor is null.",
+    requiredScopes: [dropboxProviderScopes.sharingRead],
+    providerPermissions: [dropboxProviderScopes.sharingRead],
+    inputSchema: listFolderMembersContinueInputSchema,
+    outputSchema: listFolderMembersOutputSchema,
+  }),
+  defineProviderAction(service, {
     name: "get_metadata",
+    operationType: "read",
     description: "Get Dropbox metadata for one file or folder.",
     requiredScopes: [dropboxProviderScopes.filesMetadataRead],
     providerPermissions: [dropboxProviderScopes.filesMetadataRead],
@@ -737,7 +883,8 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "download_file",
-    description: "Download one Dropbox file and return its content encoded as base64.",
+    operationType: "read",
+    description: "Download one Dropbox file into local transit file storage.",
     requiredScopes: [dropboxProviderScopes.filesContentRead],
     providerPermissions: [dropboxProviderScopes.filesContentRead],
     inputSchema: downloadFileInputSchema,
@@ -745,6 +892,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "upload_file",
+    operationType: "write",
     description: "Upload one file to Dropbox from inline text or base64 content.",
     requiredScopes: [dropboxProviderScopes.filesContentWrite],
     providerPermissions: [dropboxProviderScopes.filesContentWrite],
@@ -753,6 +901,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "create_folder",
+    operationType: "write",
     description: "Create one folder in Dropbox.",
     requiredScopes: [dropboxProviderScopes.filesContentWrite],
     providerPermissions: [dropboxProviderScopes.filesContentWrite],
@@ -761,6 +910,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "move",
+    operationType: "destructive",
     description: "Move one file or folder to another Dropbox path.",
     requiredScopes: [dropboxProviderScopes.filesContentWrite],
     providerPermissions: [dropboxProviderScopes.filesContentWrite],
@@ -769,6 +919,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "copy",
+    operationType: "write",
     description: "Copy one file or folder to another Dropbox path.",
     requiredScopes: [dropboxProviderScopes.filesContentWrite],
     providerPermissions: [dropboxProviderScopes.filesContentWrite],
@@ -777,6 +928,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "delete",
+    operationType: "destructive",
     description: "Delete one file or folder from Dropbox.",
     requiredScopes: [dropboxProviderScopes.filesContentWrite],
     providerPermissions: [dropboxProviderScopes.filesContentWrite],
@@ -785,6 +937,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "create_shared_link",
+    operationType: "write",
     description: "Create one Dropbox shared link with optional custom settings.",
     requiredScopes: [dropboxProviderScopes.sharingWrite],
     providerPermissions: [dropboxProviderScopes.sharingWrite],
@@ -793,6 +946,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "list_shared_links",
+    operationType: "read",
     description: "List Dropbox shared links for the current user or a specific path.",
     requiredScopes: [dropboxProviderScopes.sharingRead],
     providerPermissions: [dropboxProviderScopes.sharingRead],
@@ -801,6 +955,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "search_files",
+    operationType: "read",
     description: "Search Dropbox files and folders with the official search_v2 endpoint.",
     requiredScopes: [dropboxProviderScopes.filesMetadataRead],
     providerPermissions: [dropboxProviderScopes.filesMetadataRead],
@@ -809,6 +964,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "search_files_continue",
+    operationType: "read",
     description: "Continue a previous Dropbox file search with a cursor.",
     requiredScopes: [dropboxProviderScopes.filesMetadataRead],
     providerPermissions: [dropboxProviderScopes.filesMetadataRead],
@@ -817,6 +973,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "get_temporary_link",
+    operationType: "read",
     description: "Create a temporary direct-download Dropbox link for one file.",
     requiredScopes: [dropboxProviderScopes.filesContentRead],
     providerPermissions: [dropboxProviderScopes.filesContentRead],
@@ -825,6 +982,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "save_url",
+    operationType: "write",
     description: "Ask Dropbox to save a public URL into a Dropbox file path.",
     requiredScopes: [dropboxProviderScopes.filesContentWrite],
     providerPermissions: [dropboxProviderScopes.filesContentWrite],
@@ -833,6 +991,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "save_url_check_job_status",
+    operationType: "read",
     description: "Check the status of an asynchronous Dropbox save_url job.",
     requiredScopes: [dropboxProviderScopes.filesContentWrite],
     providerPermissions: [dropboxProviderScopes.filesContentWrite],
@@ -841,6 +1000,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "list_revisions",
+    operationType: "read",
     description: "List revisions for one Dropbox file.",
     requiredScopes: [dropboxProviderScopes.filesMetadataRead],
     providerPermissions: [dropboxProviderScopes.filesMetadataRead],
@@ -849,6 +1009,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "restore",
+    operationType: "destructive",
     description: "Restore one Dropbox file to a previous revision.",
     requiredScopes: [dropboxProviderScopes.filesContentWrite],
     providerPermissions: [dropboxProviderScopes.filesContentWrite],
@@ -857,6 +1018,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "get_shared_link_metadata",
+    operationType: "read",
     description: "Get metadata for a Dropbox shared link.",
     requiredScopes: [dropboxProviderScopes.sharingRead],
     providerPermissions: [dropboxProviderScopes.sharingRead],
@@ -865,7 +1027,8 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "get_shared_link_file",
-    description: "Download a Dropbox shared-link file and return its content encoded as base64.",
+    operationType: "read",
+    description: "Download a Dropbox shared-link file into local transit file storage.",
     requiredScopes: [dropboxProviderScopes.sharingRead],
     providerPermissions: [dropboxProviderScopes.sharingRead],
     inputSchema: getSharedLinkFileInputSchema,
@@ -873,6 +1036,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "modify_shared_link",
+    operationType: "write",
     description: "Modify settings for an existing Dropbox shared link.",
     requiredScopes: [dropboxProviderScopes.sharingWrite],
     providerPermissions: [dropboxProviderScopes.sharingWrite],
@@ -881,6 +1045,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "revoke_shared_link",
+    operationType: "destructive",
     description: "Revoke an existing Dropbox shared link.",
     requiredScopes: [dropboxProviderScopes.sharingWrite],
     providerPermissions: [dropboxProviderScopes.sharingWrite],
@@ -889,6 +1054,7 @@ export const dropboxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "get_tags",
+    operationType: "read",
     description: "Get user-generated Dropbox tags for one or more files or folders.",
     requiredScopes: [dropboxProviderScopes.filesMetadataRead],
     providerPermissions: [dropboxProviderScopes.filesMetadataRead],

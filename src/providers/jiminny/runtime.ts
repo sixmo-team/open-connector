@@ -1,8 +1,13 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { JiminnyActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 const jiminnyUsApiBaseUrl = "https://app.jiminny.com/customer/api/v1";
 const jiminnyEuApiBaseUrl = "https://app.jiminny.eu/customer/api/v1";
@@ -19,7 +24,7 @@ export interface JiminnyActionContext {
   signal?: AbortSignal;
 }
 
-export const jiminnyActionHandlers: Record<JiminnyActionName, JiminnyActionHandler> = {
+export const jiminnyActionHandlers: ProviderActionHandlers<"jiminny", JiminnyActionHandler> = {
   get_current_organization(_input, context) {
     return getCurrentOrganization(context);
   },
@@ -364,9 +369,9 @@ function mapJiminnyError(status: number, message: string, phase: JiminnyRequestP
     return new ProviderRequestError(429, message);
   }
   if (status === 400 || status === 404 || status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function isJiminnyGeneratingMessage(message: string): boolean {
@@ -420,7 +425,7 @@ function pickQuery(input: Record<string, unknown>, keys: string[]): Record<strin
 function readObjectPayload(payload: unknown, message: string): Record<string, unknown> {
   const record = optionalRecord(payload);
   if (!record) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return record;
 }

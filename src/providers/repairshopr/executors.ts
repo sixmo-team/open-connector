@@ -1,13 +1,16 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
-import type { RepairshoprActionName } from "./actions.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "repairshopr";
 const repairshoprHostSuffix = ".repairshopr.com";
@@ -44,7 +47,7 @@ interface RepairshoprActionContext {
   signal?: AbortSignal;
 }
 
-export const repairshoprActionHandlers: Record<RepairshoprActionName, RepairshoprActionHandler> = {
+export const repairshoprActionHandlers: ProviderActionHandlers<"repairshopr", RepairshoprActionHandler> = {
   get_current_user(_input, context) {
     return getCurrentUser(context, "execute");
   },
@@ -91,6 +94,20 @@ export const executors: ProviderExecutors = defineProviderExecutors<RepairshoprA
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context) {
+    const credential = await requireApiKeyCredential(context, service);
+    return readRepairshoprApiBaseUrl(credential.values, credential.metadata);
+  },
+  auth: { type: "api_key_header", name: "Authorization" },
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) {
+      headers.set("accept", "application/json");
+    }
   },
 });
 

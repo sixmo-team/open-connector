@@ -1,6 +1,7 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 
-import { defineApiKeyProviderExecutors } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { hunterActionHandlers, validateHunterCredential } from "./runtime.ts";
 
 const service = "hunter";
@@ -10,3 +11,9 @@ export const executors: ProviderExecutors = defineApiKeyProviderExecutors(servic
 export const credentialValidators: CredentialValidators = {
   apiKey: validateHunterCredential,
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.hunter.io/v2",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

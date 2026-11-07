@@ -1,6 +1,13 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   breezeActionHandlers,
   buildBreezeBaseUrl,
@@ -28,6 +35,19 @@ export const executors: ProviderExecutors = defineProviderExecutors({
     };
   },
   fallbackMessage: "Breeze request failed.",
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context): Promise<string> {
+    const credential = await requireApiKeyCredential(context, service);
+    const subdomain = normalizeBreezeSubdomain(credential.values.subdomain ?? credential.metadata.subdomain);
+    return normalizeBreezeBaseUrl(credential.metadata.baseUrl) ?? buildBreezeBaseUrl(subdomain);
+  },
+  auth: { type: "api_key_header", name: "Api-key" },
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
 });
 
 export const credentialValidators: CredentialValidators = {

@@ -1,5 +1,6 @@
 import type { FeishuJsonRequest, FeishuQueryValue } from "./client.ts";
 
+import { compactObject, optionalRawString } from "../../../core/cast.ts";
 import { ProviderRequestError } from "../../provider-runtime.ts";
 
 interface FeishuApprovalActionHandler {
@@ -9,10 +10,10 @@ interface FeishuApprovalActionHandler {
 const taskTopics: Readonly<Record<string, string>> = {
   pending: "1",
   completed: "2",
-  initiated: "3",
   cc_unread: "17",
   cc_read: "18",
 };
+
 const addSignTypes: Readonly<Record<string, number>> = {
   before: 1,
   after: 2,
@@ -64,7 +65,7 @@ export function createFeishuApprovalActionHandlers(
       });
       return {
         instanceCode: requireString(instance.instance_code, "instance_code"),
-        instanceLink: optionalString(instance.instance_link) ?? "",
+        instanceLink: optionalRawString(instance.instance_link) ?? "",
         instance,
       };
     },
@@ -199,9 +200,9 @@ function normalizePage(data: Record<string, unknown>, itemKey: string) {
     : [];
   return {
     items,
-    pageToken: optionalString(data.page_token) ?? "",
+    pageToken: optionalRawString(data.page_token) ?? "",
     hasMore: data.has_more === true,
-    total: optionalNonNegativeInteger(data.count) ?? items.length,
+    total: optionalNonNegativeInteger(data.count),
   };
 }
 
@@ -211,6 +212,7 @@ function listQuery(input: Record<string, unknown>) {
     page_token: input.pageToken,
     locale: input.locale,
     definition_code: input.definitionCode,
+    keyword: input.keyword,
     start_timestamp: input.startTimestamp,
     end_timestamp: input.endTimestamp,
     user_id_type: input.userIdType,
@@ -234,16 +236,6 @@ function mapEnum<T>(value: unknown, values: Readonly<Record<string, T>>, fieldNa
     throw new ProviderRequestError(400, `${fieldName} has an unsupported value`);
   }
   return mapped;
-}
-
-function compactObject(value: Record<string, unknown>) {
-  const result: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (item !== undefined) {
-      result[key] = item;
-    }
-  }
-  return result;
 }
 
 function compactQuery(value: Record<string, unknown>) {
@@ -274,10 +266,6 @@ function requireString(value: unknown, fieldName: string) {
     return value;
   }
   throw new ProviderRequestError(400, `${fieldName} must be a non-empty string`);
-}
-
-function optionalString(value: unknown) {
-  return typeof value === "string" ? value : undefined;
 }
 
 function optionalNonNegativeInteger(value: unknown) {

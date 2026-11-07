@@ -1,5 +1,5 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ConfluenceActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import {
@@ -13,28 +13,52 @@ import {
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
+  requiredInputString,
+  providerResponseError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
-const confluenceValidationPath = "/spaces";
-const confluenceDefaultTimeoutMs = 30_000;
+export const confluenceValidationPath = "/spaces";
 const defaultLimit = 25;
+const atlassianApiOrigin = "https://api.atlassian.com";
 
-type ConfluencePhase = "validate" | "execute";
+export type ConfluencePhase = "validate" | "execute";
 
-interface ConfluenceContext {
-  baseUrl?: unknown;
+export interface ConfluenceBasicAuth {
+  type: "basic";
   email?: unknown;
   apiToken: string;
+}
+
+export interface ConfluenceOAuthAuth {
+  type: "oauth2";
+  accessToken: string;
+  tokenType: string;
+}
+
+type ConfluenceAuth = ConfluenceBasicAuth | ConfluenceOAuthAuth;
+
+export interface ConfluenceContext {
+  baseUrl?: unknown;
+  restApiBaseUrl?: unknown;
+  auth: ConfluenceAuth;
   fetcher: typeof fetch;
   signal?: AbortSignal;
 }
 
-interface ConfluenceRequestInput extends ConfluenceContext {
+export interface ConfluenceApiBaseUrls {
+  baseUrl: string;
+  restApiBaseUrl: string;
+}
+
+export interface ConfluenceRequestInput extends ConfluenceContext {
   method: "GET" | "POST" | "PUT";
   path: string;
   phase: ConfluencePhase;
+  apiVersion?: "v1" | "v2";
   query?: Record<string, string | number | undefined>;
   body?: Record<string, unknown>;
   notFoundAsInvalidInput?: boolean;
@@ -42,15 +66,16 @@ interface ConfluenceRequestInput extends ConfluenceContext {
 
 type ConfluenceActionHandler = (input: Record<string, unknown>, context: ConfluenceContext) => Promise<unknown>;
 
-export const confluenceActionHandlers: Record<ConfluenceActionName, ConfluenceActionHandler> = {
+export const confluenceActionHandlers: ProviderActionHandlers<"confluence", ConfluenceActionHandler> = {
   async search_content(input, context): Promise<unknown> {
     const payload = await requestConfluenceJson({
       ...context,
       method: "GET",
       path: "/search",
       phase: "execute",
+      apiVersion: "v1",
       query: compactObject({
-        cql: requireConfluenceString(input.cql, "cql"),
+        cql: requiredInputString(input.cql, "cql"),
         limit: optionalInteger(input.limit) ?? defaultLimit,
         cursor: optionalString(input.cursor),
       }),
@@ -76,7 +101,7 @@ export const confluenceActionHandlers: Record<ConfluenceActionName, ConfluenceAc
     const payload = await requestConfluenceJson({
       ...context,
       method: "GET",
-      path: `/pages/${encodeURIComponent(requireConfluenceString(input.pageId, "pageId"))}`,
+      path: `/pages/${encodeURIComponent(requiredInputString(input.pageId, "pageId"))}`,
       phase: "execute",
       notFoundAsInvalidInput: true,
       query: compactObject({
@@ -92,9 +117,9 @@ export const confluenceActionHandlers: Record<ConfluenceActionName, ConfluenceAc
       path: "/pages",
       phase: "execute",
       body: compactObject({
-        spaceId: requireConfluenceString(input.spaceId, "spaceId"),
+        spaceId: requiredInputString(input.spaceId, "spaceId"),
         status: optionalString(input.status) ?? "current",
-        title: requireConfluenceString(input.title, "title"),
+        title: requiredInputString(input.title, "title"),
         parentId: optionalString(input.parentId),
         body: buildPageBody(input),
       }),
@@ -105,13 +130,13 @@ export const confluenceActionHandlers: Record<ConfluenceActionName, ConfluenceAc
     const payload = await requestConfluenceJson({
       ...context,
       method: "PUT",
-      path: `/pages/${encodeURIComponent(requireConfluenceString(input.pageId, "pageId"))}`,
+      path: `/pages/${encodeURIComponent(requiredInputString(input.pageId, "pageId"))}`,
       phase: "execute",
       notFoundAsInvalidInput: true,
       body: compactObject({
-        id: requireConfluenceString(input.pageId, "pageId"),
+        id: requiredInputString(input.pageId, "pageId"),
         status: optionalString(input.status) ?? "current",
-        title: requireConfluenceString(input.title, "title"),
+        title: requiredInputString(input.title, "title"),
         body: buildOptionalPageBody(input),
         version: compactObject({
           number: optionalInteger(input.versionNumber),
@@ -132,12 +157,16 @@ export async function validateConfluenceCredential(
   const apiToken = requiredString(input.apiKey, "apiKey", providerInputError);
   const email = requiredString(input.email, "email", providerInputError);
   const siteUrl = normalizeConfluenceSiteUrl(requiredString(input.siteUrl, "siteUrl", providerInputError));
-  const baseUrl = `${siteUrl}/wiki/api/v2`;
+  const { baseUrl, restApiBaseUrl } = buildConfluenceSiteApiBaseUrls(siteUrl);
 
   const payload = await requestConfluenceJson({
     baseUrl,
-    email,
-    apiToken,
+    restApiBaseUrl,
+    auth: {
+      type: "basic",
+      email,
+      apiToken,
+    },
     fetcher,
     signal,
     method: "GET",
@@ -159,6 +188,7 @@ export async function validateConfluenceCredential(
     metadata: compactObject({
       siteUrl,
       baseUrl,
+      restApiBaseUrl,
       email,
       validationEndpoint: confluenceValidationPath,
       validationResultCount: resultCount,
@@ -166,16 +196,47 @@ export async function validateConfluenceCredential(
   };
 }
 
-function resolveConfluenceBaseUrl(context: ConfluenceContext): string {
+/** Build Atlassian's tenant-routed Confluence REST endpoints for one OAuth cloud site. */
+export function buildConfluenceOAuthApiBaseUrls(cloudId: string): ConfluenceApiBaseUrls {
+  const encodedCloudId = encodeURIComponent(requiredString(cloudId, "cloudId", providerInputError));
+  const tenantBaseUrl = `${atlassianApiOrigin}/ex/confluence/${encodedCloudId}/wiki`;
+  return {
+    baseUrl: `${tenantBaseUrl}/api/v2`,
+    restApiBaseUrl: `${tenantBaseUrl}/rest/api`,
+  };
+}
+
+function buildConfluenceSiteApiBaseUrls(siteUrl: string): ConfluenceApiBaseUrls {
+  return {
+    baseUrl: `${siteUrl}/wiki/api/v2`,
+    restApiBaseUrl: `${siteUrl}/wiki/rest/api`,
+  };
+}
+
+function resolveConfluenceBaseUrl(context: ConfluenceContext, apiVersion: "v1" | "v2"): string {
+  if (apiVersion === "v1") {
+    const restApiBaseUrl = optionalString(context.restApiBaseUrl);
+    if (restApiBaseUrl) {
+      return trimTrailingSlash(restApiBaseUrl);
+    }
+  }
   const baseUrl = optionalString(context.baseUrl);
   if (baseUrl) {
-    return trimTrailingSlash(baseUrl);
+    const normalizedBaseUrl = trimTrailingSlash(baseUrl);
+    if (apiVersion === "v2") {
+      return normalizedBaseUrl;
+    }
+    const derivedRestApiBaseUrl = normalizedBaseUrl.replace(/\/wiki\/api\/v2$/u, "/wiki/rest/api");
+    if (derivedRestApiBaseUrl !== normalizedBaseUrl) {
+      return derivedRestApiBaseUrl;
+    }
+    throw new ProviderRequestError(400, "Confluence REST v1 base URL is unavailable");
   }
   throw new ProviderRequestError(400, "Confluence siteUrl is required");
 }
 
-function resolveConfluenceEmail(context: ConfluenceContext): string {
-  const email = optionalString(context.email);
+function resolveConfluenceEmail(auth: ConfluenceBasicAuth): string {
+  const email = optionalString(auth.email);
   if (email) {
     return email;
   }
@@ -200,9 +261,8 @@ function normalizeConfluenceSiteUrl(value: string): string {
   return `https://${url.hostname}`;
 }
 
-async function requestConfluenceJson(input: ConfluenceRequestInput): Promise<unknown> {
-  const baseUrl = resolveConfluenceBaseUrl(input);
-  const email = resolveConfluenceEmail(input);
+export async function requestConfluenceJson(input: ConfluenceRequestInput): Promise<unknown> {
+  const baseUrl = resolveConfluenceBaseUrl(input, input.apiVersion ?? "v2");
   const url = new URL(input.path.replace(/^\//, ""), `${trimTrailingSlash(baseUrl)}/`);
   for (const [key, value] of Object.entries(input.query ?? {})) {
     if (value !== undefined) {
@@ -210,13 +270,13 @@ async function requestConfluenceJson(input: ConfluenceRequestInput): Promise<unk
     }
   }
 
-  const timeout = createProviderTimeout(input.signal, confluenceDefaultTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   let response: Response;
   let payload: unknown;
   try {
     response = await input.fetcher(url, {
       method: input.method,
-      headers: confluenceHeaders(input, email),
+      headers: confluenceHeaders(input),
       body: input.body === undefined ? undefined : JSON.stringify(input.body),
       signal: timeout.signal,
     });
@@ -225,7 +285,7 @@ async function requestConfluenceJson(input: ConfluenceRequestInput): Promise<unk
     if (timeout.didTimeout() || isAbortLikeError(error)) {
       throw new ProviderRequestError(
         504,
-        `Confluence request timed out after ${Math.ceil(confluenceDefaultTimeoutMs / 1000)} seconds`,
+        `Confluence request timed out after ${Math.ceil(defaultProviderRequestTimeoutMs / 1000)} seconds`,
       );
     }
     if (error instanceof ProviderRequestError) {
@@ -246,9 +306,13 @@ async function requestConfluenceJson(input: ConfluenceRequestInput): Promise<unk
   return payload;
 }
 
-function confluenceHeaders(input: ConfluenceRequestInput, email: string): Record<string, string> {
+function confluenceHeaders(input: ConfluenceRequestInput): Record<string, string> {
+  const authorization =
+    input.auth.type === "oauth2"
+      ? `${input.auth.tokenType} ${input.auth.accessToken}`
+      : `Basic ${Buffer.from(`${resolveConfluenceEmail(input.auth)}:${input.auth.apiToken}`).toString("base64")}`;
   const headers: Record<string, string> = {
-    Authorization: `Basic ${Buffer.from(`${email}:${input.apiToken}`).toString("base64")}`,
+    Authorization: authorization,
     Accept: "application/json",
     "User-Agent": providerUserAgent,
   };
@@ -278,13 +342,13 @@ function createConfluenceError(
 ): ProviderRequestError {
   const message = extractConfluenceErrorMessage(payload) ?? response.statusText ?? "Confluence request failed";
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (notFoundAsInvalidInput && response.status === 404) {
     return new ProviderRequestError(404, message);
   }
   if (response.status === 400) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status || 502, message, payload);
 }
@@ -404,7 +468,7 @@ function readNextCursor(payload: Record<string, unknown>): string | null {
 function buildPageBody(input: Record<string, unknown>): Record<string, unknown> {
   return {
     representation: optionalString(input.bodyRepresentation) ?? "storage",
-    value: requireConfluenceString(input.body, "body"),
+    value: requiredInputString(input.body, "body"),
   };
 }
 
@@ -419,22 +483,14 @@ function buildOptionalPageBody(input: Record<string, unknown>): Record<string, u
   };
 }
 
-function requireConfluenceString(value: unknown, field: string): string {
-  return requiredString(value, field, providerInputError);
-}
-
 function requireObject(value: unknown, message: string): Record<string, unknown> {
   const object = optionalRecord(value);
   if (!object) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return object;
 }
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

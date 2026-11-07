@@ -5,7 +5,6 @@ import type { ReactNode } from "react";
 import { useTranslate } from "@embra/i18n/react";
 import { RefreshCw } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts";
-import { Metric } from "../shared-ui";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
@@ -38,16 +37,16 @@ export function AdminOverviewPage(props: AdminOverviewPageProps): ReactNode {
         </Button>
       </Card>
 
-      <section className="metrics" aria-label={t("nav.overview")}>
-        <Metric label={t("overview.metrics.connections")} value={props.overview.connections} />
-        <Metric label={t("overview.metrics.activeConnections")} value={props.overview.activeConnections} />
-        <Metric label={t("overview.metrics.providers")} value={props.overview.providers} />
-        <Metric label={t("overview.metrics.activeProviders")} value={props.overview.activeProviders} />
-        <Metric label={t("overview.metrics.actions")} value={props.overview.actions} />
-        <Metric label={t("overview.metrics.enabledActions")} value={props.overview.enabledActions} />
-        <Metric label={t("overview.metrics.calls")} value={props.overview.calls} />
-        <Metric label={t("overview.metrics.successes")} value={props.overview.successes} />
-        <Metric label={t("overview.metrics.failures")} value={props.overview.failures} />
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-label={t("nav.overview")}>
+        <FormattedMetric label={t("overview.metrics.connections")} value={props.overview.connections} />
+        <FormattedMetric label={t("overview.metrics.activeConnections")} value={props.overview.activeConnections} />
+        <FormattedMetric label={t("overview.metrics.providers")} value={props.overview.providers} />
+        <FormattedMetric label={t("overview.metrics.activeProviders")} value={props.overview.activeProviders} />
+        <FormattedMetric label={t("overview.metrics.actions")} value={props.overview.actions} />
+        <FormattedMetric label={t("overview.metrics.enabledActions")} value={props.overview.enabledActions} />
+        <FormattedMetric label={t("overview.metrics.calls")} value={props.overview.calls} />
+        <FormattedMetric label={t("overview.metrics.successes")} value={props.overview.successes} />
+        <FormattedMetric label={t("overview.metrics.failures")} value={props.overview.failures} />
         <FormattedMetric label={t("overview.metrics.inputBytes")} value={formatBytes(props.overview.inputBytes)} />
         <FormattedMetric label={t("overview.metrics.outputBytes")} value={formatBytes(props.overview.outputBytes)} />
         <FormattedMetric
@@ -90,11 +89,11 @@ export function AdminOverviewPage(props: AdminOverviewPageProps): ReactNode {
   );
 }
 
-function FormattedMetric(props: { label: string; value: string }): ReactNode {
+function FormattedMetric(props: { label: string; value: string | number }): ReactNode {
   return (
-    <Card className="metric">
-      <span>{props.label}</span>
-      <strong>{props.value}</strong>
+    <Card className="gap-2 p-4">
+      <span className="text-sm text-muted-foreground">{props.label}</span>
+      <strong className="text-2xl tabular-nums">{props.value}</strong>
     </Card>
   );
 }

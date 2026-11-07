@@ -1,11 +1,12 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { BitlyActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
-import { compactObject, optionalBoolean, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
+import { ProviderRequestError, providerUserAgent, requiredInputString } from "../provider-runtime.ts";
 
-const bitlyApiBaseUrl = "https://api-ssl.bitly.com/v4";
+export const bitlyApiBaseUrl = "https://api-ssl.bitly.com/v4";
 const bitlyValidationPath = "/user";
 
 type BitlyRequestPhase = "validate" | "execute";
@@ -31,7 +32,7 @@ interface BitlyRequestInput {
   body?: unknown;
 }
 
-export const bitlyActionHandlers: Record<BitlyActionName, BitlyActionHandler> = {
+export const bitlyActionHandlers: ProviderActionHandlers<"bitly", BitlyActionHandler> = {
   get_user(input, context) {
     return getUser(input, context);
   },
@@ -124,7 +125,7 @@ async function getGroup(
   input: Record<string, unknown>,
   context: ApiKeyProviderContext,
 ): Promise<Record<string, unknown>> {
-  const groupGuid = requireInputString(input.groupGuid, "groupGuid");
+  const groupGuid = requiredInputString(input.groupGuid, "groupGuid");
   const payload = await requestBitlyJson(context, {
     path: `/groups/${encodeURIComponent(groupGuid)}`,
     phase: "execute",
@@ -144,7 +145,7 @@ async function shortenLink(
     phase: "execute",
     method: "POST",
     body: compactObject({
-      long_url: requireInputString(input.longUrl, "longUrl"),
+      long_url: requiredInputString(input.longUrl, "longUrl"),
       domain: optionalString(input.domain),
       group_guid: optionalString(input.groupGuid),
       force_new_link: optionalBoolean(input.forceNewLink),
@@ -160,7 +161,7 @@ async function getBitlink(
   input: Record<string, unknown>,
   context: ApiKeyProviderContext,
 ): Promise<Record<string, unknown>> {
-  const bitlink = requireInputString(input.bitlink, "bitlink");
+  const bitlink = requiredInputString(input.bitlink, "bitlink");
   const payload = await requestBitlyJson(context, {
     path: `/bitlinks/${encodeBitlinkPath(bitlink)}`,
     phase: "execute",
@@ -175,7 +176,7 @@ async function updateBitlink(
   input: Record<string, unknown>,
   context: ApiKeyProviderContext,
 ): Promise<Record<string, unknown>> {
-  const bitlink = requireInputString(input.bitlink, "bitlink");
+  const bitlink = requiredInputString(input.bitlink, "bitlink");
   const body = compactObject({
     title: optionalString(input.title),
     archived: optionalBoolean(input.archived),
@@ -330,8 +331,4 @@ function requireObject(value: unknown, message: string): Record<string, unknown>
     throw new ProviderRequestError(502, message, value);
   }
   return record;
-}
-
-function requireInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }

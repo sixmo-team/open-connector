@@ -17,11 +17,9 @@ import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import {
-  defineProviderExecutors,
-  ProviderRequestError,
-  requireCustomCredential,
-} from "../../providers/provider-runtime.ts";
+import { requireCustomCredential } from "../../providers/provider-credentials.ts";
+import { defineProviderExecutors } from "../../providers/provider-executors.ts";
+import { ProviderRequestError } from "../../providers/provider-runtime.ts";
 import { mailConnectionTimeoutMs, mailImapPort, mailMessageFetchByteLimit, mailSmtpPort } from "./config.ts";
 import { MailProtocolError } from "./errors.ts";
 import { sanitizeTempFileName } from "./temp-files.ts";
@@ -296,7 +294,6 @@ export async function executeMailAction(
         const { summaries, nextBeforeUid } = await protocol.searchSummaries(credential, folder, criteria, {
           limit: searchInput.limit ?? defaultLimit,
           ...(searchInput.beforeUid !== undefined ? { beforeUid: searchInput.beforeUid } : {}),
-          peek: true,
         });
         return {
           folder,
@@ -308,9 +305,7 @@ export async function executeMailAction(
         const getInput = input as { folder?: string; uid: number };
         const folder = getInput.folder ?? defaultFolder;
         const message = await protocol.fetchMessage(credential, folder, getInput.uid, {
-          peek: true,
           maxBytes: mailMessageFetchByteLimit,
-          skipAttachmentBodies: true,
         });
         return {
           folder,
@@ -421,9 +416,7 @@ export async function executeMailAction(
         replyInput.folder = replyInput.folder ?? defaultFolder;
         replyInput.replyAll = replyInput.replyAll ?? false;
         const original = await protocol.fetchMessage(credential, replyInput.folder, replyInput.uid, {
-          peek: true,
           maxBytes: mailMessageFetchByteLimit,
-          skipAttachmentBodies: true,
         });
         const prepared = await buildReplySendInput(credential, original, replyInput, context);
         try {
@@ -436,9 +429,7 @@ export async function executeMailAction(
         const forwardInput = input as unknown as ParsedForwardInput;
         forwardInput.folder = forwardInput.folder ?? defaultFolder;
         const original = await protocol.fetchMessage(credential, forwardInput.folder, forwardInput.uid, {
-          peek: true,
           maxBytes: mailMessageFetchByteLimit,
-          skipAttachmentBodies: true,
         });
         const prepared = await buildForwardSendInput(original, forwardInput, context);
         try {
@@ -446,6 +437,14 @@ export async function executeMailAction(
         } finally {
           await prepared.cleanup();
         }
+      }
+      default: {
+        // A mail action name without a branch would otherwise fall off the
+        // switch and resolve to undefined, which the runtime reports as an
+        // empty success. The never assignment makes the compiler reject the
+        // next action name that skips this switch.
+        const exhaustiveActionName: never = actionName;
+        throw new ProviderRequestError(500, `Unsupported mail action: ${exhaustiveActionName}`);
       }
     }
   } catch (error) {

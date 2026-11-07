@@ -1,7 +1,7 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
 import { figmaActions } from "./actions.ts";
-import { figmaProviderScopes } from "./scopes.ts";
+import { figmaPublicOAuthScopes } from "./scopes.ts";
 
 const service = "figma";
 
@@ -25,8 +25,14 @@ export const provider: ProviderDefinition = {
       type: "oauth2",
       authorizationUrl: "https://www.figma.com/oauth",
       tokenUrl: "https://api.figma.com/v1/oauth/token",
-      scopes: figmaProviderScopes,
+      scopes: figmaPublicOAuthScopes,
       tokenEndpointAuthMethod: "client_secret_basic",
+      tokenRequestFields: {
+        clientId: false,
+      },
+      pkce: {
+        method: "S256",
+      },
     },
   ],
   homepageUrl: "https://www.figma.com",

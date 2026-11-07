@@ -1,11 +1,17 @@
-import type { OAuthProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { YoutubeActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { randomUUID } from "node:crypto";
-import { compactObject, optionalBoolean, optionalInteger, optionalString } from "../../core/cast.ts";
-import { assertPublicHttpUrl, readBoundedResponseBytes } from "../../core/request.ts";
-import { googleJsonRequest, googleRequest } from "../googledrive/runtime-shared.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean, optionalInteger, optionalString, rawStringOrNull } from "../../core/cast.ts";
+import { assertPublicHttpUrl, readBoundedResponseBytes, storeResponseInTransit } from "../../core/request.ts";
+import { googleJsonRequest, googleRequest } from "../googledrive/runtime-request.ts";
+import { readTransitFileInput } from "../provider-files.ts";
+import {
+  createProviderFetch,
+  providerInputError,
+  providerUserAgent,
+  ProviderRequestError,
+} from "../provider-runtime.ts";
 
 const youtubeApiBaseUrl = "https://www.googleapis.com/youtube/v3";
 const youtubeUploadApiBaseUrl = "https://www.googleapis.com/upload/youtube/v3";
@@ -48,7 +54,7 @@ interface StreamingUploadSource {
   contentLength: number;
 }
 
-export const youtubeActionHandlers: Record<YoutubeActionName, YoutubeActionHandler> = {
+export const youtubeActionHandlers: ProviderActionHandlers<"youtube", YoutubeActionHandler> = {
   search(input, context) {
     return searchYoutube(input, context);
   },
@@ -349,7 +355,8 @@ async function createCommentReply(input: Record<string, unknown>, context: Youtu
 
 async function uploadVideoFromUrl(input: Record<string, unknown>, context: YoutubeActionContext): Promise<unknown> {
   const source = await resolveStreamingUploadSource({
-    url: requireString(optionalString(input.mediaUrl), "mediaUrl is required"),
+    url: optionalString(input.mediaUrl),
+    file: input.file,
     fileName: optionalString(input.fileName),
     mimeType: optionalString(input.mimeType),
     context,
@@ -466,12 +473,13 @@ async function downloadCaption(input: Record<string, unknown>, context: YoutubeA
   const mimeType = optionalString(input.mimeType) ?? inferMimeType(response.headers.get("content-type"));
   const fileName =
     optionalString(input.fileName) ?? resolveCaptionFileName(captionId, optionalString(input.tfmt), mimeType);
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const upload = await storeResponseInTransit(response, context.transitFiles, {
+    name: fileName,
+    mimeType,
     fieldName: "YouTube caption download",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const upload = await context.transitFiles.create(new File([Uint8Array.from(bytes)], fileName, { type: mimeType }));
   return {
     file: {
       id: captionId,
@@ -654,8 +662,8 @@ async function youtubeRawRequest(
 function normalizeSearchResult(value: unknown): Record<string, unknown> {
   const item = asLooseResource(value);
   return {
-    kind: asNullableString(item.kind),
-    etag: asNullableString(item.etag),
+    kind: rawStringOrNull(item.kind),
+    etag: rawStringOrNull(item.etag),
     id: asLooseObject(item.id),
     snippet: asNullableLooseObject(item.snippet),
     raw: item,
@@ -665,9 +673,9 @@ function normalizeSearchResult(value: unknown): Record<string, unknown> {
 function normalizeVideo(value: unknown): Record<string, unknown> {
   const item = asLooseResource(value);
   return {
-    id: asNullableString(item.id),
-    kind: asNullableString(item.kind),
-    etag: asNullableString(item.etag),
+    id: rawStringOrNull(item.id),
+    kind: rawStringOrNull(item.kind),
+    etag: rawStringOrNull(item.etag),
     snippet: asNullableLooseObject(item.snippet),
     contentDetails: asNullableLooseObject(item.contentDetails),
     statistics: asNullableLooseObject(item.statistics),
@@ -680,9 +688,9 @@ function normalizeVideo(value: unknown): Record<string, unknown> {
 function normalizeChannel(value: unknown): Record<string, unknown> {
   const item = asLooseResource(value);
   return {
-    id: asNullableString(item.id),
-    kind: asNullableString(item.kind),
-    etag: asNullableString(item.etag),
+    id: rawStringOrNull(item.id),
+    kind: rawStringOrNull(item.kind),
+    etag: rawStringOrNull(item.etag),
     snippet: asNullableLooseObject(item.snippet),
     contentDetails: asNullableLooseObject(item.contentDetails),
     statistics: asNullableLooseObject(item.statistics),
@@ -694,9 +702,9 @@ function normalizeChannel(value: unknown): Record<string, unknown> {
 function normalizePlaylist(value: unknown): Record<string, unknown> {
   const item = asLooseResource(value);
   return {
-    id: asNullableString(item.id),
-    kind: asNullableString(item.kind),
-    etag: asNullableString(item.etag),
+    id: rawStringOrNull(item.id),
+    kind: rawStringOrNull(item.kind),
+    etag: rawStringOrNull(item.etag),
     snippet: asNullableLooseObject(item.snippet),
     contentDetails: asNullableLooseObject(item.contentDetails),
     status: asNullableLooseObject(item.status),
@@ -707,9 +715,9 @@ function normalizePlaylist(value: unknown): Record<string, unknown> {
 function normalizePlaylistItem(value: unknown): Record<string, unknown> {
   const item = asLooseResource(value);
   return {
-    id: asNullableString(item.id),
-    kind: asNullableString(item.kind),
-    etag: asNullableString(item.etag),
+    id: rawStringOrNull(item.id),
+    kind: rawStringOrNull(item.kind),
+    etag: rawStringOrNull(item.etag),
     snippet: asNullableLooseObject(item.snippet),
     contentDetails: asNullableLooseObject(item.contentDetails),
     status: asNullableLooseObject(item.status),
@@ -720,9 +728,9 @@ function normalizePlaylistItem(value: unknown): Record<string, unknown> {
 function normalizeCommentThread(value: unknown): Record<string, unknown> {
   const item = asLooseResource(value);
   return {
-    id: asNullableString(item.id),
-    kind: asNullableString(item.kind),
-    etag: asNullableString(item.etag),
+    id: rawStringOrNull(item.id),
+    kind: rawStringOrNull(item.kind),
+    etag: rawStringOrNull(item.etag),
     snippet: asNullableLooseObject(item.snippet),
     replies: asNullableLooseObject(item.replies),
     raw: item,
@@ -732,9 +740,9 @@ function normalizeCommentThread(value: unknown): Record<string, unknown> {
 function normalizeComment(value: unknown): Record<string, unknown> {
   const item = asLooseResource(value);
   return {
-    id: asNullableString(item.id),
-    kind: asNullableString(item.kind),
-    etag: asNullableString(item.etag),
+    id: rawStringOrNull(item.id),
+    kind: rawStringOrNull(item.kind),
+    etag: rawStringOrNull(item.etag),
     snippet: asNullableLooseObject(item.snippet),
     raw: item,
   };
@@ -758,7 +766,7 @@ function normalizeI18nRegion(value: unknown): Record<string, unknown> {
 
 function normalizeVideoRating(value: unknown): Record<string, unknown> {
   const item = asLooseObject(value);
-  return { videoId: asNullableString(item.videoId), rating: asNullableString(item.rating), raw: item };
+  return { videoId: rawStringOrNull(item.videoId), rating: rawStringOrNull(item.rating), raw: item };
 }
 
 function normalizeItems<T>(items: unknown, normalize: (value: unknown) => T): T[] {
@@ -862,10 +870,6 @@ function asNullableLooseObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-function asNullableString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
 function toInteger(value: unknown): number {
   return Number.isInteger(value) ? (value as number) : 0;
 }
@@ -891,16 +895,30 @@ async function resolveUploadSource(input: {
 }
 
 async function resolveStreamingUploadSource(input: {
-  url: string;
+  url?: string;
+  file?: unknown;
   fileName?: string;
   mimeType?: string;
   context: YoutubeActionContext;
 }): Promise<StreamingUploadSource> {
-  const response = await fetchUploadSource(input.url, input.context);
+  if (Number(input.url !== undefined) + Number(input.file !== undefined) !== 1)
+    throw providerInputError("Exactly one of mediaUrl or file is required.");
+  let response: Response;
+  let sourceFileName: string;
+  if (input.url !== undefined) {
+    response = await fetchUploadSource(input.url, input.context);
+    sourceFileName = inferFileNameFromUrl(input.url);
+  } else {
+    const file = await readTransitFileInput(input.file, input.context);
+    response = new Response(file.file, {
+      headers: { "content-type": file.mimeType, "content-length": String(file.sizeBytes) },
+    });
+    sourceFileName = file.name;
+  }
   const bytes = await readYoutubeUploadSourceBytes(response);
   return {
     bytes,
-    fileName: input.fileName ?? inferFileNameFromUrl(input.url),
+    fileName: input.fileName ?? sourceFileName,
     mimeType: input.mimeType ?? inferMimeType(response.headers.get("content-type")),
     contentLength: bytes.byteLength,
   };
@@ -911,7 +929,7 @@ async function fetchUploadSource(url: string, context: YoutubeActionContext): Pr
     fieldName: "upload source URL",
     createError: (message) => new ProviderRequestError(400, message),
   });
-  const response = await context.fetcher(url, {
+  const response = await createProviderFetch({ fetch: context.fetcher })(url, {
     method: "GET",
     headers: { "user-agent": providerUserAgent },
     signal: context.signal,

@@ -1,14 +1,11 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { HelloleadsActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, requiredString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "helloleads";
 const helloleadsApiBaseUrl = "https://app.helloleads.io";
@@ -53,7 +50,7 @@ interface LoadedWebForm {
   fields: NormalizedWebFormField[];
 }
 
-export const helloleadsActionHandlers: Record<HelloleadsActionName, HelloleadsActionHandler> = {
+export const helloleadsActionHandlers: ProviderActionHandlers<"helloleads", HelloleadsActionHandler> = {
   async get_web_form_definition(_input, context) {
     const form = await loadWebForm(context.apiKey, context);
 

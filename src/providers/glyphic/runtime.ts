@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { GlyphicActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalString } from "../../core/cast.ts";
 import {
@@ -8,17 +8,16 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 export const glyphicApiBaseUrl = "https://api.glyphic.ai";
-
-const glyphicRequestTimeoutMs = 30_000;
 
 type GlyphicRequestMode = "validate" | "execute";
 type GlyphicQueryValue = string | number | boolean | readonly string[] | null | undefined;
 type GlyphicActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const glyphicActionHandlers: Record<GlyphicActionName, GlyphicActionHandler> = {
+export const glyphicActionHandlers: ProviderActionHandlers<"glyphic", GlyphicActionHandler> = {
   async list_calls(input, context) {
     const payload = await requestGlyphicJson(
       {
@@ -178,7 +177,7 @@ async function requestGlyphicJson(
   context: Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">,
   mode: GlyphicRequestMode,
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, glyphicRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(buildGlyphicUrl(input.path, input.query), {
       method: input.method,
@@ -200,7 +199,10 @@ async function requestGlyphicJson(
       throw error;
     }
     if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, `Glyphic request timed out after ${glyphicRequestTimeoutMs / 1000} seconds`);
+      throw new ProviderRequestError(
+        504,
+        `Glyphic request timed out after ${defaultProviderRequestTimeoutMs / 1000} seconds`,
+      );
     }
 
     const message = error instanceof Error && error.message.trim() ? error.message : "request failed";

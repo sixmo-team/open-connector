@@ -6,15 +6,15 @@ product
 
 ## Users
 
-Developers and operators running OOMOL Connect locally. They use the console to inspect provider capabilities, configure credentials, run actions, and understand execution results without exposing raw provider secrets to agents.
+Authenticated integration operators. They inspect safe provider, connection, and run metadata for an explicitly selected tenant, workspace, and subject, and administer action permissions without exposing credentials or raw execution payloads.
 
 ## Product Purpose
 
-OOMOL Connect is a local connector runtime for AI agents and SDK-style clients. The web console should make runtime state, provider actions, credential readiness, request schemas, examples, and run history easy to inspect and trust.
+The protected console is served at `/integration-console` through the application backend. Its only data boundary is the same-origin `/internal/integration-admin` BFF; it never connects directly to a connector port or local runtime.
 
 ## Brand Personality
 
-Clear, restrained, professional. The interface should feel like a dependable local developer tool: dense enough for repeated work, calm enough for debugging, and explicit about credentials and execution state.
+Clear, restrained, professional. The interface should feel like a dependable administration tool: dense enough for repeated work, calm enough for investigation, and explicit about scope and effective permissions.
 
 ## Anti-references
 
@@ -22,11 +22,12 @@ Avoid marketing-style hero layouts, decorative gradients, oversized cards, playf
 
 ## Design Principles
 
-- Put the task first: search, inspect, debug, and copy examples should be immediate.
-- Keep execution state visible: local availability, auth requirement, scopes, and provider context should not be buried.
-- Favor familiar controls: use standard product UI patterns for filters, tabs, forms, dialogs, and code examples.
-- Preserve scanability: lists, panels, and metadata should stay aligned and predictable under large catalogs.
-- Keep the local boundary explicit: the console should reinforce that actions run through the localhost runtime.
+- Put the task first: filtering, inspecting metadata, and changing exact action IDs should be immediate.
+- Choose action mode before scope: `/actions?mode=defaults` manages global defaults without customer context; `/actions?mode=individual` retains real tenant → workspace → subject selection.
+- Show the owner's effective permission and source, never calculate inheritance in the browser. Individual choices are allow, deny, and inherit/remove exception; defaults are enable/disable.
+- Require an operator-entered reason for each write. Selected-row and visible-row bulk changes are one atomic request for at most 5000 exact IDs, never a wildcard or a rule for future catalog additions.
+- Keep human-confirmation overrides separate from permission changes and unavailable in global mode. Re-read actual owner state after saves and ambiguous failures.
+- Favor familiar native/shared controls and preserve scanability across large catalogs. No credential editing, execution, product-admission, OAuth management, or alternate public/local console.
 
 ## Accessibility & Inclusion
 

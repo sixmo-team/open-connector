@@ -2,7 +2,7 @@ import type { ActionDefinition, JsonSchema } from "../../core/types.ts";
 
 import { s } from "../../core/json-schema.ts";
 import { defineProviderAction } from "../../core/provider-definition.ts";
-import { blazeMeterResponseEnvelopeSchema } from "../blaze-meter-schemas.ts";
+import { blazeMeterResponseEnvelopeSchema } from "../blaze_meter_performance/shared-schemas.ts";
 
 const service = "blaze_meter_service_virtualization";
 
@@ -55,14 +55,10 @@ updateServiceMockTemplateInputSchema.anyOf = [
   "noMatchingRequestPreference",
 ].map((field) => ({ required: [field] }));
 
-export type BlazeMeterServiceVirtualizationActionName =
-  | "list_service_mock_templates"
-  | "get_service_mock_template"
-  | "update_service_mock_template";
-
 export const blazeMeterServiceVirtualizationActions: ActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_service_mock_templates",
+    operationType: "read",
     description: "List BlazeMeter Service Virtualization service mock templates in a workspace.",
     requiredScopes: [],
     inputSchema: s.actionInput(
@@ -76,6 +72,7 @@ export const blazeMeterServiceVirtualizationActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "get_service_mock_template",
+    operationType: "read",
     description: "Get one BlazeMeter Service Virtualization service mock template by template ID.",
     requiredScopes: [],
     inputSchema: s.actionInput(
@@ -90,6 +87,7 @@ export const blazeMeterServiceVirtualizationActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "update_service_mock_template",
+    operationType: "write",
     description: "Update JSON-safe configuration fields for one BlazeMeter service mock template.",
     requiredScopes: [],
     inputSchema: updateServiceMockTemplateInputSchema,

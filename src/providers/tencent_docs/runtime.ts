@@ -1,8 +1,14 @@
-import type { OAuthProviderContext } from "../provider-runtime.ts";
-import type { TencentDocsActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { ProviderRequestError } from "../provider-runtime.ts";
+import {
+  compactObject,
+  optionalBooleanOrNull,
+  optionalInteger,
+  optionalRecord,
+  optionalString,
+} from "../../core/cast.ts";
+import { ProviderRequestError, providerInputError, providerResponseError } from "../provider-runtime.ts";
 
 const tencentDocsUserInfoUrl = "https://docs.qq.com/oauth/v2/userinfo";
 export const tencentDocsApiBaseUrl: string = "https://docs.qq.com";
@@ -20,7 +26,7 @@ type TencentDocsEnvelope = {
 
 type TencentDocsActionHandler = (input: Record<string, unknown>, context: TencentDocsActionContext) => Promise<unknown>;
 
-export const tencentDocsActionHandlers: Record<TencentDocsActionName, TencentDocsActionHandler> = {
+export const tencentDocsActionHandlers: ProviderActionHandlers<"tencent_docs", TencentDocsActionHandler> = {
   get_current_user(_input, { accessToken, fetcher }) {
     return tencentDocsGetCurrentUser(accessToken, fetcher);
   },
@@ -193,7 +199,7 @@ async function tencentDocsSearchFiles(input: Record<string, unknown>, context: T
     msg: normalizeTencentDocsMsg(envelope.msg),
     next: normalizeNullableInteger(data.next),
     total: normalizeNullableInteger(data.total),
-    hasMore: normalizeNullableBoolean(data.hasMore),
+    hasMore: optionalBooleanOrNull(data.hasMore),
     items: normalizeTencentDocsFileList(data.list),
     raw: data,
   };
@@ -513,7 +519,7 @@ function mapTencentDocsBusinessError(ret: number, message: string, status: numbe
 
 function mapTencentDocsHttpError(status: number, message: string) {
   if (status === 400) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 401 || status === 403) {
     return new ProviderRequestError(status, message);
@@ -554,8 +560,8 @@ function normalizeTencentDocsFile(input: Record<string, unknown>) {
     type: optionalString(input.type) ?? null,
     url: optionalString(input.url) ?? null,
     status: optionalString(input.status) ?? null,
-    isCreator: normalizeNullableBoolean(input.isCreator),
-    isOwner: normalizeNullableBoolean(input.isOwner),
+    isCreator: optionalBooleanOrNull(input.isCreator),
+    isOwner: optionalBooleanOrNull(input.isOwner),
     createTime: normalizeNullableInteger(input.createTime),
     creatorName: optionalString(input.creatorName) ?? null,
     ownerName: optionalString(input.ownerName) ?? null,
@@ -563,8 +569,8 @@ function normalizeTencentDocsFile(input: Record<string, unknown>) {
     lastModifyTime: normalizeNullableInteger(input.lastModifyTime),
     lastModifyName: optionalString(input.lastModifyName) ?? null,
     lastBrowseTime: normalizeNullableInteger(input.lastBrowseTime),
-    starred: normalizeNullableBoolean(input.starred),
-    pinned: normalizeNullableBoolean(input.pinned),
+    starred: optionalBooleanOrNull(input.starred),
+    pinned: optionalBooleanOrNull(input.pinned),
     fileSource: optionalString(input.fileSource) ?? null,
     highlight: optionalString(input.highlight) ?? null,
     raw: input,
@@ -597,7 +603,7 @@ function normalizeTencentDocsSmartsheetSheets(value: unknown) {
     return {
       sheetID: requireString(sheet.sheetID, "tencent_docs smartsheet sheet missing sheetID"),
       title: optionalString(sheet.title) ?? null,
-      isVisible: normalizeNullableBoolean(sheet.isVisible ?? sheet.isVibile),
+      isVisible: optionalBooleanOrNull(sheet.isVisible ?? sheet.isVibile),
       rowCount: normalizeNullableInteger(sheet.rowCount),
       columnCount: normalizeNullableInteger(sheet.columnCount),
       raw: sheet,
@@ -662,14 +668,10 @@ function normalizeNullableInteger(value: unknown) {
   return normalizeRequiredInteger(value, "tencent_docs integer field");
 }
 
-function normalizeNullableBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : null;
-}
-
 function requireString(value: unknown, message: string) {
   const stringValue = optionalString(value);
   if (!stringValue) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return stringValue;
 }
@@ -684,7 +686,7 @@ function requireActionInputString(value: unknown, fieldName: string) {
 
 function requireRecord(value: unknown, message: string) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return value as Record<string, unknown>;
 }

@@ -1,10 +1,12 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { IntelliprintActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "intelliprint";
 const intelliprintApiBaseUrl = "https://api.intelliprint.net/v1";
@@ -19,7 +21,7 @@ type IntelliprintActionHandler = (
 
 type IntelliprintOutputKey = "print" | "background" | "mailingList" | "recipient";
 
-export const intelliprintActionHandlers: Record<IntelliprintActionName, IntelliprintActionHandler> = {
+export const intelliprintActionHandlers: ProviderActionHandlers<"intelliprint", IntelliprintActionHandler> = {
   list_prints(input, context) {
     return listIntelliprintObjects(printsPath, buildPrintListQuery(input), context);
   },
@@ -66,6 +68,16 @@ export const intelliprintActionHandlers: Record<IntelliprintActionName, Intellip
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, intelliprintActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: intelliprintApiBaseUrl,
+  auth: { type: "api_key_header", name: "Authorization" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {

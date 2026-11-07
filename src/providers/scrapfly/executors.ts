@@ -1,16 +1,29 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ScrapflyActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
   optionalBoolean,
   optionalInteger,
+  optionalRawString,
   optionalRecord,
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
+  providerInputError,
+} from "../provider-runtime.ts";
 
 const service = "scrapfly";
 const scrapflyApiBaseUrl = "https://api.scrapfly.io";
@@ -23,7 +36,7 @@ type ScrapflyPhase = "validate" | "execute";
 type ScrapflyQueryValue = string | number | boolean | undefined;
 type ScrapflyActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const scrapflyActionHandlers: Record<ScrapflyActionName, ScrapflyActionHandler> = {
+export const scrapflyActionHandlers: ProviderActionHandlers<"scrapfly", ScrapflyActionHandler> = {
   async scrape(input, context) {
     const response = await requestScrapflyJson(
       scrapflyScrapeApiUrl,
@@ -64,6 +77,16 @@ export const scrapflyActionHandlers: Record<ScrapflyActionName, ScrapflyActionHa
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, scrapflyActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: scrapflyApiBaseUrl,
+  auth: { type: "api_key_query", name: "key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }): Promise<CredentialValidationResult> {
@@ -210,7 +233,7 @@ function buildMonitoringQuery(input: Record<string, unknown>): Record<string, Sc
 
 function buildScrapeRequest(input: Record<string, unknown>): RequestInit {
   const method = optionalString(input.method) ?? "GET";
-  const body = optionalRawInputString(input.body);
+  const body = optionalRawString(input.body);
   const contentType = optionalString(input.content_type);
   if ((method === "GET" || method === "HEAD") && body) {
     throw new ProviderRequestError(400, `${method} scrape requests cannot include body`);
@@ -272,7 +295,7 @@ function createScrapflyError(
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status || 500, message);
 }
@@ -327,14 +350,6 @@ function readOptionalHeaderInteger(headers: Headers, name: string): number | nul
   }
   const parsed = Number(value);
   return Number.isInteger(parsed) ? parsed : null;
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
-function optionalRawInputString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
 }
 
 function looksLikeHtml(value: string): boolean {

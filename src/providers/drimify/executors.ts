@@ -1,5 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import {
   objectArray,
@@ -10,9 +11,11 @@ import {
   requiredRecord,
   requiredString,
 } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
+  providerInputError,
+  providerResponseError,
   providerUserAgent,
   ProviderRequestError,
 } from "../provider-runtime.ts";
@@ -23,7 +26,7 @@ const drimifyApiBaseUrl = "https://endpoint.drimify.com";
 type DrimifyRequestPhase = "validate" | "execute";
 type DrimifyQueryValue = number | string | undefined;
 
-const handlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+const handlers: ProviderActionHandlers<"drimify", ProviderRuntimeHandler<ApiKeyProviderContext>> = {
   async list_app_data_collections(input, context) {
     const page = readPositiveInteger(input.page, "page") ?? 1;
     const itemsPerPage = readItemsPerPage(input.itemsPerPage);
@@ -191,12 +194,4 @@ function readItemsPerPage(value: unknown): number {
 
 function readPositiveInteger(value: unknown, fieldName: string): number | undefined {
   return value === undefined ? undefined : positiveInteger(value, fieldName, providerInputError);
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerResponseError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

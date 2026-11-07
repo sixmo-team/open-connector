@@ -1,7 +1,8 @@
-import type { OAuthProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalNumber, optionalString } from "../../core/cast.ts";
-import { ProviderRequestError } from "../provider-runtime.ts";
+import { ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 export const apaleoApiBaseUrl = "https://api.apaleo.com";
 
@@ -23,7 +24,7 @@ type ApaleoRequestOptions = {
   signal?: AbortSignal;
 };
 
-export const apaleoActionHandlers: Record<string, ApaleoActionHandler> = {
+export const apaleoActionHandlers: ProviderActionHandlers<"apaleo", ApaleoActionHandler> = {
   list_properties(input, context) {
     return listProperties(input, context);
   },
@@ -165,7 +166,7 @@ export async function createApaleoApiError(response: Response): Promise<Provider
   const message = await readApaleoErrorMessage(response);
 
   if (response.status === 400 || response.status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 401) {
     return new ProviderRequestError(401, message);

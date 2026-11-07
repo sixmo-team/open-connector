@@ -1,19 +1,17 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FraudlabsproActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalNumber, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineApiKeyProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "fraudlabspro";
 const fraudlabsproApiBaseUrl = "https://api.fraudlabspro.com/v2";
@@ -27,7 +25,7 @@ type FraudlabsproActionHandler = (
   context: FraudlabsproActionContext,
 ) => Promise<unknown>;
 
-export const fraudlabsproActionHandlers: Record<FraudlabsproActionName, FraudlabsproActionHandler> = {
+export const fraudlabsproActionHandlers: ProviderActionHandlers<"fraudlabspro", FraudlabsproActionHandler> = {
   async screen_order(input, context) {
     return fraudlabsproRequest(
       context.apiKey,

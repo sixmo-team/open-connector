@@ -1,7 +1,7 @@
 import type { QueryValue } from "../../core/request.ts";
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { OpenweatherApiActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import {
@@ -12,14 +12,16 @@ import {
   optionalNumber,
   optionalRecord,
   optionalString,
-  requiredString,
 } from "../../core/cast.ts";
 import { queryParams, readBoundedResponseBytes } from "../../core/request.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
   isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
+  requiredInputString,
   setSearchParams,
 } from "../provider-runtime.ts";
 
@@ -50,7 +52,7 @@ interface OpenweatherBinaryRequestInput {
   query?: Record<string, QueryValue>;
 }
 
-export const openweatherApiActionHandlers: Record<OpenweatherApiActionName, OpenweatherActionHandler> = {
+export const openweatherApiActionHandlers: ProviderActionHandlers<"openweather_api", OpenweatherActionHandler> = {
   get_geocoding_direct(input, context) {
     return executeDirectGeocoding(input, context);
   },
@@ -112,7 +114,7 @@ export const openweatherApiActionHandlers: Record<OpenweatherApiActionName, Open
     return executeGetStationMeasurements(input, context);
   },
   get_weather_triggers() {
-    throw new ProviderRequestError(410, retiredWeatherTriggersMessage);
+    throw new ProviderRequestError(400, retiredWeatherTriggersMessage);
   },
 };
 
@@ -139,7 +141,7 @@ export const credentialValidators: CredentialValidators = {
 
     return {
       profile: {
-        accountId: "openweather_api",
+        accountId: service,
         displayName: "OpenWeather API Key",
         grantedScopes: [],
       },
@@ -162,7 +164,7 @@ async function executeDirectGeocoding(
     await openweatherJsonRequest({
       path: "/geo/1.0/direct",
       query: {
-        q: readRequiredString(input.q, "q"),
+        q: requiredInputString(input.q, "q"),
         limit: optionalInteger(input.limit),
       },
       context,
@@ -209,7 +211,7 @@ async function executeZipGeocoding(input: Record<string, unknown>, context: ApiK
       await openweatherJsonRequest({
         path: "/geo/1.0/zip",
         query: {
-          zip: readRequiredString(input.zip, "zip"),
+          zip: requiredInputString(input.zip, "zip"),
         },
         context,
         phase: "execute",
@@ -436,7 +438,7 @@ async function executeUvIndexHistory(input: Record<string, unknown>, context: Ap
 async function executeWeatherMapTile(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
   const tile = await openweatherBinaryRequest({
     baseUrl: openweatherTileBaseUrl,
-    path: `/map/${readRequiredString(input.layer, "layer")}/${readRequiredInteger(input.z, "z")}/${readRequiredInteger(input.x, "x")}/${readRequiredInteger(input.y, "y")}.png`,
+    path: `/map/${requiredInputString(input.layer, "layer")}/${readRequiredInteger(input.z, "z")}/${readRequiredInteger(input.x, "x")}/${readRequiredInteger(input.y, "y")}.png`,
     query: {
       opacity: optionalNumber(input.opacity),
       palette: optionalString(input.palette),
@@ -465,8 +467,8 @@ async function executeAddWeatherStation(
       path: "/data/3.0/stations",
       method: "POST",
       body: {
-        external_id: readRequiredString(input.external_id, "external_id"),
-        name: readRequiredString(input.name, "name"),
+        external_id: requiredInputString(input.external_id, "external_id"),
+        name: requiredInputString(input.name, "name"),
         latitude: readRequiredNumber(input.latitude, "latitude"),
         longitude: readRequiredNumber(input.longitude, "longitude"),
         altitude: readRequiredNumber(input.altitude, "altitude"),
@@ -484,7 +486,7 @@ async function executeUpdateWeatherStation(
   input: Record<string, unknown>,
   context: ApiKeyProviderContext,
 ): Promise<unknown> {
-  const stationId = encodeURIComponent(readRequiredString(input.station_id, "station_id"));
+  const stationId = encodeURIComponent(requiredInputString(input.station_id, "station_id"));
   const body = compactObject({
     external_id: optionalString(input.external_id),
     name: optionalString(input.name),
@@ -517,7 +519,7 @@ async function executeDeleteWeatherStation(
   input: Record<string, unknown>,
   context: ApiKeyProviderContext,
 ): Promise<unknown> {
-  const stationId = encodeURIComponent(readRequiredString(input.station_id, "station_id"));
+  const stationId = encodeURIComponent(requiredInputString(input.station_id, "station_id"));
   await openweatherJsonRequest({
     path: `/data/3.0/stations/${stationId}`,
     method: "DELETE",
@@ -549,7 +551,7 @@ async function executeGetWeatherStation(
   input: Record<string, unknown>,
   context: ApiKeyProviderContext,
 ): Promise<unknown> {
-  const stationId = encodeURIComponent(readRequiredString(input.station_id, "station_id"));
+  const stationId = encodeURIComponent(requiredInputString(input.station_id, "station_id"));
   return normalizeWeatherStation(
     readResponseObject(
       await openweatherJsonRequest({
@@ -569,7 +571,7 @@ async function executeSubmitStationMeasurements(
   await openweatherJsonRequest({
     path: "/data/3.0/measurements",
     method: "POST",
-    body: objectArray(input.measurements, "measurements", providerInvalidInput),
+    body: objectArray(input.measurements, "measurements", providerInputError),
     context,
     phase: "execute",
   });
@@ -591,8 +593,8 @@ async function executeGetStationMeasurements(
     await openweatherJsonRequest({
       path: "/data/3.0/measurements",
       query: {
-        station_id: readRequiredString(input.station_id, "station_id"),
-        type: readRequiredString(input.type, "type"),
+        station_id: requiredInputString(input.station_id, "station_id"),
+        type: requiredInputString(input.type, "type"),
         limit: readRequiredInteger(input.limit, "limit"),
         from,
         to,
@@ -789,11 +791,11 @@ function buildLocationQuery(input: Record<string, unknown>): Record<string, Quer
 
 function normalizeGeocodingLocation(payload: Record<string, unknown>): Record<string, unknown> {
   return compactObject({
-    name: readRequiredString(payload.name, "name"),
+    name: requiredInputString(payload.name, "name"),
     local_names: optionalRecord(payload.local_names),
     lat: readRequiredNumber(payload.lat, "lat"),
     lon: readRequiredNumber(payload.lon, "lon"),
-    country: readRequiredString(payload.country, "country"),
+    country: requiredInputString(payload.country, "country"),
     state: optionalString(payload.state),
     zip: optionalString(payload.zip),
   });
@@ -801,9 +803,9 @@ function normalizeGeocodingLocation(payload: Record<string, unknown>): Record<st
 
 function normalizeWeatherStation(payload: Record<string, unknown>): Record<string, unknown> {
   return compactObject({
-    id: readRequiredString(payload.id ?? payload.ID, "id"),
+    id: requiredInputString(payload.id ?? payload.ID, "id"),
     external_id: optionalString(payload.external_id),
-    name: readRequiredString(payload.name, "name"),
+    name: requiredInputString(payload.name, "name"),
     latitude: readRequiredNumber(payload.latitude, "latitude"),
     longitude: readRequiredNumber(payload.longitude, "longitude"),
     altitude: optionalNumber(payload.altitude),
@@ -818,8 +820,8 @@ function normalizeWeatherStation(payload: Record<string, unknown>): Record<strin
 function normalizeStationMeasurement(payload: Record<string, unknown>): Record<string, unknown> {
   return compactObject({
     date: readRequiredInteger(payload.date, "date"),
-    type: readRequiredString(payload.type, "type"),
-    station_id: readRequiredString(payload.station_id, "station_id"),
+    type: requiredInputString(payload.type, "type"),
+    station_id: requiredInputString(payload.station_id, "station_id"),
     temp: optionalRecord(payload.temp),
     humidity: optionalRecord(payload.humidity),
     pressure: optionalRecord(payload.pressure),
@@ -871,10 +873,6 @@ function readJsonOnlyMode(value: unknown): string | undefined {
   return mode;
 }
 
-function readRequiredString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, providerInvalidInput);
-}
-
 function readRequiredNumber(value: unknown, fieldName: string): number {
   const parsed = optionalNumber(value);
   if (parsed === undefined) {
@@ -906,6 +904,8 @@ function readResponseArray(value: unknown, label: string): unknown[] {
   return value;
 }
 
-function providerInvalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.openweathermap.org",
+  auth: { type: "api_key_query", name: "appid" },
+});

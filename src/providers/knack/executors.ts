@@ -6,16 +6,13 @@ import type {
   ProviderProxyExecutor,
   ResolvedCredential,
 } from "../../core/types.ts";
-import type { KnackActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "knack";
 const knackApiBaseUrl = "https://api.knack.com/v1";
@@ -37,7 +34,7 @@ interface KnackListPayload extends Record<string, unknown> {
   total_records?: unknown;
 }
 
-export const knackActionHandlers: Record<KnackActionName, KnackActionHandler> = {
+export const knackActionHandlers: ProviderActionHandlers<"knack", KnackActionHandler> = {
   list_records(input, context) {
     return listKnackRecords(input, context);
   },
@@ -186,7 +183,7 @@ async function createKnackRecord(input: Record<string, unknown>, context: KnackA
     url,
     {
       method: "POST",
-      body: JSON.stringify(requiredRecord(input.record, "record", inputError)),
+      body: JSON.stringify(requiredRecord(input.record, "record", providerInputError)),
     },
     context,
     "execute",
@@ -207,7 +204,7 @@ async function updateKnackRecord(input: Record<string, unknown>, context: KnackA
     url,
     {
       method: "PUT",
-      body: JSON.stringify(requiredRecord(input.record, "record", inputError)),
+      body: JSON.stringify(requiredRecord(input.record, "record", providerInputError)),
     },
     context,
     "execute",
@@ -282,7 +279,7 @@ async function readKnackPayload(response: Response): Promise<unknown> {
 function normalizeKnackError(status: number, payload: unknown, phase: KnackRequestPhase): ProviderRequestError {
   const message = readKnackErrorMessage(payload) ?? `Knack request failed with status ${status}`;
   if (phase === "validate" || status === 400 || status === 401 || status === 403 || status === 404) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 429) {
     return new ProviderRequestError(429, message);
@@ -356,10 +353,6 @@ function requireKnackRecordId(input: Record<string, unknown>): string {
     throw new ProviderRequestError(400, "recordId is required");
   }
   return recordId;
-}
-
-function inputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
 
 function responseError(message: string): ProviderRequestError {

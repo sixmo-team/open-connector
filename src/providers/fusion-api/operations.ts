@@ -1,3 +1,5 @@
+import type { ActionDefinition } from "../../core/types.ts";
+
 export type FusionApiHttpMethod = "GET" | "POST";
 
 export type FusionApiInputFieldKind = "string" | "number" | "integer" | "boolean" | "array" | "object" | "unknown";
@@ -16,6 +18,7 @@ export interface FusionApiInputField {
 
 export interface FusionApiOperation {
   actionName: string;
+  operationType: ActionDefinition["operationType"];
   method: FusionApiHttpMethod;
   path: string;
   tag: string;
@@ -27,7 +30,46 @@ export interface FusionApiOperation {
 
 export const fusionApiOperations: FusionApiOperation[] = [
   {
+    actionName: "oomol_ocr_submit",
+    operationType: "write",
+    method: "POST",
+    path: "/v1/oomol-ocr/submit",
+    tag: "oomol-ocr",
+    description: "Recognize image text and suggest corrections for Chinese typos",
+    successStatuses: [200],
+    pathParams: [],
+    inputFields: [
+      {
+        name: "imageURL",
+        kind: "string",
+        required: true,
+        description: "Publicly accessible image URL.",
+        format: "uri",
+      },
+      {
+        name: "correct",
+        kind: "boolean",
+        required: false,
+        description: "Generate Chinese typo correction suggestions after text recognition.",
+        defaultValue: true,
+      },
+    ],
+  },
+  {
+    actionName: "oomol_ocr_result",
+    operationType: "read",
+    method: "GET",
+    path: "/v1/oomol-ocr/result/{sessionID}",
+    tag: "oomol-ocr",
+    description: "Get image text recognition and Chinese typo correction results",
+    successStatuses: [200, 202, 404],
+    pathParams: ["sessionID"],
+    inputFields: [{ name: "sessionID", kind: "string", required: true, description: "Session ID" }],
+  },
+
+  {
     actionName: "cphone_nano_banana_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/cphone-nano-banana/result/{sessionID}",
     tag: "cphone-nano-banana",
@@ -45,6 +87,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "cphone_nano_banana_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/cphone-nano-banana/state/{sessionID}",
     tag: "cphone-nano-banana",
@@ -62,6 +105,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "cphone_nano_banana_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/cphone-nano-banana/submit",
     tag: "cphone-nano-banana",
@@ -118,6 +162,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "deepseek_ocr_recognize",
+    operationType: "read",
     method: "POST",
     path: "/v1/deepseek-ocr/action/recognize",
     tag: "deepseek-ocr",
@@ -148,6 +193,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "doubao_stt_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/doubao-stt/result/{sessionID}",
     tag: "doubao-stt",
@@ -165,6 +211,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "doubao_stt_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/doubao-stt/state/{sessionID}",
     tag: "doubao-stt",
@@ -182,6 +229,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "doubao_stt_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/doubao-stt/submit",
     tag: "doubao-stt",
@@ -205,6 +253,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "doubao_text_to_image_seedream_generate",
+    operationType: "read",
     method: "POST",
     path: "/v1/doubao-text-to-image-seedream/action/generate",
     tag: "doubao-text-to-image-seedream",
@@ -267,6 +316,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "doubao_tts_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/doubao-tts/result/{sessionID}",
     tag: "doubao-tts",
@@ -284,6 +334,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "doubao_tts_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/doubao-tts/state/{sessionID}",
     tag: "doubao-tts",
@@ -301,6 +352,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "doubao_tts_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/doubao-tts/submit",
     tag: "doubao-tts",
@@ -324,6 +376,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_aura_sr_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-aura-sr/result/{sessionID}",
     tag: "fal-aura-sr",
@@ -341,6 +394,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_aura_sr_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-aura-sr/state/{sessionID}",
     tag: "fal-aura-sr",
@@ -358,6 +412,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_aura_sr_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/fal-aura-sr/submit",
     tag: "fal-aura-sr",
@@ -375,6 +430,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_nano_banana_2_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-nano-banana-2/result/{sessionID}",
     tag: "fal-nano-banana-2",
@@ -392,6 +448,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_nano_banana_2_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-nano-banana-2/state/{sessionID}",
     tag: "fal-nano-banana-2",
@@ -409,6 +466,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_nano_banana_2_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/fal-nano-banana-2/submit",
     tag: "fal-nano-banana-2",
@@ -492,6 +550,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_nano_banana_pro_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-nano-banana-pro/result/{sessionID}",
     tag: "fal-nano-banana-pro",
@@ -509,6 +568,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_nano_banana_pro_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-nano-banana-pro/state/{sessionID}",
     tag: "fal-nano-banana-pro",
@@ -526,6 +586,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_nano_banana_pro_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/fal-nano-banana-pro/submit",
     tag: "fal-nano-banana-pro",
@@ -582,6 +643,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_nano_banana_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-nano-banana/result/{sessionID}",
     tag: "fal-nano-banana",
@@ -599,6 +661,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_nano_banana_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-nano-banana/state/{sessionID}",
     tag: "fal-nano-banana",
@@ -616,6 +679,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_nano_banana_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/fal-nano-banana/submit",
     tag: "fal-nano-banana",
@@ -660,6 +724,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_qwen_image_layered_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-qwen-image-layered/result/{sessionID}",
     tag: "fal-qwen-image-layered",
@@ -677,6 +742,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_qwen_image_layered_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-qwen-image-layered/state/{sessionID}",
     tag: "fal-qwen-image-layered",
@@ -694,6 +760,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_qwen_image_layered_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/fal-qwen-image-layered/submit",
     tag: "fal-qwen-image-layered",
@@ -781,6 +848,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_remove_background_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-remove-background/result/{sessionID}",
     tag: "fal-remove-background",
@@ -798,6 +866,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_remove_background_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/fal-remove-background/state/{sessionID}",
     tag: "fal-remove-background",
@@ -815,6 +884,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "fal_remove_background_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/fal-remove-background/submit",
     tag: "fal-remove-background",
@@ -832,6 +902,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "file_upload_abort_multipart_upload",
+    operationType: "destructive",
     method: "POST",
     path: "/v1/file-upload/action/abort-multipart-upload",
     tag: "file-upload",
@@ -855,6 +926,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "file_upload_complete_multipart_upload",
+    operationType: "write",
     method: "POST",
     path: "/v1/file-upload/action/complete-multipart-upload",
     tag: "file-upload",
@@ -884,6 +956,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "file_upload_create_multipart_upload",
+    operationType: "write",
     method: "POST",
     path: "/v1/file-upload/action/create-multipart-upload",
     tag: "file-upload",
@@ -915,6 +988,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "file_upload_generate_presigned_url",
+    operationType: "read",
     method: "POST",
     path: "/v1/file-upload/action/generate-presigned-url",
     tag: "file-upload",
@@ -938,6 +1012,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "file_upload_generate_presigned_urls",
+    operationType: "read",
     method: "POST",
     path: "/v1/file-upload/action/generate-presigned-urls",
     tag: "file-upload",
@@ -967,6 +1042,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "jina_reader_read",
+    operationType: "read",
     method: "POST",
     path: "/v1/jina-reader/action/read",
     tag: "jina-reader",
@@ -1061,6 +1137,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "jina_reader_search",
+    operationType: "read",
     method: "POST",
     path: "/v1/jina-reader/action/search",
     tag: "jina-reader",
@@ -1148,127 +1225,8 @@ export const fusionApiOperations: FusionApiOperation[] = [
     ],
   },
   {
-    actionName: "oomol_tts_ng_generate",
-    method: "POST",
-    path: "/v1/oomol-tts-ng/action/generate",
-    tag: "oomol-tts-ng",
-    description: "Generate speech audio",
-    successStatuses: [200],
-    pathParams: [],
-    inputFields: [
-      {
-        name: "model",
-        kind: "string",
-        required: false,
-        description: "Model name.",
-        enumValues: ["qwen3-tts-instruct-flash", "qwen3-tts-flash", "qwen3-tts-vc-2026-01-22"],
-        defaultValue: "qwen3-tts-flash",
-      },
-      {
-        name: "text",
-        kind: "string",
-        required: true,
-        description: "Text content to synthesize into speech.",
-      },
-      {
-        name: "voice",
-        kind: "string",
-        required: false,
-        description: "Preset voice name or cloned voice ID.",
-        defaultValue: "Cherry",
-      },
-      {
-        name: "languageType",
-        kind: "string",
-        required: false,
-        description: "Language type of the text.",
-        enumValues: [
-          "Auto",
-          "Chinese",
-          "English",
-          "German",
-          "Italian",
-          "Portuguese",
-          "Spanish",
-          "Japanese",
-          "Korean",
-          "French",
-          "Russian",
-        ],
-      },
-      {
-        name: "instructions",
-        kind: "string",
-        required: false,
-        description: "Speech performance control instruction, only available for instruct models.",
-      },
-      {
-        name: "optimizeInstructions",
-        kind: "boolean",
-        required: false,
-        description: "Whether to optimize speech performance instructions, only available for instruct models.",
-      },
-    ],
-  },
-  {
-    actionName: "oomol_tts_result",
-    method: "GET",
-    path: "/v1/oomol-tts/result/{sessionID}",
-    tag: "oomol-tts",
-    description: "Get oomol-tts task result",
-    successStatuses: [200, 202, 404],
-    pathParams: ["sessionID"],
-    inputFields: [
-      {
-        name: "sessionID",
-        kind: "string",
-        required: true,
-        description: "Session ID",
-      },
-    ],
-  },
-  {
-    actionName: "oomol_tts_state",
-    method: "GET",
-    path: "/v1/oomol-tts/state/{sessionID}",
-    tag: "oomol-tts",
-    description: "Get oomol-tts task state",
-    successStatuses: [200, 404],
-    pathParams: ["sessionID"],
-    inputFields: [
-      {
-        name: "sessionID",
-        kind: "string",
-        required: true,
-        description: "Session ID",
-      },
-    ],
-  },
-  {
-    actionName: "oomol_tts_submit",
-    method: "POST",
-    path: "/v1/oomol-tts/submit",
-    tag: "oomol-tts",
-    description: "Convert text to audio",
-    successStatuses: [200],
-    pathParams: [],
-    inputFields: [
-      {
-        name: "text",
-        kind: "string",
-        required: true,
-        description: "Text content to synthesize into speech, up to 100,000 characters",
-      },
-      {
-        name: "voice",
-        kind: "string",
-        required: true,
-        description: "Speaker ID specifying the voice used for synthesized audio",
-      },
-    ],
-  },
-  {
     actionName: "openai_image_async_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/openai-image-async/result/{sessionID}",
     tag: "openai-image-async",
@@ -1286,10 +1244,12 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "openai_image_async_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/openai-image-async/submit",
     tag: "openai-image-async",
-    description: "Submit asynchronous OpenAI image generation requests, including gpt-image-2 image creation.",
+    description:
+      "Submit asynchronous OpenAI image generation requests, including gpt-image-2 and gpt-image-2.5 image creation.",
     successStatuses: [200],
     pathParams: [],
     inputFields: [
@@ -1303,7 +1263,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
         name: "model",
         kind: "string",
         required: false,
-        description: "OpenAI image model name",
+        description: "OpenAI image model: gpt-image-2 or gpt-image-2.5. Defaults to gpt-image-2.",
       },
       {
         name: "background",
@@ -1362,7 +1322,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
         kind: "string",
         required: false,
         description:
-          "Output image size. For GPT Image 2, use auto or WIDTHxHEIGHT. Official constraints: largest dimension <= 3840, width and height multiples of 16, longest side at most 3x the shortest side, and total pixels between 655360 and 8294400 inclusive.",
+          "Output image size. For GPT Image 2 and 2.5, use auto or WIDTHxHEIGHT. Official constraints: largest dimension <= 3840, width and height multiples of 16, longest side at most 3x the shortest side, and total pixels between 655360 and 8294400 inclusive.",
       },
       {
         name: "user",
@@ -1374,6 +1334,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "openai_image_edit_async_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/openai-image-edit-async/result/{sessionID}",
     tag: "openai-image-edit-async",
@@ -1391,10 +1352,12 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "openai_image_edit_async_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/openai-image-edit-async/submit",
     tag: "openai-image-edit-async",
-    description: "Submit asynchronous OpenAI image edit requests, including gpt-image-2 image editing.",
+    description:
+      "Submit asynchronous OpenAI image edit requests, including gpt-image-2 and gpt-image-2.5 image editing.",
     successStatuses: [200],
     pathParams: [],
     inputFields: [
@@ -1408,7 +1371,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
         name: "model",
         kind: "string",
         required: false,
-        description: "OpenAI image model name",
+        description: "OpenAI image model: gpt-image-2 or gpt-image-2.5. Defaults to gpt-image-2.",
       },
       {
         name: "background",
@@ -1460,7 +1423,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
         kind: "string",
         required: false,
         description:
-          "Output image size. For GPT Image 2, use auto or WIDTHxHEIGHT. Official constraints: largest dimension <= 3840, width and height multiples of 16, longest side at most 3x the shortest side, and total pixels between 655360 and 8294400 inclusive.",
+          "Output image size. For GPT Image 2 and 2.5, use auto or WIDTHxHEIGHT. Official constraints: largest dimension <= 3840, width and height multiples of 16, longest side at most 3x the shortest side, and total pixels between 655360 and 8294400 inclusive.",
       },
       {
         name: "user",
@@ -1472,18 +1435,21 @@ export const fusionApiOperations: FusionApiOperation[] = [
         name: "images",
         kind: "array",
         required: true,
-        description: "Reference images to edit or compose from",
+        description:
+          "Reference images to edit or compose from: 1 to 16 objects with image_url, a public HTTP(S) URL or base64 image data URL. Each image must be at most 10 MiB. file_id is not supported.",
       },
       {
         name: "mask",
         kind: "object",
         required: false,
-        description: "Mask image reference for partial edits",
+        description:
+          "Mask object with image_url, a public HTTP(S) URL or base64 image data URL, at most 10 MiB. file_id is not supported.",
       },
     ],
   },
   {
     actionName: "pdf_transform_epub_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/pdf-transform-epub/result/{sessionID}",
     tag: "pdf-transform-epub",
@@ -1501,6 +1467,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "pdf_transform_epub_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/pdf-transform-epub/state/{sessionID}",
     tag: "pdf-transform-epub",
@@ -1518,6 +1485,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "pdf_transform_epub_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/pdf-transform-epub/submit",
     tag: "pdf-transform-epub",
@@ -1593,6 +1561,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "pdf_transform_markdown_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/pdf-transform-markdown/result/{sessionID}",
     tag: "pdf-transform-markdown",
@@ -1610,6 +1579,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "pdf_transform_markdown_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/pdf-transform-markdown/state/{sessionID}",
     tag: "pdf-transform-markdown",
@@ -1627,6 +1597,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "pdf_transform_markdown_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/pdf-transform-markdown/submit",
     tag: "pdf-transform-markdown",
@@ -1702,6 +1673,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_asr_filetrans_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/qwen-asr-filetrans/result/{sessionID}",
     tag: "qwen-asr-filetrans",
@@ -1719,6 +1691,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_asr_filetrans_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/qwen-asr-filetrans/state/{sessionID}",
     tag: "qwen-asr-filetrans",
@@ -1736,6 +1709,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_asr_filetrans_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/qwen-asr-filetrans/submit",
     tag: "qwen-asr-filetrans",
@@ -1809,6 +1783,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_doc_turbo_analyze",
+    operationType: "read",
     method: "POST",
     path: "/v1/qwen-doc-turbo/action/analyze",
     tag: "qwen-doc-turbo",
@@ -1846,14 +1821,15 @@ export const fusionApiOperations: FusionApiOperation[] = [
         kind: "string",
         required: false,
         description:
-          "File parsing strategy: auto selects automatically, fast parses quickly, and quality prioritizes parsing quality",
-        enumValues: ["auto", "fast", "quality"],
+          "File parsing strategy: auto selects automatically, text_only parses text only, and text_and_images parses text and images",
+        enumValues: ["auto", "text_only", "text_and_images"],
         defaultValue: "auto",
       },
     ],
   },
   {
     actionName: "qwen_image_edit_plus_edit",
+    operationType: "read",
     method: "POST",
     path: "/v1/qwen-image-edit-plus/action/edit",
     tag: "qwen-image-edit-plus",
@@ -1928,6 +1904,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_image_generate",
+    operationType: "read",
     method: "POST",
     path: "/v1/qwen-image/action/generate",
     tag: "qwen-image",
@@ -1996,6 +1973,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_mt_image_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/qwen-mt-image/result/{sessionID}",
     tag: "qwen-mt-image",
@@ -2013,6 +1991,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_mt_image_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/qwen-mt-image/state/{sessionID}",
     tag: "qwen-mt-image",
@@ -2030,6 +2009,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_mt_image_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/qwen-mt-image/submit",
     tag: "qwen-mt-image",
@@ -2086,6 +2066,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "cosyvoice_tts_generate",
+    operationType: "read",
     method: "POST",
     path: "/v1/cosyvoice-tts/action/generate",
     tag: "cosyvoice-tts",
@@ -2223,6 +2204,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_tts_generate",
+    operationType: "read",
     method: "POST",
     path: "/v1/qwen-tts/action/generate",
     tag: "qwen-tts",
@@ -2286,6 +2268,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_voice_design_create",
+    operationType: "write",
     method: "POST",
     path: "/v1/qwen-voice-design/action/create",
     tag: "qwen-voice-design",
@@ -2343,6 +2326,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_voice_design_generate",
+    operationType: "read",
     method: "POST",
     path: "/v1/qwen-voice-design/action/generate",
     tag: "qwen-voice-design",
@@ -2373,6 +2357,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_voice_design_list",
+    operationType: "read",
     method: "POST",
     path: "/v1/qwen-voice-design/action/list",
     tag: "qwen-voice-design",
@@ -2400,6 +2385,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_voice_design_query",
+    operationType: "read",
     method: "POST",
     path: "/v1/qwen-voice-design/action/query",
     tag: "qwen-voice-design",
@@ -2417,6 +2403,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_voice_design_delete",
+    operationType: "destructive",
     method: "POST",
     path: "/v1/qwen-voice-design/action/delete",
     tag: "qwen-voice-design",
@@ -2434,6 +2421,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "qwen_voice_cloning_create",
+    operationType: "write",
     method: "POST",
     path: "/v1/qwen-voice-cloning/action/create",
     tag: "qwen-voice-cloning",
@@ -2484,6 +2472,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "seedance_video_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/seedance-video/result/{sessionID}",
     tag: "seedance-video",
@@ -2501,6 +2490,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "seedance_video_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/seedance-video/state/{sessionID}",
     tag: "seedance-video",
@@ -2518,6 +2508,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "seedance_video_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/seedance-video/submit",
     tag: "seedance-video",
@@ -2530,7 +2521,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
         kind: "string",
         required: false,
         description: "Video generation model",
-        enumValues: ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128"],
+        enumValues: ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-5-260628"],
         defaultValue: "doubao-seedance-2-0-260128",
       },
       {
@@ -2538,6 +2529,20 @@ export const fusionApiOperations: FusionApiOperation[] = [
         kind: "string",
         required: false,
         description: "Video generation prompt",
+      },
+      {
+        name: "omniReferenceTaskType",
+        kind: "string",
+        required: false,
+        description: "All-modal reference task type guidance",
+        enumValues: ["auto", "reference", "edit", "extend"],
+      },
+      {
+        name: "outputFormat",
+        kind: "string",
+        required: false,
+        description: "Output video file format",
+        enumValues: ["mp4", "mov"],
       },
       {
         name: "images",
@@ -2609,9 +2614,10 @@ export const fusionApiOperations: FusionApiOperation[] = [
       },
       {
         name: "duration",
-        kind: "unknown",
+        kind: "integer",
         required: false,
-        description: "Video duration in seconds. Use -1 to let the model choose automatically.",
+        description:
+          "Video duration in seconds. Supported values depend on the selected model; use -1 to let the model choose automatically. Unsupported values are rejected by the upstream API.",
         defaultValue: 5,
       },
       {
@@ -2632,69 +2638,8 @@ export const fusionApiOperations: FusionApiOperation[] = [
     ],
   },
   {
-    actionName: "text_to_epub_illustrate_generate",
-    method: "POST",
-    path: "/v1/text-to-epub-illustrate/action/generate",
-    tag: "text-to-epub-illustrate",
-    description: "Generate illustrations for EPUB content",
-    successStatuses: [200],
-    pathParams: [],
-    inputFields: [
-      {
-        name: "prompt",
-        kind: "string",
-        required: true,
-        description: "Text prompt for image generation",
-      },
-      {
-        name: "image",
-        kind: "string",
-        required: false,
-        description: "Reference image URL or Base64 encoding for image-to-image generation",
-      },
-      {
-        name: "size",
-        kind: "unknown",
-        required: false,
-        description: "Image size, supporting descriptive sizes (1K/2K/4K) or explicit width and height in pixels",
-        defaultValue: "2048x2048",
-      },
-      {
-        name: "multiple",
-        kind: "string",
-        required: false,
-        description: "Whether to enable multi-image generation mode; auto lets the model decide",
-        enumValues: ["disabled", "auto"],
-        defaultValue: "disabled",
-      },
-      {
-        name: "maxCount",
-        kind: "number",
-        required: false,
-        description: "Maximum number of images to generate in one request, only effective in multi-image mode",
-        defaultValue: 1,
-        minimum: 1,
-        maximum: 15,
-      },
-      {
-        name: "watermark",
-        kind: "boolean",
-        required: false,
-        description: "Whether to add a watermark",
-        defaultValue: true,
-      },
-      {
-        name: "optionsnew",
-        kind: "string",
-        required: false,
-        description: "Generation mode: standard prioritizes quality, fast prioritizes speed",
-        enumValues: ["standard", "fast"],
-        defaultValue: "standard",
-      },
-    ],
-  },
-  {
     actionName: "tinify_png_shrink_compress",
+    operationType: "read",
     method: "POST",
     path: "/v1/tinify-png-shrink/action/compress",
     tag: "tinify-png-shrink",
@@ -2712,6 +2657,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_i2v_video_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-i2v-video/result/{sessionID}",
     tag: "wanx-i2v-video",
@@ -2729,6 +2675,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_i2v_video_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-i2v-video/state/{sessionID}",
     tag: "wanx-i2v-video",
@@ -2746,6 +2693,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_i2v_video_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/wanx-i2v-video/submit",
     tag: "wanx-i2v-video",
@@ -2843,6 +2791,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_image_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-image/result/{sessionID}",
     tag: "wanx-image",
@@ -2860,6 +2809,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_image_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-image/state/{sessionID}",
     tag: "wanx-image",
@@ -2877,6 +2827,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_image_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/wanx-image/submit",
     tag: "wanx-image",
@@ -2967,6 +2918,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_kf2v_video_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-kf2v-video/result/{sessionID}",
     tag: "wanx-kf2v-video",
@@ -2984,6 +2936,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_kf2v_video_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-kf2v-video/state/{sessionID}",
     tag: "wanx-kf2v-video",
@@ -3001,6 +2954,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_kf2v_video_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/wanx-kf2v-video/submit",
     tag: "wanx-kf2v-video",
@@ -3082,6 +3036,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_r2v_video_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-r2v-video/result/{sessionID}",
     tag: "wanx-r2v-video",
@@ -3099,6 +3054,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_r2v_video_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-r2v-video/state/{sessionID}",
     tag: "wanx-r2v-video",
@@ -3116,6 +3072,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_r2v_video_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/wanx-r2v-video/submit",
     tag: "wanx-r2v-video",
@@ -3210,6 +3167,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_t2v_video_result",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-t2v-video/result/{sessionID}",
     tag: "wanx-t2v-video",
@@ -3227,6 +3185,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_t2v_video_state",
+    operationType: "read",
     method: "GET",
     path: "/v1/wanx-t2v-video/state/{sessionID}",
     tag: "wanx-t2v-video",
@@ -3244,6 +3203,7 @@ export const fusionApiOperations: FusionApiOperation[] = [
   },
   {
     actionName: "wanx_t2v_video_submit",
+    operationType: "write",
     method: "POST",
     path: "/v1/wanx-t2v-video/submit",
     tag: "wanx-t2v-video",

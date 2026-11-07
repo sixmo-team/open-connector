@@ -4,20 +4,21 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
-  requireApiKeyCredential,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 const detrackApiBaseUrl = "https://app.detrack.com/api/v2";
-const detrackRequestTimeoutMs = 30_000;
 const detrackMaxResponseBytes = 10 * 1024 * 1024;
 
 type DetrackRequestPhase = "validate" | "execute";
@@ -40,7 +41,7 @@ interface DetrackActionContext {
 
 type DetrackActionHandler = (input: Record<string, unknown>, context: DetrackActionContext) => Promise<unknown>;
 
-export const detrackActionHandlers: Record<string, DetrackActionHandler> = {
+export const detrackActionHandlers: ProviderActionHandlers<"detrack", DetrackActionHandler> = {
   list_jobs(input, context) {
     return listJobs(input, context);
   },
@@ -392,7 +393,7 @@ async function detrackRequest(input: DetrackRequestInput) {
     }
   }
 
-  const timeout = createProviderTimeout(input.signal, detrackRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(url, {
       method: input.method ?? "GET",
@@ -452,7 +453,7 @@ function createDetrackError(response: Response, payload: unknown, phase: Detrack
     return new ProviderRequestError(429, message);
   }
   if (response.status >= 500) {
-    return new ProviderRequestError(502, message);
+    return providerResponseError(message);
   }
   if (phase === "validate") {
     return new ProviderRequestError(response.status || 400, message);
@@ -504,21 +505,21 @@ function requireDetrackEnvelope(value: unknown) {
 function requireObject(value: unknown, message: string) {
   const object = optionalRecord(value);
   if (!object) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return object;
 }
 
 function requireArray(value: unknown, message: string) {
   if (!Array.isArray(value)) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return value;
 }
 
 function requireNumber(value: unknown, message: string) {
   if (typeof value !== "number") {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return value;
 }

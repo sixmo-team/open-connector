@@ -1,19 +1,14 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { ToriiActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
-import { optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  createProviderTimeout,
-  isAbortLikeError,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { providerUserAgent, ProviderRequestError, runProviderRequest } from "../provider-runtime.ts";
 
 export const toriiApiBaseUrl = "https://api.toriihq.com/v1.0";
 
 const toriiValidationPath = "/orgs/my";
-const toriiDefaultRequestTimeoutMs = 30_000;
 
 type ToriiPhase = "validate" | "execute";
 
@@ -25,7 +20,7 @@ interface ToriiRequestOptions {
   apiVersion?: string;
 }
 
-export const toriiActionHandlers: Record<ToriiActionName, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const toriiActionHandlers: ProviderActionHandlers<"torii", ProviderRuntimeHandler<ApiKeyProviderContext>> = {
   async get_organization(_input, context) {
     const body = await requestToriiObject(
       {
@@ -219,9 +214,7 @@ async function requestToriiJson(
   options: ToriiRequestOptions,
   context: Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">,
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, toriiDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ signal: context.signal, label: "Torii" }, async (signal) => {
     const headers: Record<string, string> = {
       accept: "application/json",
       authorization: `Bearer ${context.apiKey}`,
@@ -234,7 +227,7 @@ async function requestToriiJson(
     const response = await context.fetcher(buildToriiUrl(options), {
       method: "GET",
       headers,
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readToriiPayload(response);
 
@@ -243,20 +236,7 @@ async function requestToriiJson(
     }
 
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Torii request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Torii request failed: ${error.message}` : "Torii request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildToriiUrl(options: { path: string; query?: URLSearchParams; extraQuery?: Record<string, unknown> }): URL {
@@ -391,8 +371,4 @@ function requireObjectArrayPayload(payload: unknown, label: string): Record<stri
   }
 
   return payload as Record<string, unknown>[];
-}
-
-function optionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

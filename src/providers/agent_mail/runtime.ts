@@ -1,10 +1,12 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 import type { AgentMailOperationDefinition } from "./actions.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
-import { agentMailOperationByActionName } from "./actions.ts";
+import { mapProviderActionHandlers } from "../provider-executors.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
+import { agentMailOperations } from "./actions.ts";
 
 export const agentMailApiBaseUrl = "https://api.agentmail.to";
 
@@ -18,13 +20,14 @@ interface AgentMailActionContext {
   signal?: AbortSignal;
 }
 
-export const agentMailActionHandlers = Object.fromEntries(
-  Object.keys(agentMailOperationByActionName).map((actionName) => [
-    actionName,
-    (input: Record<string, unknown>, context: AgentMailActionContext) =>
-      executeAgentMailOperation(input, context, agentMailOperationByActionName[actionName as string]),
-  ]),
-) as Record<string, AgentMailActionHandler>;
+export const agentMailActionHandlers: ProviderActionHandlers<"agent_mail", AgentMailActionHandler> =
+  mapProviderActionHandlers(
+    "agent_mail",
+    agentMailOperations,
+    ({ operation }): AgentMailActionHandler =>
+      (input, context) =>
+        executeAgentMailOperation(input, context, operation),
+  );
 
 export async function validateAgentMailCredential(
   apiKey: string,
@@ -217,7 +220,7 @@ function createAgentMailError(
     return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
   }
   if (response.status === 404 && notFoundAsInvalidInput) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 400 || response.status === 404 || response.status === 422) {
     return new ProviderRequestError(response.status, message);

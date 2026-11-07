@@ -1,5 +1,6 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import {
@@ -10,13 +11,10 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  ProviderRequestError,
-  providerUserAgent,
-  requireApiKeyCredential,
-  setSearchParams,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent, setSearchParams } from "../provider-runtime.ts";
 
 const service = "bannerbear";
 const bannerbearApiBaseUrl = "https://api.bannerbear.com";
@@ -24,7 +22,7 @@ const bannerbearSyncApiBaseUrl = "https://sync.api.bannerbear.com";
 
 type BannerbearActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const bannerbearActionHandlers: Record<string, BannerbearActionHandler> = {
+export const bannerbearActionHandlers: ProviderActionHandlers<"bannerbear", BannerbearActionHandler> = {
   get_auth(input, context) {
     return getBannerbearAuth(input, context);
   },
@@ -136,7 +134,7 @@ async function getBannerbearTemplate(
   input: Record<string, unknown>,
   context: ApiKeyProviderContext,
 ): Promise<Record<string, unknown>> {
-  const uid = requiredString(input.uid, "uid", invalidInputError);
+  const uid = requiredString(input.uid, "uid", providerInputError);
   const payload = await requestBannerbear({
     apiKey: context.apiKey,
     path: `/v2/templates/${encodeURIComponent(uid)}`,
@@ -183,7 +181,7 @@ async function getBannerbearImage(
   input: Record<string, unknown>,
   context: ApiKeyProviderContext,
 ): Promise<Record<string, unknown>> {
-  const uid = requiredString(input.uid, "uid", invalidInputError);
+  const uid = requiredString(input.uid, "uid", providerInputError);
   const payload = await requestBannerbear({
     apiKey: context.apiKey,
     path: `/v2/images/${encodeURIComponent(uid)}`,
@@ -309,10 +307,12 @@ function hashBannerbearApiKey(apiKey: string): string {
   return createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
 }
 
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.bannerbear.com",
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+});

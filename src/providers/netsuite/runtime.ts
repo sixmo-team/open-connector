@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { NetsuiteActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHmac, randomBytes } from "node:crypto";
 import {
@@ -15,14 +16,16 @@ import {
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
+  providerResponseError,
   providerUserAgent,
   ProviderRequestError,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 const netsuiteRecordPathPrefix = "/services/rest/record/v1";
 const netsuiteQueryPathPrefix = "/services/rest/query/v1";
 const netsuiteValidationPath = `${netsuiteRecordPathPrefix}/metadata-catalog`;
-const netsuiteRequestTimeoutMs = 30_000;
 
 type NetsuiteMode = "validate" | "execute";
 type NetsuiteActionHandler = ProviderRuntimeHandler<NetsuiteContext>;
@@ -69,7 +72,7 @@ interface OAuthHeaderInput {
   url: URL;
 }
 
-export const netsuiteActionHandlers: Record<NetsuiteActionName, NetsuiteActionHandler> = {
+export const netsuiteActionHandlers: ProviderActionHandlers<"netsuite", NetsuiteActionHandler> = {
   run_suiteql(input, context) {
     return runSuiteql(input, context);
   },
@@ -235,7 +238,7 @@ async function requestNetsuiteJson(input: NetsuiteRequestOptions): Promise<unkno
 }
 
 async function requestNetsuiteJsonWithMetadata(input: NetsuiteRequestOptions): Promise<NetsuiteResponsePayload> {
-  const timeout = createProviderTimeout(input.context.signal, netsuiteRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     let response: Response;
     try {
@@ -531,7 +534,7 @@ function mapNetsuiteError(
 }
 
 function normalizeCollection(payload: unknown): Record<string, unknown> {
-  const object = requiredRecord(payload, "NetSuite response", providerOutputError);
+  const object = requiredRecord(payload, "NetSuite response", providerResponseError);
   return {
     ...object,
     links: Array.isArray(object.links) ? object.links : [],
@@ -540,13 +543,13 @@ function normalizeCollection(payload: unknown): Record<string, unknown> {
     offset: readInteger(object.offset, "offset", 0),
     totalResults: readInteger(object.totalResults, "totalResults", readInteger(object.count, "count", 0)),
     items: Array.isArray(object.items)
-      ? object.items.map((item, index) => requiredRecord(item, `items[${index}]`, providerOutputError))
+      ? object.items.map((item, index) => requiredRecord(item, `items[${index}]`, providerResponseError))
       : [],
   };
 }
 
 function normalizeRecord(payload: unknown): Record<string, unknown> {
-  return requiredRecord(payload, "NetSuite record", providerOutputError);
+  return requiredRecord(payload, "NetSuite record", providerResponseError);
 }
 
 function readInteger(value: unknown, fieldName: string, fallback: number): number {
@@ -557,10 +560,6 @@ function readInteger(value: unknown, fieldName: string, fallback: number): numbe
     return value;
   }
   throw new ProviderRequestError(502, `NetSuite ${fieldName} must be an integer`);
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, providerInputError);
 }
 
 function optionalPositiveInteger(value: unknown, fieldName: string): number | undefined {
@@ -583,12 +582,4 @@ function optionalNonNegativeInteger(value: unknown, fieldName: string): number |
     throw new ProviderRequestError(400, `${fieldName} must be a non-negative integer`);
   }
   return result;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerOutputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

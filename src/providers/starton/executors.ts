@@ -1,24 +1,25 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { StartonActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { nullableString, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 const service = "starton";
 const startonApiBaseUrl = "https://api.starton.com";
-const startonDefaultRequestTimeoutMs = 30_000;
 
 type StartonPhase = "validate" | "execute";
 type StartonActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const startonActionHandlers: Record<StartonActionName, StartonActionHandler> = {
+export const startonActionHandlers: ProviderActionHandlers<"starton", StartonActionHandler> = {
   async list_pins(input, context) {
     const payload = await requestStartonJson({
       apiKey: context.apiKey,
@@ -42,7 +43,7 @@ export const startonActionHandlers: Record<StartonActionName, StartonActionHandl
     };
   },
   async get_pin(input, context) {
-    const pinId = requireTrimmedString(input.id, "id");
+    const pinId = requiredInputString(input.id, "id");
     const payload = await requestStartonJson({
       apiKey: context.apiKey,
       path: `/v3/ipfs/pin/${encodeURIComponent(pinId)}`,
@@ -61,7 +62,7 @@ export const startonActionHandlers: Record<StartonActionName, StartonActionHandl
       path: "/v3/ipfs/json",
       method: "POST",
       body: compactUndefined({
-        name: requireTrimmedString(input.name, "name"),
+        name: requiredInputString(input.name, "name"),
         content: requireLooseObject(input.content, "content"),
         metadata: optionalRecord(input.metadata),
       }),
@@ -76,7 +77,7 @@ export const startonActionHandlers: Record<StartonActionName, StartonActionHandl
       path: "/v3/ipfs/pin",
       method: "POST",
       body: compactUndefined({
-        cid: requireTrimmedString(input.cid, "cid"),
+        cid: requiredInputString(input.cid, "cid"),
         name: optionalString(input.name),
         metadata: optionalRecord(input.metadata),
       }),
@@ -86,7 +87,7 @@ export const startonActionHandlers: Record<StartonActionName, StartonActionHandl
     return { pin: normalizePin(payload) };
   },
   async delete_pin(input, context) {
-    const pinId = requireTrimmedString(input.id, "id");
+    const pinId = requiredInputString(input.id, "id");
     const payload = await requestStartonJson({
       apiKey: context.apiKey,
       path: `/v3/ipfs/pin/${encodeURIComponent(pinId)}`,
@@ -144,7 +145,7 @@ async function requestStartonJson(input: {
   query?: Record<string, string | boolean | undefined>;
   body?: Record<string, unknown>;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, startonDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const response = await input.context.fetcher(buildStartonUrl(input.path, input.query ?? {}), {
       method: input.method,
@@ -295,14 +296,6 @@ function requireLooseObject(value: unknown, fieldName: string): Record<string, u
   return record;
 }
 
-function requireTrimmedString(value: unknown, fieldName: string): string {
-  const parsed = optionalString(value);
-  if (!parsed) {
-    throw new ProviderRequestError(400, `${fieldName} is required.`);
-  }
-  return parsed;
-}
-
 function requireOptionalString(value: unknown, label: string): string {
   const parsed = optionalString(value);
   if (!parsed) {
@@ -326,3 +319,9 @@ function readOptionalIntegerString(value: unknown): string | undefined {
 function compactUndefined(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.starton.com",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

@@ -1,21 +1,20 @@
 import type { RuntimeImageSnapshot } from "./verify-no-legacy-runtime.ts";
 
 import { describe, expect, it } from "vitest";
-import { findCutoverViolations } from "./check-protected-upstream.ts";
 import { findRuntimeImageViolations } from "./verify-no-legacy-runtime.ts";
 
 function cleanSnapshot(): RuntimeImageSnapshot {
   return {
     config: {
-      Cmd: ["node", "src/saas/index.ts"],
+      Cmd: ["node", "--experimental-transform-types", "src/saas/index.ts"],
       User: "node",
       WorkingDir: "/app",
       Env: ["NODE_ENV=production"],
       ExposedPorts: { "3000/tcp": {} },
       Healthcheck: { Test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3000/ready || exit 1"] },
     },
-    paths: ["app", "app/package.json", "app/src", "app/src/saas", "app/src/saas/index.ts"],
-    packageJson: JSON.stringify({ scripts: { start: "node src/saas/index.ts" } }),
+    paths: ["app", "app/package.json", "app/src", "app/src/saas", "app/src/saas/index.ts", "app/dist/web-saas/saas.html", "app/catalog/apps-index.json"],
+    packageJson: JSON.stringify({ scripts: { start: "node --experimental-transform-types src/saas/index.ts" } }),
     executableText: [["app/src/saas/index.ts", "export {};\n"]],
   };
 }
@@ -27,13 +26,22 @@ describe("final runtime image verification", () => {
     expect(findRuntimeImageViolations(cleanSnapshot())).toEqual([]);
   });
 
+  it.each(["app/dist/web-saas/saas.html", "app/catalog/apps-index.json"])(
+    "rejects an image missing required packaged asset %s",
+    (missing) => {
+      const snapshot = cleanSnapshot();
+      snapshot.paths = snapshot.paths.filter((path) => path !== missing);
+      expect(findRuntimeImageViolations(snapshot).join("\n")).toContain(missing);
+    },
+  );
+
   it.each([
     ["legacy entrypoint", { paths: [...cleanSnapshot().paths, "app/src/server/index.ts"] }, "legacy image path"],
     [
       "alternate package script",
       {
         packageJson: JSON.stringify({
-          scripts: { start: "node src/saas/index.ts", local: "node src/server/index.ts" },
+          scripts: { start: "node --experimental-transform-types src/saas/index.ts", local: "node src/server/index.ts" },
         }),
       },
       "legacy image package script",
@@ -47,7 +55,6 @@ describe("final runtime image verification", () => {
       "expose only",
     ],
   ])("rejects %s even when source cutover checks pass", (_label, change, expected) => {
-    expect(findCutoverViolations(process.cwd())).toEqual([]);
     const violations = findRuntimeImageViolations({ ...cleanSnapshot(), ...change });
     expect(violations.join("\n")).toContain(expected);
   });

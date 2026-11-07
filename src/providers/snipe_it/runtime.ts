@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
-import type { SnipeItActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { optionalBoolean, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed, queryParams } from "../../core/request.ts";
@@ -25,7 +26,7 @@ interface SnipeItRequestOptions {
   query?: Record<string, QueryValue>;
 }
 
-export const snipeItActionHandlers: Record<SnipeItActionName, SnipeItActionHandler> = {
+export const snipeItActionHandlers: ProviderActionHandlers<"snipe_it", SnipeItActionHandler> = {
   async get_current_user(_input, context) {
     return {
       user: await requestSnipeItJson({

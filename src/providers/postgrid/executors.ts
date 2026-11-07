@@ -1,37 +1,30 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { PostgridActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
+import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  compactObject,
-  optionalBoolean,
-  optionalNumber,
-  optionalRecord,
-  optionalString,
-  requiredString,
-} from "../../core/cast.ts";
-import {
-  createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  isAbortLikeError,
-  providerUserAgent,
   ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 const service = "postgrid";
 const postgridApiBaseUrl = "https://api.postgrid.com/print-mail/v1";
-const postgridDefaultRequestTimeoutMs = 30_000;
 
 type PostgridPhase = "validate" | "execute";
 type PostgridActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const postgridActionHandlers: Record<PostgridActionName, PostgridActionHandler> = {
+export const postgridActionHandlers: ProviderActionHandlers<"postgrid", PostgridActionHandler> = {
   create_contact(input, context) {
     return requestPostgridJson({
       path: "/contacts",
       method: "POST",
       body: compactObject({
-        addressLine1: readRequiredString(input.addressLine1, "addressLine1"),
+        addressLine1: requiredInputString(input.addressLine1, "addressLine1"),
         addressLine2: optionalString(input.addressLine2),
         city: optionalString(input.city),
         provinceOrState: optionalString(input.provinceOrState),
@@ -63,7 +56,7 @@ export const postgridActionHandlers: Record<PostgridActionName, PostgridActionHa
   },
   get_contact(input, context) {
     return requestPostgridJson({
-      path: `/contacts/${encodeURIComponent(readRequiredString(input.id, "id"))}`,
+      path: `/contacts/${encodeURIComponent(requiredInputString(input.id, "id"))}`,
       method: "GET",
       context,
       phase: "execute",
@@ -71,7 +64,7 @@ export const postgridActionHandlers: Record<PostgridActionName, PostgridActionHa
   },
   delete_contact(input, context) {
     return requestPostgridJson({
-      path: `/contacts/${encodeURIComponent(readRequiredString(input.id, "id"))}`,
+      path: `/contacts/${encodeURIComponent(requiredInputString(input.id, "id"))}`,
       method: "DELETE",
       context,
       phase: "execute",
@@ -101,7 +94,7 @@ export const postgridActionHandlers: Record<PostgridActionName, PostgridActionHa
   },
   get_template(input, context) {
     return requestPostgridJson({
-      path: `/templates/${encodeURIComponent(readRequiredString(input.id, "id"))}`,
+      path: `/templates/${encodeURIComponent(requiredInputString(input.id, "id"))}`,
       method: "GET",
       context,
       phase: "execute",
@@ -109,7 +102,7 @@ export const postgridActionHandlers: Record<PostgridActionName, PostgridActionHa
   },
   update_template(input, context) {
     return requestPostgridJson({
-      path: `/templates/${encodeURIComponent(readRequiredString(input.id, "id"))}`,
+      path: `/templates/${encodeURIComponent(requiredInputString(input.id, "id"))}`,
       method: "POST",
       body: compactObject({
         html: optionalString(input.html),
@@ -122,7 +115,7 @@ export const postgridActionHandlers: Record<PostgridActionName, PostgridActionHa
   },
   delete_template(input, context) {
     return requestPostgridJson({
-      path: `/templates/${encodeURIComponent(readRequiredString(input.id, "id"))}`,
+      path: `/templates/${encodeURIComponent(requiredInputString(input.id, "id"))}`,
       method: "DELETE",
       context,
       phase: "execute",
@@ -172,14 +165,12 @@ async function requestPostgridJson(input: {
   context: ApiKeyProviderContext;
   phase: PostgridPhase;
 }): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(input.context.signal, postgridDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ signal: input.context.signal, label: "PostGrid" }, async (signal) => {
     const response = await input.context.fetcher(buildPostgridUrl(input.path, input.params ?? {}), {
       method: input.method,
       headers: postgridHeaders(input.context.apiKey, input.body !== undefined),
       body: input.body ? JSON.stringify(input.body) : undefined,
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readPostgridPayload(response);
 
@@ -192,22 +183,7 @@ async function requestPostgridJson(input: {
       throw new ProviderRequestError(502, "PostGrid returned an invalid payload", payload);
     }
     return payloadRecord;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "PostGrid request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `PostGrid request failed: ${error.message}` : "PostGrid request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildPostgridUrl(path: string, params: Record<string, string | undefined>): string {
@@ -293,15 +269,17 @@ function buildListParams(input: Record<string, unknown>): Record<string, string 
   });
 }
 
-function readRequiredString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function readCountryCode(value: unknown): string {
-  return readRequiredString(value, "countryCode").toUpperCase();
+  return requiredInputString(value, "countryCode").toUpperCase();
 }
 
 function readOptionalNumberString(value: unknown): string | undefined {
   const parsed = optionalNumber(value);
   return parsed === undefined ? undefined : String(parsed);
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.postgrid.com/print-mail/v1",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

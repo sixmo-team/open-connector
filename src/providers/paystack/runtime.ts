@@ -1,12 +1,13 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { PaystackActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
-const paystackApiBaseUrl = "https://api.paystack.co";
+export const paystackApiBaseUrl = "https://api.paystack.co";
 const paystackValidationPath = "/customer";
 
 interface PaystackResponseBody {
@@ -28,7 +29,7 @@ interface PaystackRequestInput {
 type PaystackActionContext = ApiKeyProviderContext;
 type PaystackActionHandler = (input: Record<string, unknown>, context: PaystackActionContext) => Promise<unknown>;
 
-export const paystackActionHandlers: Record<PaystackActionName, PaystackActionHandler> = {
+export const paystackActionHandlers: ProviderActionHandlers<"paystack", PaystackActionHandler> = {
   create_customer(input, context) {
     return createCustomer(input, context);
   },

@@ -4,24 +4,24 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
-  requireApiKeyCredential,
 } from "../provider-runtime.ts";
 
 const service = "cratedb_cloud";
 const cratedbCloudApiBaseUrl = "https://console.cratedb.cloud";
 const cratedbCloudRequestBaseUrl = `${cratedbCloudApiBaseUrl}/`;
 const cratedbCloudValidationPath = "/api/v2/users/me/";
-const cratedbCloudDefaultTimeoutMs = 30_000;
 const cratedbCloudMaxResponseBytes = 10 * 1024 * 1024;
 
 type CratedbCloudRequestPhase = "validate" | "execute";
@@ -33,7 +33,7 @@ interface CratedbCloudContext {
 }
 type CratedbCloudActionHandler = (input: Record<string, unknown>, context: CratedbCloudContext) => Promise<unknown>;
 
-export const cratedbCloudActionHandlers: Record<string, CratedbCloudActionHandler> = {
+export const cratedbCloudActionHandlers: ProviderActionHandlers<"cratedb_cloud", CratedbCloudActionHandler> = {
   async get_current_user(_input, context) {
     const payload = await requestCratedbCloudJsonForAction({
       context,
@@ -223,7 +223,7 @@ async function requestCratedbCloudJson(input: {
     }
   }
 
-  const timeout = createProviderTimeout(input.signal, cratedbCloudDefaultTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(url, {
       method: input.method,

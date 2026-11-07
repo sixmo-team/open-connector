@@ -5,24 +5,25 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalNumber, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderFetch,
   createProviderTimeout,
-  defineProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
-  requireApiKeyCredential,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 const service = "octopus_deploy";
 const validationPath = "/users/me";
-const requestTimeoutMs = 30_000;
 const maxResponseBytes = 10 * 1024 * 1024;
 
 interface OctopusDeployContext {
@@ -34,7 +35,7 @@ interface OctopusDeployContext {
 
 type OctopusDeployActionHandler = (input: Record<string, unknown>, context: OctopusDeployContext) => Promise<unknown>;
 
-export const octopusDeployActionHandlers: Record<string, OctopusDeployActionHandler> = {
+export const octopusDeployActionHandlers: ProviderActionHandlers<"octopus_deploy", OctopusDeployActionHandler> = {
   async get_current_user(_input, context) {
     const raw = await requestOctopusDeployObject(context, validationPath, "execute");
     return { user: raw, raw };
@@ -228,7 +229,7 @@ async function requestOctopusDeployObject(
 ): Promise<Record<string, unknown>> {
   const url = new URL(path.replace(/^\/+/, ""), `${context.apiBaseUrl}/`);
   appendQuery(url, query);
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: "GET",
@@ -265,11 +266,11 @@ async function requestOctopusDeployObject(
 }
 
 function normalizeApiBaseUrl(value: unknown): string {
-  const raw = requiredString(value, "baseUrl", providerInputError);
+  const raw = requiredString(value, "baseUrl", octopusDeployInputError);
   const url = assertPublicHttpUrl(raw, {
     fieldName: "baseUrl",
     allowPrivateNetwork: isPrivateNetworkAccessAllowed(),
-    createError: providerInputError,
+    createError: octopusDeployInputError,
   });
   if (url.username || url.password) {
     throw new ProviderRequestError(400, "baseUrl must not include credentials");
@@ -282,12 +283,12 @@ function normalizeApiBaseUrl(value: unknown): string {
 }
 
 function buildSpacePath(input: Record<string, unknown>, childPath: string): string {
-  const spaceIdentifier = requiredString(input.spaceIdentifier, "spaceIdentifier", providerInputError);
+  const spaceIdentifier = requiredString(input.spaceIdentifier, "spaceIdentifier", octopusDeployInputError);
   return `/spaces/${encodeURIComponent(spaceIdentifier)}${childPath}`;
 }
 
 function readPathId(input: Record<string, unknown>): string {
-  return encodeURIComponent(requiredString(input.id, "id", providerInputError));
+  return encodeURIComponent(requiredString(input.id, "id", octopusDeployInputError));
 }
 
 function pickQuery(input: Record<string, unknown>, keys: string[]): Record<string, unknown> {
@@ -338,10 +339,10 @@ function mapHttpError(status: number, message: string, phase: "validate" | "exec
     return new ProviderRequestError(401, message);
   }
   if (status === 401 || status === 403 || (phase === "validate" && status === 404)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 400 || status === 404 || status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 429) {
     return new ProviderRequestError(429, message);
@@ -349,6 +350,6 @@ function mapHttpError(status: number, message: string, phase: "validate" | "exec
   return new ProviderRequestError(status >= 500 ? 502 : status, message);
 }
 
-function providerInputError(message: string): ProviderRequestError {
+function octopusDeployInputError(message: string): ProviderRequestError {
   return new ProviderRequestError(400, message.endsWith(".") ? message.slice(0, -1) : message);
 }

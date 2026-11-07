@@ -4,15 +4,15 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { LeverActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
@@ -20,12 +20,11 @@ import {
 
 const service = "lever";
 const leverApiBaseUrl = "https://api.lever.co/v1";
-const leverDefaultRequestTimeoutMs = 30_000;
 
 type LeverPhase = "validate" | "execute";
 type LeverActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const leverActionHandlers: Record<LeverActionName, LeverActionHandler> = {
+export const leverActionHandlers: ProviderActionHandlers<"lever", LeverActionHandler> = {
   async list_postings(input, context) {
     const payload = await requestLeverJson({
       context,
@@ -180,7 +179,7 @@ async function requestLeverJson(input: {
   body?: Record<string, unknown>;
   phase: LeverPhase;
 }): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(input.context.signal, leverDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
 
   try {
     const url = new URL(`${leverApiBaseUrl}/${input.path}`);

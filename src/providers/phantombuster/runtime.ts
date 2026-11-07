@@ -1,17 +1,18 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { PhantombusterActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 export const phantombusterApiBaseUrl = "https://api.phantombuster.com/api/v2";
 const apiKeyHeader = "X-Phantombuster-Key";
 
 type Context = ApiKeyProviderContext;
 
-export const phantombusterActionHandlers: Record<
-  PhantombusterActionName,
+export const phantombusterActionHandlers: ProviderActionHandlers<
+  "phantombuster",
   (input: Record<string, unknown>, context: Context) => Promise<unknown>
 > = {
   async get_current_organization(_input, context) {

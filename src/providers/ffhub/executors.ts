@@ -1,6 +1,6 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FfhubActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,12 +10,13 @@ import {
   optionalString,
   requiredRecord,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 
 const service = "ffhub";
 const ffhubApiBaseUrl = "https://api.ffhub.io/v1/";
 const ffhubValidationPath = "/status";
-const ffhubDefaultTimeoutMs = 30_000;
 
 type FfhubRequestPhase = "validate" | "execute";
 type FfhubActionContext = ApiKeyProviderContext;
@@ -27,7 +28,7 @@ interface FfhubRequestSignal {
   cleanup: () => void;
 }
 
-export const ffhubActionHandlers: Record<FfhubActionName, FfhubActionHandler> = {
+export const ffhubActionHandlers: ProviderActionHandlers<"ffhub", FfhubActionHandler> = {
   async create_ffmpeg_task(input, context): Promise<unknown> {
     const payload = await requestFfhub({
       apiKey: context.apiKey,
@@ -90,6 +91,16 @@ export const ffhubActionHandlers: Record<FfhubActionName, FfhubActionHandler> = 
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, ffhubActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: ffhubApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -282,7 +293,7 @@ function readNullableInteger(value: unknown): number | null {
 
 function createFfhubRequestSignal(parent?: AbortSignal): FfhubRequestSignal {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ffhubDefaultTimeoutMs);
+  const timeout = setTimeout(() => controller.abort(), defaultProviderRequestTimeoutMs);
   const abortFromParent = (): void => controller.abort(parent?.reason);
   if (parent?.aborted) {
     controller.abort(parent.reason);

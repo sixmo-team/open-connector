@@ -5,24 +5,27 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
-import type { MopinionActionName } from "./actions.ts";
 
 import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
-import { optionalRecord, optionalScalarString, optionalString, requiredString } from "../../core/cast.ts";
+import { optionalRecord, optionalScalarString, optionalString } from "../../core/cast.ts";
+import { requireCustomCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyEndpoint,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireCustomCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 const service = "mopinion";
@@ -50,7 +53,7 @@ interface MopinionCollectionPayload {
   meta: Record<string, unknown> | null;
 }
 
-export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHandler> = {
+export const mopinionActionHandlers: ProviderActionHandlers<"mopinion", MopinionActionHandler> = {
   async get_account(_input, context): Promise<unknown> {
     return {
       account: await requestMopinionJson({
@@ -63,7 +66,7 @@ export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHa
     };
   },
   async get_report(input, context): Promise<unknown> {
-    const reportId = readRequiredInputString(input.reportId, "reportId");
+    const reportId = requiredInputString(input.reportId, "reportId");
     return {
       report: await requestMopinionJson({
         path: `/reports/${encodeURIComponent(reportId)}`,
@@ -75,7 +78,7 @@ export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHa
     };
   },
   async get_dataset(input, context): Promise<unknown> {
-    const datasetId = readRequiredInputString(input.datasetId, "datasetId");
+    const datasetId = requiredInputString(input.datasetId, "datasetId");
     return {
       dataset: await requestMopinionJson({
         path: `/datasets/${encodeURIComponent(datasetId)}`,
@@ -99,7 +102,7 @@ export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHa
     };
   },
   async get_deployment(input, context): Promise<unknown> {
-    const deploymentId = readRequiredInputString(input.deploymentId, "deploymentId");
+    const deploymentId = requiredInputString(input.deploymentId, "deploymentId");
     return {
       deployment: await requestMopinionJson({
         path: `/deployments/${encodeURIComponent(deploymentId)}`,
@@ -111,7 +114,7 @@ export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHa
     };
   },
   async list_dataset_feedback(input, context): Promise<unknown> {
-    const datasetId = readRequiredInputString(input.datasetId, "datasetId");
+    const datasetId = requiredInputString(input.datasetId, "datasetId");
     const payload = await requestMopinionCollection({
       path: `/datasets/${encodeURIComponent(datasetId)}/feedback`,
       query: buildFeedbackQuery(input),
@@ -124,8 +127,8 @@ export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHa
     };
   },
   async get_dataset_feedback(input, context): Promise<unknown> {
-    const datasetId = readRequiredInputString(input.datasetId, "datasetId");
-    const feedbackId = readRequiredInputString(input.feedbackId, "feedbackId");
+    const datasetId = requiredInputString(input.datasetId, "datasetId");
+    const feedbackId = requiredInputString(input.feedbackId, "feedbackId");
     return {
       feedback: await requestMopinionJson({
         path: `/datasets/${encodeURIComponent(datasetId)}/feedback/${encodeURIComponent(feedbackId)}`,
@@ -137,7 +140,7 @@ export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHa
     };
   },
   async list_report_feedback(input, context): Promise<unknown> {
-    const reportId = readRequiredInputString(input.reportId, "reportId");
+    const reportId = requiredInputString(input.reportId, "reportId");
     const payload = await requestMopinionCollection({
       path: `/reports/${encodeURIComponent(reportId)}/feedback`,
       query: buildFeedbackQuery(input),
@@ -150,8 +153,8 @@ export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHa
     };
   },
   async get_report_feedback(input, context): Promise<unknown> {
-    const reportId = readRequiredInputString(input.reportId, "reportId");
-    const feedbackId = readRequiredInputString(input.feedbackId, "feedbackId");
+    const reportId = requiredInputString(input.reportId, "reportId");
+    const feedbackId = requiredInputString(input.feedbackId, "feedbackId");
     return {
       feedback: await requestMopinionJson({
         path: `/reports/${encodeURIComponent(reportId)}/feedback/${encodeURIComponent(feedbackId)}`,
@@ -163,7 +166,7 @@ export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHa
     };
   },
   async list_dataset_fields(input, context): Promise<unknown> {
-    const datasetId = readRequiredInputString(input.datasetId, "datasetId");
+    const datasetId = requiredInputString(input.datasetId, "datasetId");
     const payload = await requestMopinionCollection({
       path: `/datasets/${encodeURIComponent(datasetId)}/fields`,
       context,
@@ -175,7 +178,7 @@ export const mopinionActionHandlers: Record<MopinionActionName, MopinionActionHa
     };
   },
   async list_report_fields(input, context): Promise<unknown> {
-    const reportId = readRequiredInputString(input.reportId, "reportId");
+    const reportId = requiredInputString(input.reportId, "reportId");
     const payload = await requestMopinionCollection({
       path: `/reports/${encodeURIComponent(reportId)}/fields`,
       context,
@@ -424,13 +427,9 @@ function queryValue(value: unknown): MopinionQueryValue {
 
 function resolveMopinionCredentials(input: Record<string, string>): MopinionCredentials {
   return {
-    publicKey: readRequiredInputString(input.publicKey, "publicKey"),
-    signatureToken: readRequiredInputString(input.signatureToken, "signatureToken"),
+    publicKey: requiredInputString(input.publicKey, "publicKey"),
+    signatureToken: requiredInputString(input.signatureToken, "signatureToken"),
   };
-}
-
-function readRequiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function requiredRecord(value: unknown, label: string): Record<string, unknown> {

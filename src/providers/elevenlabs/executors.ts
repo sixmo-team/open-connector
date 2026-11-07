@@ -4,24 +4,28 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ElevenlabsActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import {
+  booleanString,
   compactObject,
+  optionalBoolean,
   optionalInteger,
   optionalNumber,
   optionalRecord,
   optionalString,
   requiredRecord,
 } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { readBoundedResponseBytes, storeResponseInTransit } from "../../core/request.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   ProviderRequestError,
   providerUserAgent,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 const elevenlabsApiOrigin = "https://api.elevenlabs.io";
@@ -33,7 +37,7 @@ type ElevenlabsRuntimeContext = ApiKeyProviderContext;
 
 type ElevenlabsActionHandler = (input: Record<string, unknown>, context: ElevenlabsRuntimeContext) => Promise<unknown>;
 
-export const elevenlabsActionHandlers: Record<ElevenlabsActionName, ElevenlabsActionHandler> = {
+export const elevenlabsActionHandlers: ProviderActionHandlers<"elevenlabs", ElevenlabsActionHandler> = {
   get_user_info(_input, context) {
     return getElevenlabsUserInfo(context);
   },
@@ -228,7 +232,7 @@ async function searchElevenlabsVoices(input: Record<string, unknown>, context: E
         voice_ids: arrayQueryValue(input.voiceIds),
         page_size: numberQueryValue(input.pageSize),
         next_page_token: stringQueryValue(input.nextPageToken),
-        include_total_count: booleanQueryValue(input.includeTotalCount),
+        include_total_count: booleanString(input.includeTotalCount),
       }),
     },
     context.apiKey,
@@ -345,19 +349,19 @@ async function elevenlabsTextToSpeech(input: Record<string, unknown>, context: E
   if (!context.transitFiles) {
     throw new ProviderRequestError(500, "text_to_speech requires transit file storage");
   }
-  const bytes = Buffer.from(
-    await readBoundedResponseBytes(response, {
-      maxBytes: context.transitFiles.maxBytes,
-      fieldName: "ElevenLabs text-to-speech audio",
-      createError: (message) => new ProviderRequestError(413, message),
-    }),
-  );
   const contentType = response.headers.get("content-type") ?? "application/octet-stream";
   const extension = inferElevenlabsAudioExtension(contentType, outputFormat);
   const name = `elevenlabs-tts-${String(input.voiceId)}.${extension}`;
 
   return {
-    file: await storeElevenlabsFile(context, name, contentType, bytes, "text_to_speech"),
+    file: await storeElevenlabsResponse(
+      context,
+      name,
+      contentType,
+      response,
+      "text_to_speech",
+      "ElevenLabs text-to-speech audio",
+    ),
     voiceId: String(input.voiceId),
     modelId,
     outputFormat,
@@ -433,19 +437,19 @@ async function createElevenlabsSoundEffect(input: Record<string, unknown>, conte
   if (!context.transitFiles) {
     throw new ProviderRequestError(500, "create_sound_effect requires transit file storage");
   }
-  const bytes = Buffer.from(
-    await readBoundedResponseBytes(response, {
-      maxBytes: context.transitFiles.maxBytes,
-      fieldName: "ElevenLabs sound effect audio",
-      createError: (message) => new ProviderRequestError(413, message),
-    }),
-  );
   const contentType = response.headers.get("content-type") ?? inferElevenlabsContentType(outputFormat);
   const extension = inferElevenlabsAudioExtension(contentType, outputFormat);
   const name = `elevenlabs-sound-effect.${extension}`;
 
   return {
-    file: await storeElevenlabsFile(context, name, contentType, bytes, "create_sound_effect"),
+    file: await storeElevenlabsResponse(
+      context,
+      name,
+      contentType,
+      response,
+      "create_sound_effect",
+      "ElevenLabs sound effect audio",
+    ),
     outputFormat,
     contentType,
   };
@@ -466,19 +470,19 @@ async function getElevenlabsAudioFromHistoryItem(input: Record<string, unknown>,
   if (!context.transitFiles) {
     throw new ProviderRequestError(500, "get_audio_from_history_item requires transit file storage");
   }
-  const bytes = Buffer.from(
-    await readBoundedResponseBytes(response, {
-      maxBytes: context.transitFiles.maxBytes,
-      fieldName: "ElevenLabs history audio",
-      createError: (message) => new ProviderRequestError(413, message),
-    }),
-  );
   const contentType = response.headers.get("content-type") ?? "audio/mpeg";
   const extension = inferElevenlabsAudioExtension(contentType, "mp3_44100_128");
   const name = `elevenlabs-history-${historyItemId}.${extension}`;
 
   return {
-    file: await storeElevenlabsFile(context, name, contentType, bytes, "get_audio_from_history_item"),
+    file: await storeElevenlabsResponse(
+      context,
+      name,
+      contentType,
+      response,
+      "get_audio_from_history_item",
+      "ElevenLabs history audio",
+    ),
     historyItemId,
     contentType,
   };
@@ -497,7 +501,7 @@ function buildTextToSpeechBody(input: Record<string, unknown>) {
 function buildSoundEffectBody(input: Record<string, unknown>) {
   return compactObject({
     text: String(input.text),
-    loop: booleanOrUndefined(input.loop),
+    loop: optionalBoolean(input.loop),
     duration_seconds: numberOrUndefined(input.durationSeconds),
     prompt_influence: numberOrUndefined(input.promptInfluence),
     model_id: optionalString(input.modelId),
@@ -523,7 +527,7 @@ function normalizeVoiceSettingsForRequest(value: Record<string, unknown> | undef
     stability: numberOrUndefined(value.stability),
     similarity_boost: numberOrUndefined(value.similarityBoost),
     style: numberOrUndefined(value.style),
-    use_speaker_boost: booleanOrUndefined(value.useSpeakerBoost),
+    use_speaker_boost: optionalBoolean(value.useSpeakerBoost),
   });
 }
 
@@ -660,13 +664,13 @@ async function createElevenlabsError(response: Response, mode: "validate" | "exe
     return new ProviderRequestError(429, message);
   }
   if (mode === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (mode === "execute" && (response.status === 401 || response.status === 403)) {
     return new ProviderRequestError(401, message);
   }
   if (response.status === 400 || response.status === 404 || response.status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(response.status >= 500 ? 502 : response.status, message);
@@ -764,7 +768,7 @@ function normalizeSubscriptionSummary(payload: Record<string, unknown>) {
       "elevenlabs subscription.can_use_professional_voice_cloning",
     ),
     characterRefreshPeriod: optionalString(payload.character_refresh_period),
-    canUseDelayedPaymentMethods: booleanOrUndefined(payload.can_use_delayed_payment_methods),
+    canUseDelayedPaymentMethods: optionalBoolean(payload.can_use_delayed_payment_methods),
   };
 }
 
@@ -793,18 +797,18 @@ function normalizeModel(payload: Record<string, unknown>) {
     name: optionalString(payload.name),
     description: optionalString(payload.description),
     languages: normalizeModelLanguages(payload.languages),
-    canBeFinetuned: booleanOrUndefined(payload.can_be_finetuned),
-    canDoTextToSpeech: booleanOrUndefined(payload.can_do_text_to_speech),
-    canDoVoiceConversion: booleanOrUndefined(payload.can_do_voice_conversion),
-    canUseStyle: booleanOrUndefined(payload.can_use_style),
-    canUseSpeakerBoost: booleanOrUndefined(payload.can_use_speaker_boost),
-    servesProVoices: booleanOrUndefined(payload.serves_pro_voices),
+    canBeFinetuned: optionalBoolean(payload.can_be_finetuned),
+    canDoTextToSpeech: optionalBoolean(payload.can_do_text_to_speech),
+    canDoVoiceConversion: optionalBoolean(payload.can_do_voice_conversion),
+    canUseStyle: optionalBoolean(payload.can_use_style),
+    canUseSpeakerBoost: optionalBoolean(payload.can_use_speaker_boost),
+    servesProVoices: optionalBoolean(payload.serves_pro_voices),
     tokenCostFactor: numberOrUndefined(payload.token_cost_factor),
     concurrencyGroup: optionalString(payload.concurrency_group),
     maxCharactersRequestFreeUser: optionalInteger(payload.max_characters_request_free_user),
     maxCharactersRequestSubscribedUser: optionalInteger(payload.max_characters_request_subscribed_user),
     maximumTextLengthPerRequest: optionalInteger(payload.maximum_text_length_per_request),
-    requiresAlphaAccess: booleanOrUndefined(payload.requires_alpha_access),
+    requiresAlphaAccess: optionalBoolean(payload.requires_alpha_access),
     modelRates: optionalRecord(payload.model_rates),
   });
 }
@@ -823,8 +827,8 @@ function normalizeVoice(payload: Record<string, unknown>) {
     sharing: optionalRecord(payload.sharing),
     fineTuning: optionalRecord(payload.fine_tuning),
     permissionOnResource: optionalString(payload.permission_on_resource),
-    isOwner: booleanOrUndefined(payload.is_owner),
-    isLegacy: booleanOrUndefined(payload.is_legacy),
+    isOwner: optionalBoolean(payload.is_owner),
+    isLegacy: optionalBoolean(payload.is_legacy),
   });
 }
 
@@ -855,13 +859,13 @@ function normalizeHistoryFeedback(value: Record<string, unknown> | undefined) {
   }
 
   return compactObject({
-    thumbsUp: booleanOrUndefined(value.thumbs_up),
+    thumbsUp: optionalBoolean(value.thumbs_up),
     feedback: optionalString(value.feedback),
-    emotions: booleanOrUndefined(value.emotions),
-    inaccurateClone: booleanOrUndefined(value.inaccurate_clone),
-    glitches: booleanOrUndefined(value.glitches),
-    audioQuality: booleanOrUndefined(value.audio_quality),
-    other: booleanOrUndefined(value.other),
+    emotions: optionalBoolean(value.emotions),
+    inaccurateClone: optionalBoolean(value.inaccurate_clone),
+    glitches: optionalBoolean(value.glitches),
+    audioQuality: optionalBoolean(value.audio_quality),
+    other: optionalBoolean(value.other),
     reviewStatus: optionalString(value.review_status),
   });
 }
@@ -1070,6 +1074,34 @@ function inferElevenlabsAudioExtension(contentType: string, outputFormat: string
   return "bin";
 }
 
+async function storeElevenlabsResponse(
+  context: ElevenlabsRuntimeContext,
+  name: string,
+  mimeType: string,
+  response: Response,
+  actionName: string,
+  fieldName: string,
+) {
+  if (!context.transitFiles) {
+    throw new ProviderRequestError(500, `${actionName} requires transit file storage`);
+  }
+
+  const upload = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
+    fieldName,
+    createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
+  });
+  return {
+    fileId: upload.fileId,
+    name: upload.name,
+    mimeType: upload.mimeType,
+    downloadUrl: upload.downloadUrl,
+    sizeBytes: upload.sizeBytes,
+  };
+}
+
 async function storeElevenlabsFile(
   context: ElevenlabsRuntimeContext,
   name: string,
@@ -1094,7 +1126,7 @@ async function storeElevenlabsFile(
 }
 
 function asObject(value: unknown): Record<string, unknown> {
-  return requiredRecord(value, "elevenlabs object", (message) => new ProviderRequestError(502, message));
+  return requiredRecord(value, "elevenlabs object", providerResponseError);
 }
 
 function pickFirstString(input: Record<string, unknown>, ...keys: string[]) {
@@ -1117,10 +1149,6 @@ function numberQueryValue(value: unknown) {
   return parsed === undefined ? undefined : String(parsed);
 }
 
-function booleanQueryValue(value: unknown) {
-  return typeof value === "boolean" ? String(value) : undefined;
-}
-
 function arrayQueryValue(value: unknown) {
   if (!Array.isArray(value)) {
     return undefined;
@@ -1137,12 +1165,8 @@ function nullableNumber(value: unknown) {
   return value === null ? null : optionalNumber(value);
 }
 
-function booleanOrUndefined(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function nullableBoolean(value: unknown) {
-  return value === null ? null : booleanOrUndefined(value);
+  return value === null ? null : optionalBoolean(value);
 }
 
 function requireString(value: unknown, fieldName: string) {

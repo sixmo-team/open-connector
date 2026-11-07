@@ -1,14 +1,11 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FilloutActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, requiredInputString } from "../provider-runtime.ts";
 
 const service = "fillout";
 const filloutApiBaseUrl = "https://api.fillout.com";
@@ -17,7 +14,7 @@ type FilloutRequestPhase = "validate" | "execute";
 type FilloutActionContext = ApiKeyProviderContext;
 type FilloutActionHandler = (input: Record<string, unknown>, context: FilloutActionContext) => Promise<unknown>;
 
-export const filloutActionHandlers: Record<FilloutActionName, FilloutActionHandler> = {
+export const filloutActionHandlers: ProviderActionHandlers<"fillout", FilloutActionHandler> = {
   list_forms(_input, context) {
     return listForms(context);
   },
@@ -86,7 +83,7 @@ async function listForms(context: FilloutActionContext): Promise<unknown> {
 }
 
 async function getFormMetadata(input: Record<string, unknown>, context: FilloutActionContext): Promise<unknown> {
-  const formId = readInputString(input.formId, "formId");
+  const formId = requiredInputString(input.formId, "formId");
   const payload = await filloutRequest({
     pathOrUrl: `/v1/api/forms/${encodeURIComponent(formId)}`,
     apiKey: context.apiKey,
@@ -101,7 +98,7 @@ async function getFormMetadata(input: Record<string, unknown>, context: FilloutA
 }
 
 async function listSubmissions(input: Record<string, unknown>, context: FilloutActionContext): Promise<unknown> {
-  const formId = readInputString(input.formId, "formId");
+  const formId = requiredInputString(input.formId, "formId");
   const url = new URL(`/v1/api/forms/${encodeURIComponent(formId)}/submissions`, filloutApiBaseUrl);
 
   for (const [key, value] of Object.entries(input)) {
@@ -129,8 +126,8 @@ async function listSubmissions(input: Record<string, unknown>, context: FilloutA
 }
 
 async function getSubmission(input: Record<string, unknown>, context: FilloutActionContext): Promise<unknown> {
-  const formId = readInputString(input.formId, "formId");
-  const submissionId = readInputString(input.submissionId, "submissionId");
+  const formId = requiredInputString(input.formId, "formId");
+  const submissionId = requiredInputString(input.submissionId, "submissionId");
   const payload = await filloutRequest({
     pathOrUrl: buildSubmissionUrl(formId, submissionId, input),
     apiKey: context.apiKey,
@@ -146,7 +143,7 @@ async function getSubmission(input: Record<string, unknown>, context: FilloutAct
 }
 
 async function createSubmissions(input: Record<string, unknown>, context: FilloutActionContext): Promise<unknown> {
-  const formId = readInputString(input.formId, "formId");
+  const formId = requiredInputString(input.formId, "formId");
   const payload = await filloutRequest({
     pathOrUrl: `/v1/api/forms/${encodeURIComponent(formId)}/submissions`,
     apiKey: context.apiKey,
@@ -166,8 +163,8 @@ async function createSubmissions(input: Record<string, unknown>, context: Fillou
 }
 
 async function deleteSubmission(input: Record<string, unknown>, context: FilloutActionContext): Promise<unknown> {
-  const formId = readInputString(input.formId, "formId");
-  const submissionId = readInputString(input.submissionId, "submissionId");
+  const formId = requiredInputString(input.formId, "formId");
+  const submissionId = requiredInputString(input.submissionId, "submissionId");
   const payload = await filloutRequest({
     pathOrUrl: `/v1/api/forms/${encodeURIComponent(formId)}/submissions/${encodeURIComponent(submissionId)}`,
     apiKey: context.apiKey,
@@ -304,10 +301,6 @@ function readArrayPayload(payload: unknown, ...keys: string[]): unknown[] {
   }
 
   return [];
-}
-
-function readInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function readNonNegativeNumber(value: unknown): number {

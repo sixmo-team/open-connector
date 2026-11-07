@@ -5,6 +5,7 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -13,17 +14,15 @@ import {
   optionalScalarString,
   optionalString,
 } from "../../core/cast.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 import {
   aliyunStsApiVersion,
   aliyunStsEndpoint,
@@ -42,34 +41,36 @@ interface AliyunStsContext {
   signal?: AbortSignal;
 }
 
+const handlers: ProviderActionHandlers<"aliyun_sts", ProviderRuntimeHandler<AliyunStsContext>> = {
+  assume_role(input, context) {
+    const accessKeyId = requireCredentialField(context.values.accessKeyId, "accessKeyId");
+    const accessKeySecret = requireCredentialField(context.values.accessKeySecret, "accessKeySecret");
+    const roleArn = optionalString(input.roleArn) ?? optionalString(context.values.defaultRoleArn);
+    if (!roleArn) {
+      throw new ProviderRequestError(400, "roleArn is required when the connection has no defaultRoleArn");
+    }
+
+    return assumeAliyunRole(
+      {
+        accessKeyId,
+        accessKeySecret,
+        roleArn,
+        roleSessionName: optionalString(input.roleSessionName),
+        durationSeconds: optionalNumber(input.durationSeconds),
+        policy: optionalString(input.policy),
+      },
+      {
+        fetcher: context.fetcher,
+        signal: context.signal,
+      },
+    );
+  },
+};
+
 export const executors: ProviderExecutors = defineProviderExecutors<AliyunStsContext>({
   service,
   skipDnsValidation: true,
-  handlers: {
-    assume_role(input, context) {
-      const accessKeyId = requireCredentialField(context.values.accessKeyId, "accessKeyId");
-      const accessKeySecret = requireCredentialField(context.values.accessKeySecret, "accessKeySecret");
-      const roleArn = optionalString(input.roleArn) ?? optionalString(context.values.defaultRoleArn);
-      if (!roleArn) {
-        throw new ProviderRequestError(400, "roleArn is required when the connection has no defaultRoleArn");
-      }
-
-      return assumeAliyunRole(
-        {
-          accessKeyId,
-          accessKeySecret,
-          roleArn,
-          roleSessionName: optionalString(input.roleSessionName),
-          durationSeconds: optionalNumber(input.durationSeconds),
-          policy: optionalString(input.policy),
-        },
-        {
-          fetcher: context.fetcher,
-          signal: context.signal,
-        },
-      );
-    },
-  },
+  handlers,
   async createContext(context: ExecutionContext, fetcher: typeof fetch): Promise<AliyunStsContext> {
     const credential = await context.getCredential(service);
     if (credential?.authType !== "custom_credential") {

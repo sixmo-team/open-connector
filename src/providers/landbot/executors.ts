@@ -1,9 +1,16 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { LandbotActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "landbot";
 const landbotApiBaseUrl = "https://api.landbot.io/v1/";
@@ -12,7 +19,7 @@ type LandbotPhase = "execute" | "validate";
 type LandbotQueryValue = boolean | number | string | undefined;
 type LandbotActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const landbotActionHandlers: Record<LandbotActionName, LandbotActionHandler> = {
+export const landbotActionHandlers: ProviderActionHandlers<"landbot", LandbotActionHandler> = {
   list_channels(input, context) {
     return landbotRequest({
       path: "channels/",
@@ -48,7 +55,7 @@ export const landbotActionHandlers: Record<LandbotActionName, LandbotActionHandl
       method: "POST",
       context,
       body: {
-        message: requiredString(input.message, "message", inputError),
+        message: requiredString(input.message, "message", providerInputError),
       },
     });
   },
@@ -56,7 +63,7 @@ export const landbotActionHandlers: Record<LandbotActionName, LandbotActionHandl
     validateFieldValue(input.type, input.value);
     return landbotRequest({
       path: `customers/${readCustomerId(input)}/fields/${encodeURIComponent(
-        requiredString(input.field_name, "field_name", inputError),
+        requiredString(input.field_name, "field_name", providerInputError),
       )}/`,
       method: "POST",
       context,
@@ -70,6 +77,17 @@ export const landbotActionHandlers: Record<LandbotActionName, LandbotActionHandl
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, landbotActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: landbotApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Token " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -247,8 +265,4 @@ function readCustomerId(input: Record<string, unknown>): string {
     throw new ProviderRequestError(400, "customer_id is required");
   }
   return encodeURIComponent(String(customerId));
-}
-
-function inputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

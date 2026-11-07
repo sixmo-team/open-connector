@@ -7,22 +7,21 @@ import type {
   ProviderProxyExecutor,
   ProxyExecutionResult,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, optionalNumber, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "chaserhq";
 const apiBaseUrl = "https://openapi.chaserhq.com";
@@ -38,7 +37,7 @@ interface ChaserContext {
 
 type Handler = (input: Record<string, unknown>, context: ChaserContext) => Promise<unknown>;
 
-export const chaserhqActionHandlers: Record<string, Handler> = {
+export const chaserhqActionHandlers: ProviderActionHandlers<"chaserhq", Handler> = {
   async get_status(_input, context) {
     return { ok: true, raw: await requestChaserJson(context, "/status/") };
   },

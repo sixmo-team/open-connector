@@ -1,20 +1,22 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FirehydrantActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
+  looseArray,
   optionalBoolean,
   optionalInteger,
   optionalRecord,
   optionalString,
   requiredRecord,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 
 const service = "firehydrant";
 const firehydrantApiBaseUrl = "https://api.firehydrant.io/v1";
-const firehydrantRequestTimeoutMs = 30_000;
 
 type RequestPhase = "validate" | "execute";
 type FirehydrantContext = ApiKeyProviderContext;
@@ -31,7 +33,7 @@ interface FirehydrantRequestInput {
   body?: Record<string, unknown>;
 }
 
-export const firehydrantActionHandlers: Record<FirehydrantActionName, FirehydrantHandler> = {
+export const firehydrantActionHandlers: ProviderActionHandlers<"firehydrant", FirehydrantHandler> = {
   list_incidents(input, context) {
     return listCollection("incidents", "/incidents", input, context, normalizeIncident);
   },
@@ -72,6 +74,17 @@ export const firehydrantActionHandlers: Record<FirehydrantActionName, Firehydran
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, firehydrantActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: firehydrantApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const payload = await requestJson({
@@ -83,7 +96,7 @@ export const credentialValidators: CredentialValidators = {
       phase: "validate",
     });
     const record = asResponseObject(payload, "FireHydrant validation response");
-    const incidents = readArray(record.data);
+    const incidents = looseArray(record.data);
     const firstIncident = incidents
       .map((incident) => asResponseObject(incident, "FireHydrant incident"))
       .find((incident) => optionalString(incident.name));
@@ -121,7 +134,7 @@ async function listCollection(
     }),
     `FireHydrant ${outputKey} list response`,
   );
-  const items = readArray(raw.data).map((item) =>
+  const items = looseArray(raw.data).map((item) =>
     normalizeItem(asResponseObject(item, `FireHydrant ${outputKey} list item`)),
   );
 
@@ -221,13 +234,13 @@ function normalizeIncident(record: Record<string, unknown>): Record<string, unkn
     incidentUrl: nullableString(record.incident_url),
     active: nullableBoolean(record.active),
     restricted: nullableBoolean(record.restricted),
-    services: readArray(record.services).map((item) =>
+    services: looseArray(record.services).map((item) =>
       normalizeEntityRef(asResponseObject(item, "FireHydrant incident service")),
     ),
-    environments: readArray(record.environments).map((item) =>
+    environments: looseArray(record.environments).map((item) =>
       normalizeEntityRef(asResponseObject(item, "FireHydrant incident environment")),
     ),
-    tags: readArray(record.tag_list).map(String),
+    tags: looseArray(record.tag_list).map(String),
     labels: normalizeLabels(record.labels),
     raw: record,
   };
@@ -242,7 +255,7 @@ function normalizeCatalogEntry(record: Record<string, unknown>): Record<string, 
     serviceTier: nullableInteger(record.service_tier),
     createdAt: nullableString(record.created_at),
     updatedAt: nullableString(record.updated_at),
-    activeIncidents: readArray(record.active_incidents).map(String),
+    activeIncidents: looseArray(record.active_incidents).map(String),
     labels: normalizeLabels(record.labels),
     owner: normalizeNullableEntityRef(record.owner),
     raw: record,
@@ -285,10 +298,6 @@ function normalizeLabels(value: unknown): Record<string, unknown> | null {
   return optionalRecord(value) ?? null;
 }
 
-function readArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
 function nullableInteger(value: unknown): number | null {
   if (value === null || value === undefined) {
     return null;
@@ -326,7 +335,7 @@ async function requestJson(input: FirehydrantRequestInput): Promise<unknown> {
     }
   }
 
-  const timeoutSignal = AbortSignal.timeout(firehydrantRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
   let response: Response;
   try {

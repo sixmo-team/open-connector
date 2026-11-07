@@ -1,6 +1,8 @@
 import type { FeishuJsonRequest } from "./client.ts";
 
-import { ProviderRequestError } from "../../provider-runtime.ts";
+import { optionalNumber } from "../../../core/cast.ts";
+import { providerInputError, ProviderRequestError } from "../../provider-runtime.ts";
+import { FeishuPagination } from "./pagination.ts";
 
 interface ImOrganizeActionHandler {
   (input: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -79,25 +81,26 @@ async function cancelMessageFlag(input: Record<string, unknown>, request: Feishu
 
 async function listMessageFlags(input: Record<string, unknown>, request: FeishuJsonRequest) {
   const pageSize = optionalNumber(input.pageSize) ?? 50;
-  const fetchAll = input.fetchAll === true && input.pageToken === undefined;
-  const maxPages = optionalNumber(input.maxPages) ?? 20;
-  let pageToken = optionalString(input.pageToken) ?? "";
-  let hasMore = false;
-  const flagItems: Record<string, unknown>[] = [];
-  const deletedFlagItems: Record<string, unknown>[] = [];
   const messages: Record<string, unknown>[] = [];
-  for (let page = 0; page < (fetchAll ? maxPages : 1); page++) {
-    const data = await request({
-      path: "/im/v1/flags",
-      query: { page_size: pageSize, page_token: pageToken },
-    });
-    flagItems.push(...recordArray(data.flag_items));
-    deletedFlagItems.push(...recordArray(data.delete_flag_items));
-    messages.push(...recordArray(data.messages));
-    hasMore = data.has_more === true;
-    pageToken = optionalString(data.page_token) ?? "";
-    if (!fetchAll || !hasMore || !pageToken) break;
-  }
+  const {
+    active: flagItems,
+    deleted: deletedFlagItems,
+    hasMore,
+    pageToken,
+  } = await fetchDualPages({
+    input,
+    activeKey: "flag_items",
+    deletedKey: "delete_flag_items",
+    firstPageToken: "",
+    requestPage: async (pageToken) => {
+      const data = await request({
+        path: "/im/v1/flags",
+        query: { page_size: pageSize, page_token: pageToken },
+      });
+      messages.push(...recordArray(data.messages));
+      return data;
+    },
+  });
   if (input.includeMessages !== false) {
     await enrichFlagMessages(flagItems, messages, request);
   }
@@ -147,7 +150,12 @@ async function listFeedShortcuts(input: Record<string, unknown>, request: Feishu
   });
   const shortcuts = recordArray(data.shortcuts);
   if (input.includeDetails !== false) {
-    await enrichChatDetails(shortcuts, "feed_card_id", "detail", request);
+    await enrichChatDetails(
+      shortcuts.filter((item) => item.type === 1),
+      "feed_card_id",
+      "detail",
+      request,
+    );
   }
   return {
     shortcuts,
@@ -242,7 +250,7 @@ async function resolveFlagItem(input: Record<string, unknown>, request: FeishuJs
     itemType = await detectFeedItemType(messageId, request);
   }
   if (!validFlagCombination(itemType, flagType)) {
-    throw invalidInput("supported itemType/flagType pairs are default+message, thread+feed, and msg_thread+feed");
+    throw providerInputError("supported itemType/flagType pairs are default+message, thread+feed, and msg_thread+feed");
   }
   return flagItem(messageId, itemType, flagType);
 }
@@ -349,6 +357,7 @@ async function fetchDualPages(input: FetchDualPagesInput): Promise<DualPage> {
   const fetchAll = input.input.fetchAll === true && input.input.pageToken === undefined;
   const maxPages = optionalNumber(input.input.maxPages) ?? 20;
   let pageToken = optionalString(input.input.pageToken) ?? input.firstPageToken;
+  const pagination = new FeishuPagination("IM", pageToken);
   let hasMore = false;
   const active: Record<string, unknown>[] = [];
   const deleted: Record<string, unknown>[] = [];
@@ -358,6 +367,7 @@ async function fetchDualPages(input: FetchDualPagesInput): Promise<DualPage> {
     deleted.push(...recordArray(data[input.deletedKey]));
     hasMore = data.has_more === true;
     pageToken = optionalString(data.page_token);
+    if (fetchAll && hasMore) pagination.next(true, pageToken);
     if (!fetchAll || !hasMore || !pageToken) break;
   }
   return { active, deleted, hasMore, pageToken: pageToken ?? null };
@@ -379,10 +389,10 @@ function annotateShortcutFailure(item: Record<string, unknown>): Record<string, 
 
 function chatIdArray(value: unknown) {
   const values = uniqueStrings(requiredStringArray(value, "chatIds"));
-  if (values.length > 10) throw invalidInput("chatIds accepts at most 10 values");
+  if (values.length > 10) throw providerInputError("chatIds accepts at most 10 values");
   for (const value of values) {
     if (!value.startsWith("oc_")) {
-      throw invalidInput(`chatIds must contain open_chat_id values; received ${value}`);
+      throw providerInputError(`chatIds must contain open_chat_id values; received ${value}`);
     }
   }
   return values;
@@ -396,7 +406,7 @@ function requiredStringArray(value: unknown, field: string) {
   const values = Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
     : [];
-  if (values.length === 0) throw invalidInput(`${field} must contain at least one value`);
+  if (values.length === 0) throw providerInputError(`${field} must contain at least one value`);
   return values;
 }
 
@@ -414,7 +424,7 @@ function recordArray(value: unknown): Record<string, unknown>[] {
 
 function requiredString(value: unknown, field: string) {
   const result = optionalString(value);
-  if (!result) throw invalidInput(`${field} must be a non-empty string`);
+  if (!result) throw providerInputError(`${field} must be a non-empty string`);
   return result;
 }
 
@@ -430,14 +440,6 @@ function optionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function optionalNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
-}
-
-function invalidInput(message: string) {
-  return new ProviderRequestError(400, message);
 }

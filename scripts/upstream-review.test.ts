@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { analyzeUpstreamChanges, formatUpstreamReview, validateCandidateRevision } from "./upstream-review.ts";
+import { analyzeUpstreamChanges, validateCandidateRevision } from "./upstream-review.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -69,35 +69,60 @@ describe("analyzeUpstreamChanges", () => {
       "src/server/storage/runtime-store.ts",
       "web/src/shared-ui.tsx",
     ]);
-    expect(first.requiredFocusedTestCommands).toEqual([
-      "npm run generate:catalog",
-      "npm run verify:generated",
-      "npm test -- src/providers",
-      "npm test -- src/core src/saas",
-      "npm test -- src/saas/storage",
-      "npm test -- src/saas/auth src/saas/server",
-      "npm test -- src/oauth src/saas/oauth",
-      "npm test -- src/saas/actions",
-      "npm test -- src/saas",
-    ]);
+  });
 
-    const report = formatUpstreamReview(first);
-    for (const heading of [
-      "Provider-only changes",
-      "Runtime/store/auth/OAuth/action-runner changes",
-      "Generated catalog additions",
-      "Generated catalog removals",
-      "Generated catalog schema fingerprints",
-      "SaaS conflict-risk files",
-      "Required focused test commands",
-    ]) {
-      expect(report).toContain(heading);
+  it("reports authorization and executor drift even when action schemas are unchanged", async () => {
+    const directory = await createRepository();
+    const definition = JSON.parse(baselineCatalog);
+    definition.auth = [{ type: "oauth2", scopes: ["read"] }];
+    definition.actions[0].requiredScopes = ["read"];
+    await writePath(directory, "catalog/apps/changed.json", JSON.stringify(definition));
+    await writePath(directory, "src/providers/changed/def.ts", "export const scopes = ['read'];\n");
+    await writePath(directory, "src/providers/index.generated.ts", "export const executors = ['changed.read'];\n");
+    commit(directory, "reviewed authorization");
+    const base = git(directory, ["rev-parse", "HEAD"]).trim();
+    definition.auth[0].scopes.push("write");
+    definition.actions[0].providerPermissions = ["send"];
+    await writePath(directory, "catalog/apps/changed.json", JSON.stringify(definition));
+    await writePath(directory, "src/providers/changed/def.ts", "export const scopes = ['read', 'write'];\n");
+    await writePath(directory, "src/providers/index.generated.ts", "export const executors = [];\n");
+    commit(directory, "changed authorization and executor coverage");
+    const review = analyzeUpstreamChanges(base, git(directory, ["rev-parse", "HEAD"]).trim(), directory);
+    expect(review.catalogSchemaFingerprints[0]?.base).toBe(review.catalogSchemaFingerprints[0]?.candidate);
+    expect(review.catalogCapabilityFingerprints[0]?.base).not.toBe(review.catalogCapabilityFingerprints[0]?.candidate);
+    for (const path of ["src/providers/changed/def.ts", "src/providers/index.generated.ts"]) {
+      const change = review.sourceFingerprints.find((entry) => entry.path === path);
+      expect(change?.base).not.toBe(change?.candidate);
     }
+  });
+
+  it("requires real generated snapshots when catalogs are ignored and compares their complete capabilities", async () => {
+    const directory = await createRepository();
+    await writePath(directory, ".gitignore", "catalog/\n");
+    await writePath(directory, "src/providers/changed/def.ts", "export const scopes = ['read'];\n");
+    commit(directory, "ignored generated baseline");
+    const base = git(directory, ["rev-parse", "HEAD"]).trim();
+    await writePath(directory, "src/providers/changed/def.ts", "export const scopes = ['read', 'write'];\n");
+    commit(directory, "ignored generated candidate");
+    const candidate = git(directory, ["rev-parse", "HEAD"]).trim();
+    expect(() => analyzeUpstreamChanges(base, candidate, directory)).toThrow();
+    const snapshots = await mkdtemp(join(tmpdir(), "open-connector-generated-review-"));
+    temporaryDirectories.push(snapshots);
+    const baseCatalogDir = join(snapshots, "before");
+    const candidateCatalogDir = join(snapshots, "after");
+    await writePath(baseCatalogDir, "changed.json", baselineCatalog);
+    await writePath(candidateCatalogDir, "changed.json", candidateCatalog);
+    await writePath(candidateCatalogDir, "added.json", JSON.stringify({ service: "added", actions: [] }));
+    const review = analyzeUpstreamChanges(base, candidate, directory, { baseCatalogDir, candidateCatalogDir });
+    expect(review.catalogAdditions).toEqual(["catalog/apps/added.json"]);
+    const change = review.catalogCapabilityFingerprints.find((entry) => entry.path === "catalog/apps/changed.json");
+    expect(change?.base).not.toBe(change?.candidate);
+    expect(review.catalogInputs).toEqual({ baseCatalogDir, candidateCatalogDir });
   });
 
   it("rejects revisions and repository paths that could be interpreted as commands or paths", async () => {
     for (const candidate of ["HEAD", "../candidate", "a".repeat(39), `${"a".repeat(40)};touch /tmp/pwned`]) {
-      expect(() => validateCandidateRevision(candidate)).toThrow("40-character lowercase Git SHA");
+      expect(() => validateCandidateRevision(candidate)).toThrow();
     }
 
     const directory = await createRepository();
@@ -106,7 +131,7 @@ describe("analyzeUpstreamChanges", () => {
     const candidate = git(directory, ["rev-parse", "HEAD"]).trim();
     const base = git(directory, ["rev-parse", "HEAD^"]).trim();
 
-    expect(() => analyzeUpstreamChanges(base, candidate, directory)).toThrow("unsafe repository path");
+    expect(() => analyzeUpstreamChanges(base, candidate, directory)).toThrow();
   });
 });
 

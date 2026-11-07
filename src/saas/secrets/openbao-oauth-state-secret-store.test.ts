@@ -2,13 +2,15 @@ import type { OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts"
 import type { SaasRequestScope } from "../contracts.ts";
 import type { Pool } from "pg";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { getRequestProcessing, withRequestProcessing } from "../../core/cancellation.ts";
 import {
   OAuthStateMetadataReconciliationError,
   PostgresOAuthStateStore,
 } from "../storage/postgres-oauth-state-store.ts";
 import { OpenBaoClient } from "./openbao-client.ts";
 import { OpenBaoOAuthStateSecretStore } from "./openbao-oauth-state-secret-store.ts";
+import { OpenBaoSecretCodec, withSecretCleanup } from "./secret-codec.ts";
 
 const scope: Readonly<SaasRequestScope> = Object.freeze({
   tenantId: "tenant-a",
@@ -20,11 +22,13 @@ const scope: Readonly<SaasRequestScope> = Object.freeze({
   permissions: ["oauth:start"],
   oauthSessionId: "oauth-session-1",
   connectorConnectionId: "11111111-1111-4111-8111-111111111111",
+  localConnectionId: "11111111-1111-4111-8111-111111111111",
 });
 
 const state: OAuthAuthorizationState = {
   service: "gmail",
   connectionName: "opaque-connection",
+  retirementGeneration: "generation-fixture",
   state: "raw-oauth-state-secret",
   createdAt: new Date().toISOString(),
   pkceCodeVerifier: "pkce-verifier-secret",
@@ -57,6 +61,66 @@ describe("OpenBaoOAuthStateSecretStore", () => {
     expect([first, second].filter(Boolean)).toEqual([{ pkceCodeVerifier: state.pkceCodeVerifier }]);
     expect(bao.records.has(expectedPath)).toBe(false);
     await expect(store.take(scope, "oauth-session-1")).resolves.toBeUndefined();
+  });
+
+  it("round trips all native private state only through OpenBao and consumes captured client configuration once", async () => {
+    const bao = new FakeOpenBao();
+    const store = createStore(bao);
+    const nativeState: OAuthAuthorizationState = {
+      ...state,
+      redirectUri: "app://captured-callback",
+      authorizationScopes: ["read"],
+      clientConfig: {
+        service: "gmail",
+        clientId: "client",
+        clientSecret: "private-client-secret",
+        extra: { tenant: "captured" },
+        secretExtra: { appToken: "private-provider-token" },
+      },
+    };
+    await store.put(
+      scope,
+      "oauth-session-1",
+      nativeState.pkceCodeVerifier,
+      new Date(Date.now() + 60000).toISOString(),
+      nativeState,
+    );
+    expect(await store.take(scope, "oauth-session-1")).toMatchObject({ authorizationState: nativeState });
+    expect(await store.take(scope, "oauth-session-1")).toBeUndefined();
+    expect(bao.records.has(expectedPath)).toBe(false);
+  });
+
+  it("keeps private envelopes outside SQL and bounds compensation without inheriting or extending an aborted request", async () => {
+    const bao = new FakeOpenBao();
+    const client = new OpenBaoClient({ address: "https://openbao.test", token: "test-token", fetchFn: bao.fetch });
+    const codec = new OpenBaoSecretCodec(client, scope);
+    const payload = JSON.stringify({ clientSecret: "private-custom-client", pkceCodeVerifier: "private-custom-pkce" });
+    const ref = await codec.encode(payload);
+    expect(ref).not.toContain("private-custom");
+    expect(await codec.decode(ref)).toBe(payload);
+    await expect(
+      new OpenBaoSecretCodec(client, { tenantId: "other-tenant", workspaceId: scope.workspaceId }).decode(ref),
+    ).rejects.toThrow("scope");
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      withRequestProcessing({ requestSignal: controller.signal }, () => codec.delete(ref)),
+    ).rejects.toThrow();
+    expect(bao.records.has(ref)).toBe(true);
+    await withRequestProcessing({ requestSignal: controller.signal }, () =>
+      withSecretCleanup(scope, async () => {
+        const deadline = getRequestProcessing()!.processingDeadlineMs!;
+        const clock = vi.spyOn(Date, "now").mockReturnValue(deadline + 1);
+        try {
+          await expect(withSecretCleanup(scope, () => codec.delete(ref))).rejects.toThrow("deadline");
+        } finally {
+          clock.mockRestore();
+        }
+        expect(bao.records.has(ref)).toBe(true);
+        expect(await codec.delete(ref)).toBe(true);
+      }),
+    );
+    expect(await codec.delete(ref)).toBe(false);
   });
 
   it("deletes an expired state without returning its PKCE verifier", async () => {

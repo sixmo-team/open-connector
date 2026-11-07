@@ -1,6 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { IpinfoIoActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,18 +10,16 @@ import {
   optionalRecord,
   optionalString,
 } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineApiKeyProviderExecutors,
   normalizeProviderProxyEndpoint,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "ipinfo_io";
 const ipinfoIoFetch = createProviderFetch({ skipDnsValidation: true });
@@ -51,7 +49,7 @@ type IpinfoIoRequestPhase = "validate" | "execute";
 type IpinfoIoActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type IpinfoIoActionHandler = (input: Record<string, unknown>, context: IpinfoIoActionContext) => Promise<unknown>;
 
-export const ipinfoIoActionHandlers: Record<IpinfoIoActionName, IpinfoIoActionHandler> = {
+export const ipinfoIoActionHandlers: ProviderActionHandlers<"ipinfo_io", IpinfoIoActionHandler> = {
   get_ip_info(input, context) {
     return getLiteIpInfo(input, context);
   },

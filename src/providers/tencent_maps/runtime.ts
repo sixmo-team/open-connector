@@ -1,8 +1,8 @@
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { TencentMapsActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean } from "../../core/cast.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 const tencentMapsApiBaseUrl = "https://apis.map.qq.com";
 const tencentMapsValidationPath = "/ws/district/v1/list";
@@ -29,7 +29,7 @@ type TencentMapsResponsePayload = Record<string, unknown> & {
 
 type TencentMapsActionHandler = (input: Record<string, unknown>, runtime: RuntimeContext) => Promise<unknown>;
 
-export const tencentMapsActionHandlers: Record<TencentMapsActionName, TencentMapsActionHandler> = {
+export const tencentMapsActionHandlers: ProviderActionHandlers<"tencent_maps", TencentMapsActionHandler> = {
   geocode(input, runtime) {
     return executeGeocode(input, runtime);
   },
@@ -75,7 +75,7 @@ export const tencentMapsActionHandlers: Record<TencentMapsActionName, TencentMap
   distance_matrix(input, runtime) {
     return executeDistanceMatrix(input, runtime);
   },
-} satisfies Record<TencentMapsActionName, TencentMapsActionHandler>;
+};
 
 export async function validateTencentMapsCredential(context: RuntimeContext): Promise<{
   profile: { accountId: string; displayName: string };
@@ -185,7 +185,7 @@ async function executeSearchPlacesAround(input: Record<string, unknown>, runtime
       boundary: buildNearbyBoundary(
         readRequiredString(input.location, "location"),
         readOptionalInteger(input.radius) ?? 1000,
-        readOptionalBoolean(input.autoExtend),
+        optionalBoolean(input.autoExtend),
       ),
       get_subpois: readOptionalFlag(input.getSubPois),
       filter: readOptionalString(input.filter),
@@ -565,11 +565,11 @@ function normalizeTencentMapsError(
       return new ProviderRequestError(429, message);
     }
     if (tencentMapsInputStatuses.has(status)) {
-      return new ProviderRequestError(400, message);
+      return providerInputError(message);
     }
     if (tencentMapsAuthStatuses.has(status)) {
       if (phase === "validate") {
-        return new ProviderRequestError(400, message);
+        return providerInputError(message);
       }
       return new ProviderRequestError(401, message);
     }
@@ -760,12 +760,8 @@ function readOptionalNumber(value: unknown) {
   return undefined;
 }
 
-function readOptionalBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function readOptionalFlag(value: unknown) {
-  const booleanValue = readOptionalBoolean(value);
+  const booleanValue = optionalBoolean(value);
   if (booleanValue === undefined) {
     return undefined;
   }

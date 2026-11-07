@@ -1,11 +1,29 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { OAuthProviderContext } from "../provider-runtime.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderOAuthRuntime } from "../../oauth/oauth-token.ts";
+import type { OAuthProviderContext } from "../provider-executors.ts";
 import type { FeishuActionRuntimeContext } from "./shared/client.ts";
 
-import { optionalString } from "../../core/cast.ts";
-import { defineOAuthProviderExecutors, ProviderRequestError } from "../provider-runtime.ts";
+import { optionalNumber, optionalString } from "../../core/cast.ts";
+import { expiresAtFromLifetime } from "../../oauth/oauth-token.ts";
+import {
+  defineOAuthProviderExecutors,
+  getProviderActionHandler,
+  mapProviderActionHandlers,
+} from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  ProviderRequestError,
+  readProviderJsonBody,
+  requiredResponseRecord,
+  runProviderRequest,
+} from "../provider-runtime.ts";
 import { feishuActions } from "./actions.ts";
-import { feishuActionHandlers, fetchFeishuUserInfo } from "./runtime.ts";
+import { feishuActionHandlers, feishuOpenBaseUrl, fetchFeishuUserInfo } from "./runtime.ts";
 import { createFeishuApplicationActionHandlers } from "./shared/application-runtime.ts";
 import { createFeishuApprovalActionHandlers } from "./shared/approval-runtime.ts";
 import { createFeishuAttendanceActionHandlers } from "./shared/attendance-runtime.ts";
@@ -43,11 +61,12 @@ interface FeishuHandler {
   (input: Record<string, unknown>, context: OAuthProviderContext): Promise<unknown>;
 }
 
-const allFeishuActionHandlers: Record<string, FeishuHandler> = Object.fromEntries(
-  feishuActions.map((action) => [
-    action.name,
-    async (input: Record<string, unknown>, context: OAuthProviderContext): Promise<unknown> => {
-      const nativeHandler = feishuActionHandlers[action.name];
+const allFeishuActionHandlers = mapProviderActionHandlers(
+  service,
+  feishuActions,
+  (action): FeishuHandler =>
+    async (input, context) => {
+      const nativeHandler = getProviderActionHandler(feishuActionHandlers, action.name);
       if (nativeHandler) {
         return nativeHandler(input, context);
       }
@@ -58,10 +77,19 @@ const allFeishuActionHandlers: Record<string, FeishuHandler> = Object.fromEntrie
       }
       return sharedHandler(input);
     },
-  ]),
 );
 
 export const executors: ProviderExecutors = defineOAuthProviderExecutors(service, allFeishuActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: feishuOpenBaseUrl,
+  auth: { type: "oauth_bearer" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 function createFeishuSharedHandlers(
   context: OAuthProviderContext,
@@ -147,6 +175,53 @@ export const credentialValidators: CredentialValidators = {
         unionId: optionalString(data.union_id),
         tenantKey: optionalString(data.tenant_key),
       },
+    };
+  },
+};
+
+const expiredRefreshTokenCodes = new Set([20037, 20064, 20073]);
+/** Feishu's refresh errors distinguish expired tokens from client configuration failures. */
+export const oauth: ProviderOAuthRuntime = {
+  async refreshAccessToken(input) {
+    const { payload, ok, status } = await runProviderRequest({ label: "Feishu OAuth refresh" }, async (signal) => {
+      const response = await input.fetcher("https://open.feishu.cn/open-apis/authen/v2/oauth/token", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "refresh_token",
+          client_id: input.clientConfig.clientId,
+          client_secret: input.clientConfig.clientSecret,
+          refresh_token: input.refreshToken,
+        }),
+        redirect: "manual",
+        signal,
+      });
+      const payload = requiredResponseRecord(
+        await readProviderJsonBody(response, {
+          maxBytes: 1024 * 1024,
+          emptyBody: {},
+          invalidJsonMessage: "Feishu returned invalid token JSON",
+        }),
+        "Feishu token response",
+      );
+      return { payload, ok: response.ok, status: response.status };
+    });
+    const code = optionalNumber(payload.code);
+    if (!ok || (code !== undefined && code !== 0)) {
+      const message = `Feishu ${code ?? status}: ${optionalString(payload.error_description) ?? optionalString(payload.msg) ?? optionalString(payload.error) ?? "Token request failed"}`;
+      if (code !== undefined && expiredRefreshTokenCodes.has(code)) throw input.createError(message);
+      throw new ProviderRequestError(ok ? 400 : status, message, undefined, "provider_error");
+    }
+    const accessToken = optionalString(payload.access_token);
+    if (!accessToken)
+      throw new ProviderRequestError(502, "Feishu token response is missing access_token", undefined, "provider_error");
+    const { access_token: _accessToken, refresh_token: _refreshToken, ...metadata } = payload;
+    return {
+      accessToken,
+      refreshToken: optionalString(payload.refresh_token),
+      tokenType: optionalString(payload.token_type) ?? "Bearer",
+      expiresAt: expiresAtFromLifetime(payload.expires_in),
+      metadata,
     };
   },
 };

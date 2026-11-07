@@ -4,21 +4,24 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { KlaviyoActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineApiKeyProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
 } from "../provider-runtime.ts";
 
 const service = "klaviyo";
@@ -29,7 +32,7 @@ const klaviyoFetch = createProviderFetch({ skipDnsValidation: true });
 
 type KlaviyoActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const klaviyoActionHandlers: Record<KlaviyoActionName, KlaviyoActionHandler> = {
+export const klaviyoActionHandlers: ProviderActionHandlers<"klaviyo", KlaviyoActionHandler> = {
   validate_account(_input, context) {
     return executeValidateAccount(context);
   },
@@ -286,7 +289,7 @@ function buildPaginationSearchParams(input: Record<string, unknown>): URLSearchP
 }
 
 function buildCreateEventPayload(input: Record<string, unknown>): Record<string, unknown> {
-  const profileInput = requiredRecord(input.profile, "profile", inputError);
+  const profileInput = requiredRecord(input.profile, "profile", providerInputError);
   const profileAttributes = compactObject({
     email: profileInput.email,
     phone_number: profileInput.phoneNumber,
@@ -354,7 +357,7 @@ function mapKlaviyoHttpError(
     return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
   }
   if (status === 400 || status === 404 || status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 429) {
     return new ProviderRequestError(429, message);
@@ -416,10 +419,6 @@ function readRequiredInputString(value: unknown, fieldName: string): string {
     throw new ProviderRequestError(400, `${fieldName} is required`);
   }
   return text;
-}
-
-function inputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
 
 function responseError(message: string): ProviderRequestError {

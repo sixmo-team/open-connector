@@ -1,13 +1,16 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
-import type { QltyActionName } from "./actions.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "qlty";
 const qltyApiBaseUrl = "https://api.qlty.sh";
@@ -23,7 +26,7 @@ interface QltyActionContext {
 
 type QltyActionHandler = (input: Record<string, unknown>, context: QltyActionContext) => Promise<unknown>;
 
-export const qltyActionHandlers: Record<QltyActionName, QltyActionHandler> = {
+export const qltyActionHandlers: ProviderActionHandlers<"qlty", QltyActionHandler> = {
   async get_authenticated_user(_input, context): Promise<unknown> {
     const user = await requestQlty({ path: "/user" }, context);
     return { user, raw: user };
@@ -120,6 +123,16 @@ export const executors: ProviderExecutors = defineProviderExecutors<QltyActionCo
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: qltyApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 

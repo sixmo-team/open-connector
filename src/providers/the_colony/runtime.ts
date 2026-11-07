@@ -1,15 +1,20 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
-import type { TheColonyActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerUserAgent,
+  ProviderRequestError,
+  providerInputError,
+} from "../provider-runtime.ts";
 
 export const theColonyApiBaseUrl = "https://thecolony.cc/api/v1";
 
 const theColonyTokenPath = "/auth/token";
 const theColonyValidationPath = "/users/me";
-const theColonyDefaultTimeoutMs = 30_000;
 
 type TheColonyRequestPhase = "validate" | "execute";
 type QueryValue = string | number | boolean | readonly (string | number | boolean)[] | undefined;
@@ -25,7 +30,7 @@ interface TheColonyRequestInput {
   idempotencyKey?: string;
 }
 
-export const theColonyActionHandlers: Record<TheColonyActionName, TheColonyActionHandler> = {
+export const theColonyActionHandlers: ProviderActionHandlers<"the_colony", TheColonyActionHandler> = {
   async get_me(_input, context) {
     const user = await requestTheColonyJson({
       method: "GET",
@@ -267,7 +272,7 @@ async function fetchTheColony(input: {
   phase: TheColonyRequestPhase;
   signal?: AbortSignal;
 }): Promise<Response> {
-  const timeout = createProviderTimeout(input.signal, theColonyDefaultTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     return await input.fetcher(input.url.toString(), {
       ...input.init,
@@ -339,7 +344,7 @@ function mapTheColonyError(status: number, payload: unknown, phase: TheColonyReq
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (status === 401 || status === 403)) {
     return new ProviderRequestError(401, message);
@@ -422,5 +427,5 @@ function readObjectPayload(payload: unknown, label: string): Record<string, unkn
 }
 
 function readRequiredString(input: Record<string, unknown>, fieldName: string): string {
-  return requiredString(input[fieldName], fieldName, (message) => new ProviderRequestError(400, message));
+  return requiredString(input[fieldName], fieldName, providerInputError);
 }

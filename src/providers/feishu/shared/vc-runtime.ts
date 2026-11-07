@@ -1,6 +1,6 @@
 import type { FeishuJsonRequest } from "./client.ts";
 
-import { ProviderRequestError } from "../../provider-runtime.ts";
+import { providerInputError } from "../../provider-runtime.ts";
 
 interface FeishuVcActionHandler {
   (input: Record<string, unknown>): Promise<unknown>;
@@ -32,12 +32,13 @@ export function createFeishuVcActionHandlers(input: {
 async function joinMeeting(input: Record<string, unknown>, request: FeishuJsonRequest) {
   const meetingNumber = requireString(input.meetingNumber, "meetingNumber");
   if (meetingNumber.length !== 9 || Array.from(meetingNumber).some((character) => character < "0" || character > "9")) {
-    throw invalidInput("meetingNumber must contain exactly nine digits");
+    throw providerInputError("meetingNumber must contain exactly nine digits");
   }
   const data = await request({
     method: "POST",
     path: "/vc/v1/bots/join",
     body: {
+      action: optionalString(input.action) ?? "join",
       join_type: 1,
       join_identify: { meeting_no: meetingNumber },
       password: optionalString(input.password),
@@ -68,7 +69,7 @@ async function listActiveMeetings(
 ) {
   const userId = optionalString(actionInput.userId);
   if (context.identity === "tenant" && !userId) {
-    throw invalidInput("userId is required for tenant identity");
+    throw providerInputError("userId is required for tenant identity");
   }
   const data = await context.request({
     path: "/vc/v1/bots/user_active_meeting",
@@ -132,7 +133,7 @@ function requireString(value: unknown, fieldName: string) {
   if (typeof value === "string" && value.length > 0) {
     return value;
   }
-  throw invalidInput(`${fieldName} is required`);
+  throw providerInputError(`${fieldName} is required`);
 }
 
 function optionalString(value: unknown) {
@@ -141,8 +142,4 @@ function optionalString(value: unknown) {
 
 function optionalNumber(value: unknown) {
   return typeof value === "number" ? value : undefined;
-}
-
-function invalidInput(message: string) {
-  return new ProviderRequestError(400, message);
 }

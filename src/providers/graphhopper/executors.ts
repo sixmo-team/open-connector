@@ -1,10 +1,12 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { GraphhopperActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "graphhopper";
 const graphhopperApiBaseUrl = "https://graphhopper.com/api/1";
@@ -13,7 +15,7 @@ type GraphhopperRequestPhase = "validate" | "execute";
 type GraphhopperActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 type GraphhopperQuery = Record<string, string | number | boolean | readonly string[] | undefined>;
 
-export const graphhopperActionHandlers: Record<GraphhopperActionName, GraphhopperActionHandler> = {
+export const graphhopperActionHandlers: ProviderActionHandlers<"graphhopper", GraphhopperActionHandler> = {
   calculate_route(input, context) {
     return graphhopperGetJson("/route", buildRouteQuery(input), context, "execute");
   },
@@ -35,6 +37,16 @@ export const graphhopperActionHandlers: Record<GraphhopperActionName, Graphhoppe
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, graphhopperActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: graphhopperApiBaseUrl,
+  auth: { type: "api_key_query", name: "key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {

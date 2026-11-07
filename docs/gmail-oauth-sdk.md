@@ -1,145 +1,95 @@
-# Gmail OAuth And SDK Tutorial
+# Gmail OAuth and native actions
 
-This guide starts after you already have a Gmail OAuth client. It does not cover creating or
-configuring the OAuth app in Google Cloud. OpenConnector only needs the resulting client id, client
-secret, and a redirect URI that the OAuth app allows.
+Gmail's native OAuth, attachment, MIME and draft behavior is retained behind the single scoped runtime. Configure OAuth through the protected backend integration using [the private contract](contracts/saas-runtime.openapi.yaml); this branch has no standalone console credential editor, global runtime token, direct SDK endpoint or default connection.
 
-## Prerequisites
+Register the exact backend-facing HTTPS callback URI reported by scoped OAuth setup. `OPEN_CONNECTOR_OAUTH_CALLBACK_ORIGIN` is deployment-controlled, not derived from caller headers. Store the Gmail client ID/secret in the scoped configuration and authorize the selected owner/connection. Managed Gmail uses its selected workspace project/provider configuration and never silently falls back to local OAuth; see [managed OAuth](saas-oauth.md).
 
-- The local OpenConnector runtime can run with Node.js 22 or newer.
-- You have a Gmail OAuth `clientId` and `clientSecret`.
-- The Gmail OAuth app allows this runtime's redirect URI. The URI is the current runtime origin plus
-  `/oauth/callback`.
+The inputs below are provider contracts, not grants. The backend issues the exact signed command after its identity/business/consent checks; OpenConnector checks current function policy and scoped connection access. For example, `{"query":"newer_than:7d","maxResults":5}` is input to `gmail.search_threads`, not an unauthenticated HTTP request.
 
-If the runtime is reachable through a tunnel or another public origin, set `OOMOL_CONNECT_ORIGIN`
-before starting it. The redirect URI is derived from that origin by appending `/oauth/callback`.
+## Attach files and inline images
 
-```bash
-OOMOL_CONNECT_ORIGIN="https://your-runtime.example" npm run dev
-```
+Gmail send, draft creation, and reply actions accept `attachments`. For a CID image, provide a
+`contentId` and reference the same value from your HTML. Render Markdown, resolve application assets,
+and convert image URLs to CID references in your application before calling the connector.
 
-For plain local development, start the runtime normally:
+`gmail.create_email_draft` accepts `to`, `subject`, `body`, `isHtml` and `attachments`. An inline item has `filename`, `mimeType`, actual `contentBase64`, `contentId: "logo"` and `disposition: "inline"`; its HTML refers to `cid:logo`. Ordinary attachments need no content ID. Supply actual bytes or a scoped transit-file reference, never a connector-local path.
 
-```bash
-npm install
-npm run dev
-```
+The subject-only update of this new-message draft preserves the existing MIME body, attachments,
+and inline images. `gmail.send_draft` sends the saved draft as-is.
 
-The examples below use `http://localhost:3000`. If you configured
-`OOMOL_CONNECT_ADMIN_TOKEN` or a runtime token, add the matching `Authorization: Bearer ...` header
-to admin and `/v1` requests.
+Each attachment accepts exactly one content source: `contentBase64` or `file: { fileId }` for an actual scoped transit file. `filename` and `mimeType` can override transit-file metadata.
+Use a bare `contentId`, without `cid:` or angle brackets. Its presence defaults the disposition to
+`inline`; otherwise the default is `attachment`.
 
-OAuth redirect URI is shared by all services in the same runtime. Configure the Gmail OAuth app to
-allow the current runtime origin plus `/oauth/callback`. With the default local origin, the redirect
-URI is:
+For `update_draft`:
 
-```txt
-http://localhost:3000/oauth/callback
-```
+- Omit `attachments` to preserve existing files and inline images. A supplied list replaces all of
+  them; `attachments: []` removes them. Update HTML references when removing or replacing CID images.
+- Omit both `body` and `messageBody` to preserve existing plain-text and HTML alternatives. A supplied
+  body replaces those alternatives with one body. Omitting `isHtml` inherits the existing body type
+  (HTML when an HTML alternative exists). Pass `isHtml: false` for plain text or `isHtml: true` for HTML.
+  An empty body clears it. `isHtml` requires a replacement body.
+- Omitted editable headers remain unchanged. An empty subject on a new-message draft or an empty
+  recipient field clears that field. Reply subjects must still match the associated conversation.
+  Content edits to unsupported or ambiguous MIME structures fail rather than discard content.
 
-## 1. Store The Gmail OAuth Client
+The connector accepts at most 100 attachments, 25,000,000 decoded attachment bytes in total, and
+35,000,000 bytes for the complete MIME message, including encoding overhead. Gmail can impose
+additional account or content restrictions.
 
-Open the local console at `http://localhost:3000`, open the Gmail provider page, and choose
-**Configure OAuth Client**. Paste the Gmail OAuth `clientId` into **Client ID**, paste the
-`clientSecret` into **Client Secret**, then choose **Save OAuth Client**.
+## Create and send a reply draft
 
-![Gmail OAuth client form](../assets/gmail-oauth-client.png)
+Use the Gmail resource ID of an existing message as `replyToMessageId`. The connector reads its
+mail headers, fills in the reply recipient and subject when omitted, and constructs `In-Reply-To`
+and `References`. If you also supply `threadId`, it must match that message's thread. Supplying only
+`threadId` selects the most recent non-draft message in the conversation. A target without a usable
+RFC `Message-ID` header is rejected before creating or sending a reply.
 
-After saving, the Gmail provider page should allow you to start the connection flow.
 
-## 2. Authorize A Gmail Account
+Ordinary reply draft edits preserve the reply association and existing files. A supplied subject
+must match the conversation subject, ignoring leading `Re:` prefixes. To change the reply target,
+pass `replyToMessageId` or a different `threadId` to `update_draft`; the connector rebuilds the reply
+headers and inherits the new target's subject when omitted. Omitted recipients remain unchanged
+during updates, so provide the recipients explicitly when switching to a different conversation.
 
-After the OAuth client is configured, the Gmail provider page shows **Connect Gmail**. Choose that
-button to start the OAuth authorization flow.
+The IDs serve different purposes:
 
-![Gmail connection action](../assets/gmail-connect.png)
+- `draftId` identifies the saved draft and remains stable through updates.
+- `messageId` identifies the current Gmail message inside the draft and changes when its content is
+  replaced. After sending, Gmail deletes the draft and returns a new sent `messageId`.
+- `threadId` identifies the Gmail conversation. Use the returned ID when recording the result.
+- The RFC `Message-ID` is an email header used for reply linkage; it is not the Gmail `messageId`.
 
-Finish consent in the browser. After Gmail redirects back to the runtime, OpenConnector stores the
-OAuth credential as the default Gmail connection.
+`send_email`, both reply actions, and `send_draft` return the sent message and thread IDs when Gmail
+provides them. Both draft creation actions and `update_draft` return the draft ID and current message
+and thread IDs. Missing optional IDs are omitted; `send_draft` retains `threadId: null` when absent.
+`list_drafts` returns message IDs by default and hydrated message details with `verbose: true`.
 
-After the callback completes, the Gmail provider page shows the connected OAuth state.
+For OAuth grants, `gmail.modify` covers these workflows. When requesting narrower permissions:
 
-![Gmail connected state](../assets/gmail-connected.png)
+| Operation                                       | Scopes                               |
+| ----------------------------------------------- | ------------------------------------ |
+| Send a new message                              | `gmail.send`                         |
+| Reply to an existing message or thread          | `gmail.readonly` and `gmail.send`    |
+| Create, edit, or send a normal draft            | `gmail.compose`                      |
+| Create a reply draft or change its reply target | `gmail.readonly` and `gmail.compose` |
 
-## 3. Create A Runtime Token
+The fully qualified scope names start with `https://www.googleapis.com/auth/`. Read access is a
+conditional requirement for draft actions that resolve a reply target; ordinary draft creation and
+editing do not require reading messages outside the draft. `gmail.send` alone does not authorize
+Gmail's `drafts.send` endpoint.
+Configure `requestedScopes` on the OAuth client before authorizing, and reconnect existing accounts
+when their granted scopes do not cover the workflow.
 
-Before calling the runtime from your own code, create a runtime token from the local console. Open
-the Access page, choose **Create Token**, name the client, and copy the token when it is shown.
+These are the action scopes. OpenConnector also calls Gmail's `users.getProfile` when validating a
+connection; that endpoint accepts `gmail.compose` and `gmail.readonly`, but not `gmail.send` alone.
+For a connection used to send new messages, request `gmail.readonly` alongside `gmail.send`, or use
+`gmail.compose` or `gmail.modify`.
 
-![Create runtime token dialog](../assets/create-runtime-token.png)
+## Common issues
 
-Set the copied token in the shell that runs your app:
-
-```bash
-export OOMOL_CONNECT_RUNTIME_TOKEN="oct_..."
-```
-
-## 4. Verify Gmail Through HTTP
-
-Run a Gmail Action through the runtime API with the runtime token created above:
-
-```bash
-curl -s -X POST http://localhost:3000/v1/actions/gmail.search_threads \
-  -H "authorization: Bearer $OOMOL_CONNECT_RUNTIME_TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"input":{"query":"newer_than:7d","maxResults":5}}'
-```
-
-## 5. Call Gmail From The SDK
-
-Install the SDK in your TypeScript project:
-
-```bash
-npm install @oomol-lab/connector
-```
-
-Use `OpenConnector` for a self-hosted OpenConnector runtime. `baseUrl` is the server origin, not a
-`/v1` URL. Pass the runtime token you created above.
-
-```ts
-import { OpenConnector } from "@oomol-lab/connector";
-
-const open = new OpenConnector({
-  baseUrl: process.env.OPENCONNECTOR_BASE_URL ?? "http://localhost:3000",
-  runtimeToken: process.env.OOMOL_CONNECT_RUNTIME_TOKEN,
-});
-
-const { threads } = await open.execute("gmail.search_threads", {
-  query: "newer_than:7d",
-  maxResults: 5,
-});
-
-console.log(threads);
-```
-
-The namespace form calls the same Action:
-
-```ts
-const { threads } = await open.gmail.search_threads({
-  query: "from:someone@example.com",
-  maxResults: 5,
-});
-```
-
-For precise Gmail Action types, install the optional types package and import the Gmail registry once
-in the process:
-
-```bash
-npm install -D @oomol-lab/connector-types
-```
-
-```ts
-import "@oomol-lab/connector-types/gmail";
-```
-
-## Common Issues
-
-- `redirect_uri_mismatch`: make sure the OAuth app allows the current runtime origin plus
-  `/oauth/callback`.
-- `oauth_client_config_not_found`: save the Gmail OAuth client in the local console before starting
-  authorization.
-- `connection_not_found`: finish the browser authorization step before calling Gmail Actions.
-- `unauthorized`: create a runtime token from the Access page and pass it as
-  `OOMOL_CONNECT_RUNTIME_TOKEN`.
-- `insufficient_permissions`: reconnect Gmail after the OAuth app has the scopes needed by the
-  Action you are calling.
+- Callback mismatch: compare the provider registration with the exact scoped backend callback.
+- Missing OAuth configuration: provision the selected scoped client/project before starting authorization.
+- Missing connection: complete the original authorization and select the genuine resulting connector ID.
+- Authentication/function denial: correct the backend command and current owner rule; no static-token fallback exists.
+- Insufficient provider permissions: reconnect the same account with the actual scopes required by the action.

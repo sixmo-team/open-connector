@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
@@ -26,7 +27,7 @@ const reportPathByAction: Record<string, string> = {
   get_total_impact: "impact",
 };
 
-export const ecologiActionHandlers: Record<string, EcologiActionHandler> = {
+export const ecologiActionHandlers: ProviderActionHandlers<"ecologi", EcologiActionHandler> = {
   purchase_trees(input, context) {
     return executePurchase("purchase_trees", input, context);
   },

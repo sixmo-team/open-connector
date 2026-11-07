@@ -3,17 +3,20 @@ import type {
   CredentialValidators,
   ExecutionContext,
   ProviderExecutors,
+  ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ContentfulGraphqlActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineProviderExecutors,
   isAbortLikeError,
-  providerUserAgent,
+  providerInputError,
   ProviderRequestError,
-  requireApiKeyCredential,
+  providerUserAgent,
 } from "../provider-runtime.ts";
 
 const service = "contentful_graphql";
@@ -21,7 +24,6 @@ const contentfulGraphqlGlobalApiBaseUrl = "https://graphql.contentful.com";
 const contentfulGraphqlEuApiBaseUrl = "https://graphql.eu.contentful.com";
 const contentfulGraphqlDefaultEnvironmentId = "master";
 const contentfulGraphqlDefaultRegion = "global";
-const contentfulGraphqlDefaultTimeoutMs = 30_000;
 
 type ContentfulGraphqlRegion = "global" | "eu";
 type ContentfulGraphqlPhase = "validate" | "execute";
@@ -52,7 +54,10 @@ interface ContentfulGraphqlResponse {
   rateLimitReset?: number;
 }
 
-export const contentfulGraphqlActionHandlers: Record<ContentfulGraphqlActionName, ContentfulGraphqlActionHandler> = {
+export const contentfulGraphqlActionHandlers: ProviderActionHandlers<
+  "contentful_graphql",
+  ContentfulGraphqlActionHandler
+> = {
   execute_query(input, context) {
     return executeContentfulGraphqlQuery(input, context);
   },
@@ -175,7 +180,7 @@ async function requestContentfulGraphql(input: {
   region: ContentfulGraphqlRegion;
   signal?: AbortSignal;
 }): Promise<ContentfulGraphqlResponse> {
-  const timeout = createProviderTimeout(input.signal, contentfulGraphqlDefaultTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   let response: Response;
   let payload: unknown;
   try {
@@ -372,6 +377,8 @@ function formatContentfulGraphqlAccountLabel(input: ContentfulGraphqlTarget): st
   return `Contentful GraphQL${regionLabel} ${input.spaceId}/${input.environmentId}`;
 }
 
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://graphql.contentful.com",
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+});

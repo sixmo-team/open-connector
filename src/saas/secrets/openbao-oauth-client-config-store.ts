@@ -38,6 +38,8 @@ export class OpenBaoOAuthClientConfigStore implements IOAuthClientConfigStore {
         clientSecret: record.clientSecret,
         extra: record.extra,
         secretExtra: record.secretExtra,
+        redirectUri: record.redirectUri,
+        requestedScopes: record.requestedScopes,
       };
     } catch (error) {
       if (error instanceof OpenBaoError && error.code === "OPENBAO_NOT_FOUND") return undefined;
@@ -91,6 +93,8 @@ export class OpenBaoOAuthClientConfigStore implements IOAuthClientConfigStore {
       clientSecret: config.clientSecret,
       extra: stringRecord(config.extra, path),
       secretExtra: stringRecord(config.secretExtra, path),
+      redirectUri: config.redirectUri,
+      requestedScopes: config.requestedScopes,
       revision,
       createdAt: current?.createdAt ?? now,
       updatedAt: now,
@@ -143,6 +147,8 @@ function parseRecord(data: Record<string, unknown>, revision: number, path: stri
     clientSecret: typeof data.clientSecret === "string" ? data.clientSecret : invalidValue(path),
     extra: stringRecord(data.extra, path),
     secretExtra: stringRecord(data.secretExtra, path),
+    redirectUri: data.redirectUri === undefined ? undefined : storedString(data.redirectUri, path),
+    requestedScopes: data.requestedScopes === undefined ? undefined : stringArray(data.requestedScopes, path),
     revision,
     createdAt: timestamp(data.createdAt, path),
     updatedAt: timestamp(data.updatedAt, path),
@@ -194,6 +200,11 @@ function timestamp(value: unknown, path: string): string {
   const result = storedString(value, path);
   if (!Number.isFinite(Date.parse(result))) throw invalid(path);
   return result;
+}
+
+function stringArray(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item)) throw invalid(path);
+  return value;
 }
 
 function stringRecord(value: unknown, path: string): Record<string, string> {

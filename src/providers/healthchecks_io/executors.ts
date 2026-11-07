@@ -1,6 +1,6 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { HealthchecksIoActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,11 +10,18 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  isAbortLikeError,
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 const service = "healthchecks_io";
 const healthchecksIoApiBaseUrl = "https://healthchecks.io/api/v3";
-const healthchecksIoDefaultRequestTimeoutMs = 30_000;
 
 type HealthchecksIoPhase = "validate" | "execute";
 type HealthchecksIoMethod = "GET" | "POST" | "DELETE";
@@ -24,7 +31,7 @@ type HealthchecksIoActionHandler = (
   context: HealthchecksIoActionContext,
 ) => Promise<unknown>;
 
-export const healthchecksIoActionHandlers: Record<HealthchecksIoActionName, HealthchecksIoActionHandler> = {
+export const healthchecksIoActionHandlers: ProviderActionHandlers<"healthchecks_io", HealthchecksIoActionHandler> = {
   async list_checks(input, context) {
     const payload = await requestHealthchecksIoJson({
       context,
@@ -209,7 +216,7 @@ async function requestHealthchecksIoJson(input: {
   body?: Record<string, unknown>;
   emptyBody?: boolean;
 }): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(healthchecksIoDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = input.context.signal ? AbortSignal.any([input.context.signal, timeoutSignal]) : timeoutSignal;
 
   try {
@@ -396,16 +403,8 @@ function assertUpdateCheckInput(input: Record<string, unknown>): void {
   }
 }
 
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return (
-    !!error &&
-    typeof error === "object" &&
-    "name" in error &&
-    (String((error as { name?: unknown }).name) === "AbortError" ||
-      String((error as { name?: unknown }).name) === "TimeoutError")
-  );
-}
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://healthchecks.io/api/v3",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

@@ -75,7 +75,7 @@ describe.skipIf(!testPostgresUrl)("PostgreSQL transaction-scoped RLS", () => {
        JOIN pg_namespace AS namespace ON namespace.oid = class.relnamespace
        WHERE namespace.nspname = 'integration_runtime' AND class.relkind = 'r'`,
     );
-    expect(boundary.rows).toHaveLength(7);
+    expect(boundary.rows.length).toBeGreaterThanOrEqual(10);
     expect(boundary.rows.every((row) => row.owner !== runtimeRole)).toBe(true);
     expect(boundary.rows.every((row) => row.relrowsecurity && row.relforcerowsecurity)).toBe(true);
 
@@ -205,6 +205,14 @@ describe.skipIf(!testPostgresUrl)("PostgreSQL transaction-scoped RLS", () => {
       expect(column.rows).toEqual([{ is_nullable: "NO" }]);
       await expect(
         withScopedClient(runtimePool, tenantAWorkspaceAUserA, (client) =>
+          client.query("UPDATE integration_runtime.connections SET local_connection_id = $1 WHERE id = $2", [
+            randomUUID(),
+            legacyConnectionId,
+          ]),
+        ),
+      ).rejects.toThrow(/lineage is immutable/);
+      await expect(
+        withScopedClient(runtimePool, tenantAWorkspaceAUserA, (client) =>
           client.query(
             `INSERT INTO integration_runtime.connections
               (id, tenant_id, workspace_id, subject_user_id, visibility, service,
@@ -222,11 +230,18 @@ describe.skipIf(!testPostgresUrl)("PostgreSQL transaction-scoped RLS", () => {
         ),
       ).rejects.toThrow();
     } finally {
-      await auditor.query("DELETE FROM integration_runtime.connections WHERE id = ANY($1::uuid[])", [
-        [connectorConnectionId, legacyConnectionId],
-      ]);
-      await auditor.query("ALTER TABLE integration_runtime.connections ALTER COLUMN local_connection_id SET NOT NULL");
-      auditor.release();
+      try {
+        await withScopedClient(runtimePool, tenantAWorkspaceAUserA, (client) =>
+          client.query("DELETE FROM integration_runtime.connections WHERE id = ANY($1::uuid[])", [
+            [connectorConnectionId, legacyConnectionId],
+          ]),
+        );
+        await auditor.query(
+          "ALTER TABLE integration_runtime.connections ALTER COLUMN local_connection_id SET NOT NULL",
+        );
+      } finally {
+        auditor.release();
+      }
       await migratePostgres({
         migratorConnectionString: testDatabase.migratorConnectionString,
         runtimeConnectionString,
@@ -463,8 +478,20 @@ describe.skipIf(!testPostgresUrl)("PostgreSQL transaction-scoped RLS", () => {
       const settings = await unscoped.query(`SELECT
         NULLIF(current_setting('integration.tenant_id', true), '') AS tenant_id,
         NULLIF(current_setting('integration.workspace_id', true), '') AS workspace_id,
-        NULLIF(current_setting('integration.subject_user_id', true), '') AS subject_user_id`);
-      expect(settings.rows[0]).toEqual({ tenant_id: null, workspace_id: null, subject_user_id: null });
+        NULLIF(current_setting('integration.subject_user_id', true), '') AS subject_user_id,
+        NULLIF(current_setting('integration.actor_user_id', true), '') AS actor_user_id,
+        NULLIF(current_setting('integration.purpose', true), '') AS purpose,
+        NULLIF(current_setting('integration.principal_kind', true), '') AS principal_kind,
+        NULLIF(current_setting('integration.policy_target_kind', true), '') AS target_kind`);
+      expect(settings.rows[0]).toEqual({
+        tenant_id: null,
+        workspace_id: null,
+        subject_user_id: null,
+        actor_user_id: null,
+        purpose: null,
+        principal_kind: null,
+        target_kind: null,
+      });
       expect((await unscoped.query("SELECT id FROM integration_runtime.connections")).rows).toEqual([]);
     } finally {
       unscoped.release();

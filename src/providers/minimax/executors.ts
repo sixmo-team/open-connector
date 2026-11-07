@@ -1,14 +1,24 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
-import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineProviderExecutors,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
-  requireApiKeyCredential,
+  requiredInputString,
 } from "../provider-runtime.ts";
+import { minimaxTextModels, selectMinimaxModels } from "./text-models.ts";
 
 const service = "minimax";
 const minimaxApiBaseUrl = "https://api.minimax.io";
@@ -23,12 +33,13 @@ interface MinimaxActionContext {
 }
 type MinimaxActionHandler = (input: Record<string, unknown>, context: MinimaxActionContext) => Promise<unknown>;
 
-export const minimaxActionHandlers: Record<string, MinimaxActionHandler> = {
-  list_models(_input, context) {
-    return minimaxGetJson("/v1/models", context);
+export const minimaxActionHandlers: ProviderActionHandlers<"minimax", MinimaxActionHandler> = {
+  async list_models(input, context) {
+    const payload = await minimaxGetJson("/v1/models", context);
+    return input.include_legacy === true ? payload : selectMinimaxModels(payload);
   },
   retrieve_model(input, context) {
-    const modelId = readInputString(input.modelId, "modelId");
+    const modelId = requiredInputString(input.modelId, "modelId");
     return minimaxGetJson(`/v1/models/${encodeURIComponent(modelId)}`, context);
   },
   create_response(input, context) {
@@ -48,23 +59,27 @@ export const minimaxActionHandlers: Record<string, MinimaxActionHandler> = {
     return minimaxPostJson("/v1/video_generation", normalizeMinimaxVideoBody(input), context);
   },
   query_video_generation(input, context) {
-    const taskId = readInputString(input.task_id, "task_id");
+    const taskId = requiredInputString(input.task_id, "task_id");
     return minimaxGetJson(`/v1/query/video_generation?task_id=${encodeURIComponent(taskId)}`, context);
   },
   query_video_generation_v2(input, context) {
-    const taskId = readInputString(input.task_id, "task_id");
+    const taskId = requiredInputString(input.task_id, "task_id");
     return minimaxGetJson(`/v2/query/video_generation/${encodeURIComponent(taskId)}`, context);
   },
   list_video_generation_v2(input, context) {
     return minimaxGetJson(createVideoGenerationV2ListPath(input), context);
   },
   delete_video_generation_v2(input, context) {
-    const taskId = readInputString(input.task_id, "task_id");
+    const taskId = requiredInputString(input.task_id, "task_id");
     return minimaxDeleteJson(`/v2/video_generation/${encodeURIComponent(taskId)}`, context);
   },
   download_video(input, context) {
-    const fileId = readInputString(input.file_id, "file_id");
+    const fileId = requiredInputString(input.file_id, "file_id");
     return minimaxGetJson(`/v1/files/retrieve?file_id=${encodeURIComponent(fileId)}`, context);
+  },
+  text_to_audio(input, context) {
+    assertStreamingDisabled(input);
+    return minimaxPostJson("/v1/t2a_v2", normalizeMinimaxAudioBody(input), context);
   },
 };
 
@@ -79,6 +94,24 @@ export const executors: ProviderExecutors = defineProviderExecutors<MinimaxActio
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context) {
+    const credential = await requireApiKeyCredential(context, service);
+    const apiBaseUrl = optionalString(credential.metadata.apiBaseUrl) ?? minimaxApiBaseUrl;
+    if (apiBaseUrl !== minimaxApiBaseUrl && apiBaseUrl !== minimaxChinaApiBaseUrl) {
+      throw new ProviderRequestError(400, "minimax proxy requires an official regional apiBaseUrl");
+    }
+    return apiBaseUrl;
+  },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
   },
 });
 
@@ -187,9 +220,23 @@ function minimaxHeaders(apiKey: string, headers: Record<string, string>): Record
 }
 
 function normalizeMinimaxBody(input: Record<string, unknown>): Record<string, unknown> {
+  const model = input.model === undefined ? minimaxTextModels[0] : requiredInputString(input.model, "model");
+  if (model === minimaxTextModels[0]) {
+    const effort = optionalRecord(input.reasoning)?.effort;
+    if (effort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(String(effort))) {
+      throw providerInputError("MiniMax-M3.1-Flash reasoning.effort must be low, medium, high, xhigh, or max");
+    }
+    if (input.service_tier !== undefined) {
+      throw providerInputError("MiniMax-M3.1-Flash does not support service_tier");
+    }
+  }
   return compactObject({
     ...input,
-    model: trimString(input.model),
+    model,
+    reasoning:
+      model === minimaxTextModels[0]
+        ? { ...optionalRecord(input.reasoning), effort: optionalRecord(input.reasoning)?.effort ?? "max" }
+        : input.reasoning,
     input: typeof input.input === "string" ? input.input.trim() : input.input,
     instructions: trimString(input.instructions),
     prompt_cache_key: trimString(input.prompt_cache_key),
@@ -229,6 +276,16 @@ function normalizeMinimaxVideoV2Body(input: Record<string, unknown>): Record<str
     resolution: trimString(input.resolution),
     ratio: trimString(input.ratio),
     callback_url: trimString(input.callback_url),
+  });
+}
+
+function normalizeMinimaxAudioBody(input: Record<string, unknown>): Record<string, unknown> {
+  return compactObject({
+    ...input,
+    model: trimString(input.model),
+    text: trimString(input.text),
+    language_boost: trimString(input.language_boost),
+    output_format: trimString(input.output_format),
   });
 }
 
@@ -288,7 +345,7 @@ function mapMinimaxError(status: number, payload: Record<string, unknown>): Prov
   if (status === 401 || status === 403 || errorCode === "1004" || errorCode === "2049") {
     return new ProviderRequestError(401, message, payload);
   }
-  if (status === 429 || errorCode === "1002" || errorCode === "1008") {
+  if (status === 429 || errorCode === "1002" || errorCode === "1008" || errorCode === "1039") {
     return new ProviderRequestError(429, message, payload);
   }
   if (status >= 400 && status < 500) {
@@ -347,10 +404,6 @@ function assertStreamingDisabled(input: Record<string, unknown>): void {
   if (input.stream === true) {
     throw new ProviderRequestError(400, "stream=true is not supported by connector actions");
   }
-}
-
-function readInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function trimString(value: unknown): string | undefined {

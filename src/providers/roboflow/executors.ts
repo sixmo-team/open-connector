@@ -1,6 +1,11 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { RoboflowActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -14,7 +19,9 @@ import {
   requiredString,
   stringArray,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent, requiredInputString } from "../provider-runtime.ts";
 
 const service = "roboflow";
 const roboflowApiBaseUrl = "https://api.roboflow.com";
@@ -23,7 +30,7 @@ const validationPath = "/";
 
 type RoboflowActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const roboflowActionHandlers: Record<RoboflowActionName, RoboflowActionHandler> = {
+export const roboflowActionHandlers: ProviderActionHandlers<"roboflow", RoboflowActionHandler> = {
   list_projects(_input, context) {
     return executeListProjects(context);
   },
@@ -558,10 +565,6 @@ function normalizePrediction(prediction: unknown): Record<string, unknown> {
   };
 }
 
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function requireNumber(value: unknown, fieldName: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new ProviderRequestError(400, `${fieldName} must be a number`);
@@ -585,3 +588,9 @@ function readStringArray(value: unknown): string[] {
     ? value.map((item) => optionalScalarString(item)).filter((item): item is string => item != null)
     : [];
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.roboflow.com",
+  auth: { type: "api_key_query", name: "api_key" },
+});

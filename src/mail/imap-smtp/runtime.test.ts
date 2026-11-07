@@ -1,7 +1,11 @@
+import type { MailActionName } from "./actions.ts";
 import type { MailProtocol } from "./protocol.ts";
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { neteaseMailRuntimeConfig } from "../../providers/netease_mail/config.ts";
+import { ProviderRequestError } from "../../providers/provider-runtime.ts";
 import { qqMailRuntimeConfig } from "../../providers/qq_mail/config.ts";
 import { createMailActions } from "./actions.ts";
 import { MailProtocolError } from "./errors.ts";
@@ -56,6 +60,39 @@ describe("IMAP/SMTP mail runtime", () => {
     });
   });
 
+  it("fails a mail action that has no dispatch branch instead of reporting an empty success", async () => {
+    const error = await executeMailAction(
+      "archive_email" as MailActionName,
+      {},
+      {
+        values: { email: "user@qq.com", authorizationCode },
+        fetcher: fetch,
+        protocol: {} as unknown as MailProtocol,
+        config: qqMailRuntimeConfig,
+      },
+    ).then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toBeInstanceOf(ProviderRequestError);
+    expect((error as ProviderRequestError).status).toBe(500);
+    expect((error as ProviderRequestError).message).toBe("Unsupported mail action: archive_email");
+  });
+
+  // The case above only proves the default clause throws. What keeps a new mail
+  // action from ever reaching it is the `never` assignment, which the compiler
+  // rejects when a name skips the switch, and no test can observe a compile
+  // error the repo has no type-test harness for. Read the clause instead.
+  it("keeps the compile-time exhaustiveness guard on the mail dispatch switch", () => {
+    const source = readFileSync(fileURLToPath(new URL("runtime.ts", import.meta.url)), "utf8");
+
+    expect(
+      source,
+      "executeMailAction's default clause must assign actionName to a never binding; without it a mail action added without a case compiles and returns an empty success",
+    ).toMatch(/default:[\s\S]{0,600}?:\s*never\s*=\s*actionName;/);
+  });
+
   it.each(["@qq.com", "user@", "user@@qq.com", "user name@qq.com"])(
     "rejects the invalid QQ Mail address %s",
     (email) => {
@@ -102,15 +139,108 @@ describe("IMAP/SMTP mail runtime", () => {
         qqMailRuntimeConfig.readCredential({ email: "user@qq.com", authorizationCode }),
         "INBOX",
         1,
-        {
-          peek: true,
-          maxBytes: 1024,
-          skipAttachmentBodies: true,
-        },
+        { maxBytes: 1024 },
       ),
     ).resolves.toMatchObject({
       replyTo: [{ name: null, email: "reply@example.com" }],
     });
+  });
+
+  it.each([
+    { type: "text/plain", body: "Plain body", expected: { text: "Plain body", html: null } },
+    { type: "text/html", body: "<p>HTML body</p>", expected: { text: null, html: "<p>HTML body</p>" } },
+  ])("fetches a single-part $type body without a part number", async ({ type, body, expected }) => {
+    const content = Buffer.from(body).toString("base64");
+    const fetchOne = vi
+      .fn()
+      .mockResolvedValueOnce({
+        uid: 1,
+        // ImapFlow leaves the single-part root unnumbered.
+        bodyStructure: { type, parameters: { charset: "utf-8" }, encoding: "base64", size: content.length },
+      })
+      .mockResolvedValueOnce({ bodyParts: new Map([["1", Buffer.from(content)]]) });
+    const mailboxOpen = vi.fn(async () => undefined);
+    const protocol = createMailProtocol(
+      { displayName: "Mail Test", attachmentFallbackPrefix: "mail-test" },
+      {
+        createImapClient: () => ({
+          connect: vi.fn(async () => undefined),
+          logout: vi.fn(async () => undefined),
+          list: vi.fn(async () => []),
+          mailboxOpen,
+          fetchOne,
+        }),
+      },
+    );
+
+    await expect(
+      protocol.fetchMessage(
+        qqMailRuntimeConfig.readCredential({ email: "user@qq.com", authorizationCode }),
+        "INBOX",
+        1,
+        { maxBytes: 1024 },
+      ),
+    ).resolves.toMatchObject({ ...expected, attachments: [], truncated: false });
+
+    expect(mailboxOpen).toHaveBeenCalledWith("INBOX", { readOnly: true });
+    expect(fetchOne).toHaveBeenCalledTimes(2);
+    expect(fetchOne).toHaveBeenNthCalledWith(
+      2,
+      1,
+      { bodyParts: [{ key: "1", maxLength: content.length }] },
+      { uid: true },
+    );
+  });
+
+  it("preserves multipart body numbers and excludes text attachments", async () => {
+    const fetchOne = vi
+      .fn()
+      .mockResolvedValueOnce({
+        uid: 1,
+        bodyStructure: {
+          type: "multipart/mixed",
+          childNodes: [
+            {
+              part: "1",
+              type: "text/plain",
+              disposition: "attachment",
+              dispositionParameters: { filename: "note.txt" },
+              size: 10,
+            },
+            { part: "2", type: "text/plain", encoding: "7bit", size: 4 },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ bodyParts: new Map([["2", Buffer.from("Body")]]) });
+    const protocol = createMailProtocol(
+      { displayName: "Mail Test", attachmentFallbackPrefix: "mail-test" },
+      {
+        createImapClient: () => ({
+          connect: vi.fn(async () => undefined),
+          logout: vi.fn(async () => undefined),
+          list: vi.fn(async () => []),
+          mailboxOpen: vi.fn(async () => undefined),
+          fetchOne,
+        }),
+      },
+    );
+
+    await expect(
+      protocol.fetchMessage(
+        qqMailRuntimeConfig.readCredential({ email: "user@qq.com", authorizationCode }),
+        "INBOX",
+        1,
+        { maxBytes: 4 },
+      ),
+    ).resolves.toMatchObject({
+      text: "Body",
+      html: null,
+      attachments: [{ attachmentId: "1", filename: "note.txt" }],
+      truncated: false,
+    });
+
+    expect(fetchOne).toHaveBeenCalledTimes(2);
+    expect(fetchOne).toHaveBeenNthCalledWith(2, 1, { bodyParts: [{ key: "2", maxLength: 4 }] }, { uid: true });
   });
 
   it("prefers Reply-To over From when replying", async () => {
@@ -239,11 +369,7 @@ describe("IMAP/SMTP mail runtime", () => {
         qqMailRuntimeConfig.readCredential({ email: "user@qq.com", authorizationCode }),
         "INBOX",
         1,
-        {
-          peek: true,
-          maxBytes: 1024,
-          skipAttachmentBodies: true,
-        },
+        { maxBytes: 1024 },
       ),
     ).resolves.toMatchObject({ references: expected });
 

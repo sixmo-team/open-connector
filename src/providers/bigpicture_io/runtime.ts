@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { BigpictureIoActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -15,12 +16,11 @@ const bigpictureIpApiBaseUrl = "https://ip.bigpicture.io";
 const bigpictureCompanyFindPath = "/v1/companies/find";
 const bigpictureIpLookupPath = "/v2/companies/ip";
 const bigpictureValidationIp = "204.4.143.118";
-const bigpictureRequestTimeoutMs = 30_000;
 
 type BigpictureRequestPhase = "validate" | "execute";
 type BigpictureActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
 
-export const bigpictureIoActionHandlers: Record<BigpictureIoActionName, BigpictureActionHandler> = {
+export const bigpictureIoActionHandlers: ProviderActionHandlers<"bigpicture_io", BigpictureActionHandler> = {
   async find_company_by_domain(input, context) {
     const payload = await requestBigpictureJson({
       context,
@@ -99,7 +99,7 @@ async function requestBigpictureJson(input: {
   phase: BigpictureRequestPhase;
   allowAccepted: boolean;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, bigpictureRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
 
   let response: Response;
   let payload: unknown;
@@ -115,7 +115,7 @@ async function requestBigpictureJson(input: {
     });
     payload = await readBigpicturePayload(response);
   } catch (error) {
-    if (timeout.didTimeout() || isAbortLikeError(error) || isTimeoutLikeError(error)) {
+    if (timeout.didTimeout() || isAbortLikeError(error)) {
       throw new ProviderRequestError(504, "BigPicture.io request timed out");
     }
 
@@ -224,8 +224,4 @@ function readRequiredString(value: unknown, fieldName: string): string {
     throw new ProviderRequestError(400, `${fieldName} is required`);
   }
   return value.trim();
-}
-
-function isTimeoutLikeError(error: unknown): boolean {
-  return error instanceof Error && error.name === "TimeoutError";
 }

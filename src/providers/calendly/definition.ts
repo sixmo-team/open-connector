@@ -1,24 +1,32 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
 import { calendlyActions, calendlyProviderScopes } from "./actions.ts";
+import { snapshot } from "./trigger-on-booking-event.definition.ts";
+import { triggerPermissions } from "./trigger-permissions.ts";
 
 const service = "calendly";
+const calendlyOAuthAuthorizationUrl = "https://auth.calendly.com/oauth/authorize";
+const calendlyOAuthTokenUrl = "https://auth.calendly.com/oauth/token";
 
 /**
  * Calendly provider backed by the Calendly API v2.
  */
 export const provider: ProviderDefinition = {
   service,
+  triggers: [snapshot],
+  triggerPermissions,
   displayName: "Calendly",
   categories: ["Productivity"],
   authTypes: ["oauth2", "api_key"],
   auth: [
     {
       type: "oauth2",
-      authorizationUrl: "https://calendly.com/oauth/authorize",
-      tokenUrl: "https://calendly.com/oauth/token",
+      authorizationUrl: calendlyOAuthAuthorizationUrl,
+      tokenUrl: calendlyOAuthTokenUrl,
+      refreshTokenUrl: calendlyOAuthTokenUrl,
       scopes: calendlyProviderScopes,
-      tokenEndpointAuthMethod: "client_secret_post",
+      tokenEndpointAuthMethod: "client_secret_basic",
+      pkce: { method: "S256" },
     },
     {
       type: "api_key",

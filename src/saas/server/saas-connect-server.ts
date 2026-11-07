@@ -1,9 +1,15 @@
-import type { CatalogStore, RuntimeActionDefinition, RuntimeProviderDefinition } from "../../catalog-store.ts";
+import type {
+  CatalogStore,
+  RuntimeActionDefinition,
+  RuntimeActionSummary,
+  RuntimeProviderDefinition,
+} from "../../catalog-store.ts";
 import type { ActionSearchIndexProvider } from "../../core/action-search.ts";
 import type { CredentialDefinition } from "../../core/types.ts";
+import type { MarketplaceService } from "../../marketplace/marketplace-service.ts";
 import type { IOAuthCredentialRefresher } from "../../oauth/oauth-credential-refresh-service.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
-import type { SaasJwtVerifier } from "../auth/saas-jwt-verifier.ts";
+import type { ActionPolicyJwtVerifier, SaasJwtVerifier } from "../auth/saas-jwt-verifier.ts";
 import type { SaasHonoEnvironment } from "../auth/scoped-request.ts";
 import type { SaasProviderCredentialRevoker } from "../connections/provider-credential-revoker.ts";
 import type { OAuthClientConfigReadiness } from "../contracts.ts";
@@ -17,24 +23,31 @@ import type {
   SafeActionCatalog,
   SafeActionCatalogPage,
   SafeActionSummary,
-  SafeConnectionSummary,
   SafeCredentialField,
   SafeProviderCatalog,
 } from "../contracts.ts";
 import type { ScopedLifecycleService } from "../lifecycle/scoped-lifecycle-service.ts";
 import type { SaasOAuthService } from "../oauth/saas-oauth-service.ts";
-import type { SafeStoredConnection } from "../storage/postgres-connection-store.ts";
-import type { SaasRuntimeDatabaseFactory } from "../storage/postgres-runtime-database.ts";
+import type { SaasExecutionService } from "../saas-execution-service.ts";
+import type { SaasRuntimeDatabase, SaasRuntimeDatabaseFactory } from "../storage/postgres-runtime-database.ts";
 import type { RunLog, RunLogCaller, RunLogListInput } from "../storage/run-store.ts";
+import type { TriggerLifecycleCleanup } from "../triggers/postgres-trigger-store.ts";
+import type { SaasTriggerRunner } from "../triggers/saas-trigger-runner.ts";
 import type { Context, Hono as HonoApp, MiddlewareHandler } from "hono";
 
 import { Hono } from "hono";
 import { createHash } from "node:crypto";
-import { ConnectionError } from "../../connection-service.ts";
+import { z } from "zod/v4";
+import { ConnectionError } from "../../connection-error.ts";
 import { createActionSearchIndexProvider, searchActions } from "../../core/action-search.ts";
+import { assertProcessingActive, waitForSignal, withRequestProcessing } from "../../core/cancellation.ts";
+import { PromiseCache } from "../../core/promise-cache.ts";
+import { OAuthFlowError } from "../../oauth/oauth-flow-service.ts";
 import { canonicalActionRequestHash, canonicalRequestHash } from "../actions/canonical-request.ts";
 import { SaasActionRunner } from "../actions/saas-action-runner.ts";
+import { SaasAuthorizationError } from "../auth/saas-jwt-verifier.ts";
 import { getSaasRequestScope, requireCatalogPurpose, requireSaasPurpose } from "../auth/scoped-request.ts";
+import { toSafeConnectionSummary } from "../connections/safe-connection-summary.ts";
 import { createScopedConnectionService } from "../connections/scoped-connection-service.ts";
 import {
   connectionTransferInputSchema,
@@ -48,7 +61,14 @@ import {
   LifecyclePurgeConflictError,
   LifecycleReconciliationRequiredError,
 } from "../lifecycle/scoped-lifecycle-service.ts";
+import { SaasError } from "../saas-client.ts";
 import { decodeRunLogCursor } from "../storage/run-store.ts";
+import { registerScopedTriggerRoutes } from "../triggers/scoped-trigger-routes.ts";
+import { registerActionPolicyRoutes } from "./action-policy-routes.ts";
+import { exactQuery, JsonBodyTooLargeError, readBoundedJson, runScopedHttpOperation } from "./http-input.ts";
+import { registerMaintenanceRoutes } from "./maintenance-routes.ts";
+import { registerMarketplaceRoutes } from "./marketplace-routes.ts";
+import { registerNativeLifecycleRoutes } from "./native-lifecycle-routes.ts";
 
 export interface SaasDependencyReadiness {
   postgres: boolean;
@@ -63,15 +83,34 @@ export interface SaasConnectServerOptions {
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
   verifyJwt: SaasJwtVerifier;
+  verifyActionPolicyJwt?: ActionPolicyJwtVerifier;
+  policyControlActiveKid?: string;
   readiness: () => Promise<Readonly<SaasDependencyReadiness>>;
   oauthCredentials?: IOAuthCredentialRefresher;
   oauthClientReadiness?: ReadonlyMap<string, OAuthClientConfigReadiness>;
-  runtimeDatabaseFactory?: Pick<SaasRuntimeDatabaseFactory, "forScope"> & {
-    lifecycleForScope?: (
-      scope: Readonly<SaasRequestScope>,
-      credentialRevoker?: SaasProviderCredentialRevoker,
-    ) => Pick<ScopedLifecycleService, "exportPage" | "purge">;
+  refreshOAuthClientReadiness?: () => Promise<ReadonlyMap<string, OAuthClientConfigReadiness>>;
+  scopedOAuthClientReadiness?: (
+    scope: Readonly<SaasRequestScope>,
+    local: ReadonlyMap<string, OAuthClientConfigReadiness>,
+  ) => Promise<ReadonlyMap<string, OAuthClientConfigReadiness>>;
+  nativeExecutionForScope?: (
+    scope: Readonly<SaasRequestScope>,
+    runtime: SaasRuntimeDatabase,
+  ) => {
+    saasExecution: Pick<SaasExecutionService, "executeAction">;
+    marketplace: MarketplaceService;
   };
+  triggerRunnerForScope?: (scope: Readonly<SaasRequestScope>) => Pick<SaasTriggerRunner, "run">;
+  triggerCleanupForScope?: (scope: Readonly<SaasRequestScope>) => TriggerLifecycleCleanup;
+  maintenanceForScope?: (scope: Readonly<SaasRequestScope>) => Promise<void>;
+  runtimeDatabaseFactory?: Pick<SaasRuntimeDatabaseFactory, "forScope" | "actionPolicy"> &
+    Partial<Pick<SaasRuntimeDatabaseFactory, "nativeConfiguration" | "nativeLifecycleInventory">> & {
+      lifecycleForScope?: (
+        scope: Readonly<SaasRequestScope>,
+        credentialRevoker?: SaasProviderCredentialRevoker,
+        triggerCleanup?: TriggerLifecycleCleanup,
+      ) => Pick<ScopedLifecycleService, "exportPage" | "purge">;
+    };
   oauthServiceFactory?: {
     forScope(scope: Readonly<SaasRequestScope>): SaasOAuthService;
   };
@@ -82,40 +121,139 @@ export interface SaasConnectServerOptions {
 export class SaasConnectServer {
   private readonly options: SaasConnectServerOptions;
   private readonly safeProviders: SafeProviderCatalog[];
-  private readonly safeActions: SafeActionCatalog[];
-  private readonly catalogFingerprint: string;
+  private readonly catalogFingerprint = new PromiseCache<string>();
   private readonly actionSearch: ActionSearchIndexProvider;
+  private providerReadinessExpiresAt = 0;
+  private providerReadinessRefresh?: Promise<void>;
+  private localOAuthClientReadiness: ReadonlyMap<string, OAuthClientConfigReadiness>;
 
   constructor(options: SaasConnectServerOptions) {
     this.options = options;
+    this.localOAuthClientReadiness = options.oauthClientReadiness ?? new Map();
     this.safeProviders = options.catalog.providers.map((provider) =>
       toSafeProvider(provider, options.oauthClientReadiness?.get(provider.service)),
     );
-    this.safeActions = options.catalog.actions.map(toSafeAction);
-    const fingerprintProviders = this.safeProviders.map((provider) => ({
-      ...provider,
-      connectionMethods: provider.connectionMethods.map(({ type, fields }) => ({ type, fields })),
-    }));
-    this.catalogFingerprint = createHash("sha256")
-      .update(JSON.stringify({ providers: fingerprintProviders, actions: this.safeActions }))
-      .digest("base64url");
     this.actionSearch = createActionSearchIndexProvider(options.catalog.actions);
+  }
+
+  getCatalogFingerprint(): Promise<string> {
+    return this.catalogFingerprint.get("immutable-catalog", async () => {
+      const providers = this.safeProviders.map((provider) => ({
+        ...provider,
+        connectionMethods: provider.connectionMethods.map(({ type, fields }) => ({ type, fields })),
+      }));
+      const hash = createHash("sha256")
+        .update('{"providers":')
+        .update(JSON.stringify(providers))
+        .update(',"actions":[');
+      let separator = "";
+      // ponytail: scan schemas once without retaining them; generate this digest if startup becomes the bottleneck.
+      for (const summary of this.options.catalog.actions) {
+        const action = await this.options.catalog.getAction(summary.id);
+        if (!action) throw new Error("Catalog action definition is unavailable");
+        hash.update(separator).update(JSON.stringify(toSafeAction(action)));
+        separator = ",";
+      }
+      return hash.update("]}").digest("base64url");
+    });
+  }
+
+  private async refreshProviderReadiness(): Promise<void> {
+    const refresh = this.options.refreshOAuthClientReadiness;
+    if (!refresh || Date.now() < this.providerReadinessExpiresAt) return;
+    this.providerReadinessRefresh ??= (async () => {
+      const readiness = await refresh();
+      assertProcessingActive();
+      this.localOAuthClientReadiness = readiness;
+      for (let index = 0; index < this.options.catalog.providers.length; index++) {
+        const provider = this.options.catalog.providers[index]!;
+        this.safeProviders[index] = toSafeProvider(
+          provider,
+          readiness.get(provider.service),
+          this.safeProviders[index],
+        );
+      }
+      // ponytail: technical configuration can lag five seconds; invalidate this cache on writes if instant refresh is needed.
+      this.providerReadinessExpiresAt = Date.now() + 5000;
+    })().finally(() => {
+      this.providerReadinessRefresh = undefined;
+    });
+    await this.providerReadinessRefresh;
   }
 
   createApp(): HonoApp<SaasHonoEnvironment> {
     const app = new Hono<SaasHonoEnvironment>();
+    app.use("/internal/*", (context, next) => {
+      const processing = Object.freeze({
+        processingDeadlineMs: Date.now() + 120_000,
+        // Reserve five seconds for bounded secret reconciliation inside the same hard deadline.
+        requestSignal: AbortSignal.any([context.req.raw.signal, AbortSignal.timeout(115_000)]),
+      });
+      return withRequestProcessing(processing, async () => {
+        try {
+          await waitForSignal(next(), processing.requestSignal);
+        } catch (error) {
+          if (processing.requestSignal.aborted) return context.json({ error: "request_processing_timeout" }, 503);
+          throw error;
+        }
+      });
+    });
+    registerActionPolicyRoutes(app, this.options);
+    registerNativeLifecycleRoutes(app, this.options);
+    registerMarketplaceRoutes(app, this.options);
+    registerMaintenanceRoutes(app, this.options);
+    registerScopedTriggerRoutes(app, {
+      verifyJwt: this.options.verifyJwt,
+      createRunner: (scope) => {
+        const runner = this.options.triggerRunnerForScope?.(scope);
+        if (!runner) throw new Error("Scoped native Trigger runtime is unavailable");
+        return runner;
+      },
+    });
 
     app.get("/health", (context) => context.json({ ok: true }));
     app.get("/ready", async (context) => {
       const readiness = await this.options.readiness();
-      return Object.values(readiness).every(Boolean) ? context.json({ ok: true }) : context.json({ ok: false }, 503);
+      if (!Object.values(readiness).every(Boolean)) return context.json({ ok: false }, 503);
+      try {
+        await this.getCatalogFingerprint();
+        return context.json({ ok: true });
+      } catch {
+        return context.json({ ok: false }, 503);
+      }
     });
 
-    app.get("/internal/saas/catalog/providers", requireCatalogPurpose(this.options.verifyJwt), (context) =>
-      exactQuery(context, []) ? context.json(this.safeProviders) : invalidInput(context),
+    app.get("/internal/saas/catalog/providers", requireCatalogPurpose(this.options.verifyJwt), async (context) => {
+      if (!exactQuery(context, [])) return invalidInput(context);
+      try {
+        await this.refreshProviderReadiness();
+        return context.json(this.safeProviders);
+      } catch {
+        return context.json({ error: "oauth_client_readiness_unavailable" }, 503);
+      }
+    });
+    app.get(
+      "/internal/saas/catalog/providers/scoped",
+      requireSaasPurpose(this.options.verifyJwt, "connection:read"),
+      (context) =>
+        runScopedHttpOperation(context, "catalog_unavailable", async () => {
+          if (!exactQuery(context, [])) throw new SyntaxError("Unexpected query");
+          const scope = getSaasRequestScope(context, "connection:read");
+          if (scope.actorUserId !== scope.subjectUserId) throw new SaasAuthorizationError(403);
+          const resolve = this.options.scopedOAuthClientReadiness;
+          if (!resolve) throw new Error("Scoped OAuth source readiness is unavailable");
+          await this.refreshProviderReadiness();
+          const readiness = await resolve(scope, this.localOAuthClientReadiness);
+          assertProcessingActive(scope);
+          return context.json(
+            this.options.catalog.providers.map((provider, index) =>
+              toSafeProvider(provider, readiness.get(provider.service), this.safeProviders[index]),
+            ),
+          );
+        }),
     );
     app.get("/internal/saas/catalog/actions", requireCatalogPurpose(this.options.verifyJwt), (context) =>
-      listCatalogActions(context, this.safeActions, this.catalogFingerprint),
+      listCatalogActions(context, this.options.catalog, this.getCatalogFingerprint()),
     );
     app.get(
       "/internal/saas/catalog/actions/search",
@@ -151,14 +289,24 @@ export class SaasConnectServer {
       (context) => deleteConnection(context, this.options),
     );
     app.post("/internal/saas/oauth/start", requireSaasPurpose(this.options.verifyJwt, "oauth:start"), (context) =>
-      handleOAuth(context, "oauth:start", this.options.runtimeDatabaseFactory, this.options.oauthServiceFactory),
+      handleOAuth(context, "oauth:start", this.options.oauthServiceFactory),
     );
     app.post("/internal/saas/oauth/complete", requireSaasPurpose(this.options.verifyJwt, "oauth:complete"), (context) =>
-      handleOAuth(context, "oauth:complete", this.options.runtimeDatabaseFactory, this.options.oauthServiceFactory),
+      handleOAuth(context, "oauth:complete", this.options.oauthServiceFactory),
+    );
+    app.get(
+      "/internal/saas/oauth/requests/:requestId",
+      requireSaasPurpose(this.options.verifyJwt, "oauth:complete"),
+      (context) => handleOAuthRequest(context, this.options.oauthServiceFactory, false),
+    );
+    app.post(
+      "/internal/saas/oauth/requests/:requestId/cancel",
+      requireSaasPurpose(this.options.verifyJwt, "oauth:complete"),
+      (context) => handleOAuthRequest(context, this.options.oauthServiceFactory, true),
     );
     app.post(
       "/internal/saas/actions/:actionId",
-      requireSaasPurpose(this.options.verifyJwt, "action:execute"),
+      requireSaasPurpose(this.options.verifyJwt, "action:execute:v2"),
       (context) => executeSaasAction(context, this.options),
     );
     app.get("/internal/saas/files/:fileId", requireSaasPurpose(this.options.verifyJwt, "file:read"), (context) =>
@@ -183,10 +331,9 @@ export class SaasConnectServer {
   }
 }
 
-function notImplemented(context: Context<SaasHonoEnvironment>): Response {
-  return context.json({ error: "not_implemented" }, 501);
+function runtimeUnavailable(context: Context<SaasHonoEnvironment>): Response {
+  return context.json({ error: "service_unavailable" }, 503);
 }
-const maximumJsonBodyBytes = 262_144;
 const defaultCatalogPageSize = 100;
 const maximumCatalogPageSize = 500;
 const defaultRunPageSize = 50;
@@ -194,29 +341,40 @@ const maximumRunPageSize = 100;
 const maximumRunCursorLength = 512;
 const defaultLifecyclePageSize = 50;
 const maximumLifecyclePageSize = 100;
-const maximumLifecycleCursorLength = 512;
+const maximumLifecycleCursorLength = 4096;
 
-function listCatalogActions(
+async function listCatalogActions(
   context: Context<SaasHonoEnvironment>,
-  actions: SafeActionCatalog[],
-  catalogFingerprint: string,
-): Response {
+  catalog: CatalogStore,
+  fingerprint: Promise<string>,
+): Promise<Response> {
   const query = exactQuery(context, ["cursor", "limit"]);
   if (!query) return invalidInput(context);
   const limit = parseBoundedInteger(query.get("limit"), defaultCatalogPageSize, maximumCatalogPageSize);
   if (!limit) return invalidInput(context);
-  const offset = decodeCatalogCursor(query.get("cursor"), catalogFingerprint, actions.length);
-  if (offset === undefined) return invalidInput(context);
-  const nextOffset = offset + limit;
-  const page: SafeActionCatalogPage = {
-    items: actions.slice(offset, nextOffset),
-    nextCursor:
-      nextOffset < actions.length
-        ? Buffer.from(JSON.stringify([catalogFingerprint, nextOffset])).toString("base64url")
-        : null,
-    catalogFingerprint,
-  };
-  return context.json(page);
+  try {
+    const catalogFingerprint = await fingerprint;
+    const offset = decodeCatalogCursor(query.get("cursor"), catalogFingerprint, catalog.actions.length);
+    if (offset === undefined) return invalidInput(context);
+    const nextOffset = offset + limit;
+    const items: SafeActionCatalog[] = [];
+    for (const summary of catalog.actions.slice(offset, nextOffset)) {
+      const action = await catalog.getAction(summary.id);
+      if (!action) throw new Error("Catalog action definition is unavailable");
+      items.push(toSafeAction(action));
+    }
+    const page: SafeActionCatalogPage = {
+      items,
+      nextCursor:
+        nextOffset < catalog.actions.length
+          ? Buffer.from(JSON.stringify([catalogFingerprint, nextOffset])).toString("base64url")
+          : null,
+      catalogFingerprint,
+    };
+    return context.json(page);
+  } catch {
+    return context.json({ error: "catalog_unavailable" }, 503);
+  }
 }
 
 async function searchCatalogActions(
@@ -253,7 +411,7 @@ async function listConnections(
 ): Promise<Response> {
   const scope = getSaasRequestScope(context, "connection:read");
   const runtime = factory?.forScope(scope);
-  if (!runtime) return notImplemented(context);
+  if (!runtime) return runtimeUnavailable(context);
   try {
     return context.json((await runtime.connectionStore.listSafeConnections()).map(toSafeConnectionSummary));
   } catch {
@@ -275,7 +433,7 @@ async function createCredentialConnection(
   if (scope.connectorConnectionId || input.localConnectionId !== scope.localConnectionId) return forbidden(context);
   if (!options.oauthCredentials) return context.json({ error: "service_unavailable" }, 503);
   const runtime = options.runtimeDatabaseFactory?.forScope(scope);
-  if (!runtime) return notImplemented(context);
+  if (!runtime) return runtimeUnavailable(context);
 
   try {
     const connections = createScopedConnectionService({
@@ -286,15 +444,19 @@ async function createCredentialConnection(
       refreshCoordinator: runtime.refreshCoordinator,
     });
     const connected =
-      input.authType === "api_key"
-        ? await connections.connectWithApiKey(input.service, {
-            connectionName: input.connectionName,
-            values: input.credentials,
-          })
-        : await connections.connectWithCustomCredential(input.service, {
-            connectionName: input.connectionName,
-            values: input.credentials,
-          });
+      input.authType === "no_auth"
+        ? await connections.connectWithoutAuth(input.service, { connectionName: input.connectionName })
+        : input.authType === "api_key"
+          ? await connections.connectWithApiKey(input.service, {
+              connectionName: input.connectionName,
+              values: input.credentials,
+              signal: scope.requestSignal ?? context.req.raw.signal,
+            })
+          : await connections.connectWithCustomCredential(input.service, {
+              connectionName: input.connectionName,
+              values: input.credentials,
+              signal: scope.requestSignal ?? context.req.raw.signal,
+            });
     const summary = await runtime.connectionStore.getSafeConnection(connected.id);
     if (!summary) throw new Error("Stored connection metadata is unavailable");
     return context.json(toSafeConnectionSummary(summary), 201);
@@ -327,7 +489,7 @@ async function replaceCredentialConnection(
   }
   if (!options.oauthCredentials) return context.json({ error: "service_unavailable" }, 503);
   const runtime = options.runtimeDatabaseFactory?.forScope(scope);
-  if (!runtime) return notImplemented(context);
+  if (!runtime) return runtimeUnavailable(context);
 
   try {
     const target = await runtime.connectionStore.getCredentialReplacementTarget(connectionId);
@@ -335,6 +497,7 @@ async function replaceCredentialConnection(
     if (
       target.service !== input.service ||
       target.connectionName !== input.connectionName ||
+      target.source === "saas" ||
       target.credential.authType !== input.authType
     ) {
       return context.json({ error: "connection_conflict" }, 409);
@@ -347,14 +510,18 @@ async function replaceCredentialConnection(
       refreshCoordinator: runtime.refreshCoordinator,
     });
     if (input.authType === "api_key") {
-      await connections.replaceWithApiKey(target, {
+      await connections.connectWithApiKey(input.service, {
         connectionName: input.connectionName,
         values: input.credentials,
+        expectedConnection: target,
+        signal: scope.requestSignal ?? context.req.raw.signal,
       });
     } else {
-      await connections.replaceWithCustomCredential(target, {
+      await connections.connectWithCustomCredential(input.service, {
         connectionName: input.connectionName,
         values: input.credentials,
+        expectedConnection: target,
+        signal: scope.requestSignal ?? context.req.raw.signal,
       });
     }
     const summary = await runtime.connectionStore.getSafeConnection(connectionId);
@@ -362,7 +529,7 @@ async function replaceCredentialConnection(
     return context.json(toSafeConnectionSummary(summary));
   } catch (error) {
     if (error instanceof ConnectionError) {
-      return error.code === "connection_conflict"
+      return error.code === "connection_changed"
         ? context.json({ error: "connection_conflict" }, 409)
         : invalidInput(context);
     }
@@ -392,7 +559,7 @@ async function transferConnection(
     return forbidden(context);
   }
   const runtime = factory?.forScope(scope);
-  if (!runtime) return notImplemented(context);
+  if (!runtime) return runtimeUnavailable(context);
   try {
     const transferred = await runtime.connectionStore.transferById(connectionId, input.targetSubjectUserId);
     return transferred ? context.json(toSafeConnectionSummary(transferred)) : context.json({ error: "not_found" }, 404);
@@ -423,7 +590,7 @@ async function updateConnectionVisibility(
     return forbidden(context);
   }
   const runtime = factory?.forScope(scope);
-  if (!runtime) return notImplemented(context);
+  if (!runtime) return runtimeUnavailable(context);
   try {
     const updated = await runtime.connectionStore.updateVisibilityById(connectionId, input.visibility);
     return updated ? context.json(toSafeConnectionSummary(updated)) : context.json({ error: "not_found" }, 404);
@@ -440,7 +607,7 @@ async function deleteConnection(
   const connectionId = context.req.param("connectionId");
   if (!scope.connectorConnectionId || connectionId !== scope.connectorConnectionId) return forbidden(context);
   const runtime = options.runtimeDatabaseFactory?.forScope(scope);
-  if (!runtime) return notImplemented(context);
+  if (!runtime) return runtimeUnavailable(context);
   try {
     if (await runtime.connectionStore.hasRevocationReceipt(connectionId)) return context.body(null, 204);
     if (await runtime.connectionStore.resumeRevocation(connectionId)) return context.body(null, 204);
@@ -450,11 +617,14 @@ async function deleteConnection(
         ? context.body(null, 204)
         : context.json({ error: "not_found" }, 404);
     }
-    const result = await options.credentialRevoker?.revoke({
-      service: connection.service,
-      credential: connection.credential,
-      signal: context.req.raw.signal,
-    });
+    const result =
+      connection.source === "saas"
+        ? "unsupported"
+        : await options.credentialRevoker?.revoke({
+            service: connection.service,
+            credential: connection.credential,
+            signal: scope.requestSignal ?? context.req.raw.signal,
+          });
     if (!result || result === "failed") {
       return context.json({ error: "provider_revocation_failed" }, 503);
     }
@@ -484,7 +654,16 @@ async function exportLifecycleScope(
   try {
     const page = await service.exportPage({ limit, ...(cursor === null ? {} : { cursor }) });
     if (
-      page.connections.length + page.runs.length > limit ||
+      page.connections.length +
+        page.runs.length +
+        page.actionGrants.length +
+        page.actionPolicyAudit.length +
+        page.connectionRequests.length +
+        page.saasCleanup.length +
+        page.connectionRetirements.length +
+        page.triggerSubscriptions.length +
+        page.triggerSourceApplications.length >
+        limit ||
       (page.nextCursor !== null && page.nextCursor.length > maximumLifecycleCursorLength)
     ) {
       throw new Error("Lifecycle service returned an out-of-bounds page");
@@ -516,10 +695,14 @@ async function purgeLifecycleScope(
   if (canonicalRequestHash("lifecycle.purge", input) !== scope.requestHash) {
     return lifecycleError(context, 403, "forbidden", "Lifecycle purge authorization does not match the body.");
   }
-  const service = options.runtimeDatabaseFactory?.lifecycleForScope?.(scope, options.credentialRevoker);
+  const service = options.runtimeDatabaseFactory?.lifecycleForScope?.(
+    scope,
+    options.credentialRevoker,
+    options.triggerCleanupForScope?.(scope),
+  );
   if (!service) return lifecycleError(context, 503, "service_unavailable", "Lifecycle purge is unavailable.");
   try {
-    return context.json(await service.purge(input, context.req.raw.signal));
+    return context.json(await service.purge(input, scope.requestSignal ?? context.req.raw.signal));
   } catch (error) {
     if (error instanceof LifecyclePurgeConflictError) {
       return lifecycleError(
@@ -717,14 +900,6 @@ function boundedString(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length <= maximum;
 }
 
-function exactQuery(context: Context<SaasHonoEnvironment>, allowed: string[]): URLSearchParams | undefined {
-  const query = new URL(context.req.url).searchParams;
-  const keys = new Set(query.keys());
-  if ([...keys].some((key) => !allowed.includes(key))) return undefined;
-  if (allowed.some((key) => query.getAll(key).length > 1)) return undefined;
-  return query;
-}
-
 function parseBoundedInteger(value: string | null, fallback: number, maximum: number): number | undefined {
   if (value === null) return fallback;
   if (!/^[1-9]\d*$/.test(value)) return undefined;
@@ -756,7 +931,20 @@ function decodeCatalogCursor(cursor: string | null, fingerprint: string, actionC
 function toSafeProvider(
   provider: RuntimeProviderDefinition,
   oauthReadiness: OAuthClientConfigReadiness | undefined,
+  previous?: SafeProviderCatalog,
 ): SafeProviderCatalog {
+  if (previous) {
+    const current = previous.connectionMethods.find((method) => method.type === "oauth2");
+    if (!current) return previous;
+    const status = oauthReadiness?.status ?? "unavailable";
+    const reason =
+      oauthReadiness?.status === "unavailable"
+        ? oauthReadiness.reasonCode
+        : oauthReadiness
+          ? undefined
+          : "oauth_client_config_missing";
+    if (current.status === status && current.reasonCode === reason) return previous;
+  }
   const connectionMethods = provider.auth.flatMap((auth): SafeProviderCatalog["connectionMethods"] => {
     if (auth.type === "no_auth") return [{ type: "no_auth", fields: [], status: "operational" }];
     if (auth.type === "oauth2") {
@@ -807,7 +995,7 @@ function toSafeCredentialField(field: CredentialDefinition): SafeCredentialField
   return safe;
 }
 
-function toSafeActionSummary(action: RuntimeActionDefinition): SafeActionSummary {
+function toSafeActionSummary(action: RuntimeActionSummary): SafeActionSummary {
   return {
     id: action.id,
     service: action.service,
@@ -828,98 +1016,113 @@ function toSafeAction(action: RuntimeActionDefinition): SafeActionCatalog {
   };
 }
 
-function toSafeConnectionSummary(connection: SafeStoredConnection): SafeConnectionSummary {
-  return {
-    id: connection.id,
-    localConnectionId: connection.localConnectionId,
-    service: connection.service,
-    connectionName: connection.connectionName,
-    visibility: connection.visibility,
-    status: connection.status,
-    profile: connection.profile,
-    createdAt: connection.createdAt,
-    updatedAt: connection.updatedAt,
-  };
-}
-
-class JsonBodyTooLargeError extends Error {}
-
-async function readBoundedJson(context: Context<SaasHonoEnvironment>): Promise<unknown> {
-  const contentType = context.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-  if (contentType !== "application/json") throw new Error("JSON content type is required");
-  const declaredLength = context.req.header("content-length");
-  if (declaredLength !== undefined) {
-    const bytes = Number(declaredLength);
-    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error("Invalid content length");
-    if (bytes > maximumJsonBodyBytes) throw new JsonBodyTooLargeError();
-  }
-  const body = context.req.raw.body;
-  if (!body) throw new Error("JSON body is required");
-  const reader = body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let bytes = 0;
-  let text = "";
-  while (true) {
-    const part = await reader.read();
-    if (part.done) break;
-    bytes += part.value.byteLength;
-    if (bytes > maximumJsonBodyBytes) {
-      await reader.cancel();
-      throw new JsonBodyTooLargeError();
-    }
-    text += decoder.decode(part.value, { stream: true });
-  }
-  text += decoder.decode();
-  return JSON.parse(text) as unknown;
-}
-
 function isPostgresConflict(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+}
+
+const oauthBindingSchema = z.object({ localConnectionId: z.guid(), oauthSessionId: z.guid() }).strict();
+const oauthStartInputSchema = oauthBindingSchema.extend({
+  service: z.string().min(1).max(255),
+  authorizationOptionIds: z.array(z.string().min(1).max(255)).max(64).optional(),
+  clientConfig: z
+    .object({
+      clientId: z.string().min(1).max(4096),
+      clientSecret: z.string().max(8192).optional(),
+      redirectUri: z.url().optional(),
+      requestedScopes: z.array(z.string().min(1).max(4096)).max(256).optional(),
+      extra: z.record(z.string().min(1).max(128), z.string().max(8192)).optional(),
+      secretExtra: z.record(z.string().min(1).max(128), z.string().max(8192)).optional(),
+    })
+    .strict()
+    .optional(),
+});
+const oauthCompleteInputSchema = oauthBindingSchema.extend({
+  state: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine((value) => Boolean(value.trim())),
+  code: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine((value) => Boolean(value.trim())),
+  callbackQuery: z.string().max(16384).optional(),
+  callbackParameters: z
+    .record(z.string().min(1).max(128), z.string().max(4096))
+    .refine((value) => Object.keys(value).length <= 64)
+    .optional(),
+});
+const oauthRequestIdSchema = z.guid();
+
+function runOAuthOperation(context: Context<SaasHonoEnvironment>, work: () => Promise<Response>): Promise<Response> {
+  return runScopedHttpOperation(context, "oauth_unavailable", async () => {
+    try {
+      return await work();
+    } catch (error) {
+      if (error instanceof OAuthFlowError) return context.json({ error: error.code }, 400);
+      if (error instanceof SaasError) return context.json({ error: error.code }, error.status);
+      if (error instanceof ConnectionError)
+        return error.code === "connection_changed"
+          ? context.json({ error: "connection_conflict" }, 409)
+          : invalidInput(context);
+      throw error;
+    }
+  });
 }
 
 async function handleOAuth(
   context: Context<SaasHonoEnvironment>,
   purpose: "oauth:start" | "oauth:complete",
-  factory: Pick<SaasRuntimeDatabaseFactory, "forScope"> | undefined,
   oauthFactory: SaasConnectServerOptions["oauthServiceFactory"],
 ): Promise<Response> {
-  const scope = getSaasRequestScope(context, purpose);
-  try {
-    const body = await readBoundedJson(context);
+  return runOAuthOperation(context, async () => {
+    const scope = getSaasRequestScope(context, purpose);
+    if (!exactQuery(context, [])) return invalidInput(context);
+    const raw = await readBoundedJson(context, 65536);
+    const body = purpose === "oauth:start" ? oauthStartInputSchema.parse(raw) : oauthCompleteInputSchema.parse(raw);
     if (
-      !isExactObject(
-        body,
-        purpose === "oauth:start"
-          ? ["localConnectionId", "oauthSessionId", "service"]
-          : ["localConnectionId", "oauthSessionId", "code", "state"],
-      ) ||
       !scope.localConnectionId ||
       !scope.oauthSessionId ||
       body.localConnectionId !== scope.localConnectionId ||
       body.oauthSessionId !== scope.oauthSessionId
-    ) {
+    )
       return forbidden(context);
-    }
-
     const service = oauthFactory?.forScope(scope);
-    if (!service) {
-      factory?.forScope(scope);
-      return notImplemented(context);
-    }
-    if (purpose === "oauth:start") {
-      const serviceName = body.service;
-      if (typeof serviceName !== "string" || !serviceName.trim()) return invalidInput(context);
-      return context.json(await service.start(serviceName));
-    }
-    const state = body.state;
-    const code = body.code;
-    if (typeof state !== "string" || !state.trim() || typeof code !== "string" || !code.trim()) {
-      return invalidInput(context);
-    }
-    return context.json(await service.complete({ state, code }));
-  } catch (error) {
-    return error instanceof JsonBodyTooLargeError ? payloadTooLarge(context) : invalidInput(context);
-  }
+    if (!service) return runtimeUnavailable(context);
+    if ("service" in body)
+      return context.json(
+        await service.start(body.service, {
+          authorizationOptionIds: body.authorizationOptionIds,
+          clientConfig: body.clientConfig,
+        }),
+      );
+    return context.json(
+      await service.complete({
+        state: body.state,
+        code: body.code,
+        callbackQuery: body.callbackQuery,
+        callbackParameters: body.callbackParameters,
+      }),
+    );
+  });
+}
+
+async function handleOAuthRequest(
+  context: Context<SaasHonoEnvironment>,
+  factory: SaasConnectServerOptions["oauthServiceFactory"],
+  cancel: boolean,
+): Promise<Response> {
+  return runOAuthOperation(context, async () => {
+    const scope = getSaasRequestScope(context, "oauth:complete");
+    if (!exactQuery(context, [])) return invalidInput(context);
+    const requestId = oauthRequestIdSchema.parse(context.req.param("requestId"));
+    if (cancel && !isExactObject(await readBoundedJson(context, 65536), [])) return invalidInput(context);
+    const service = factory?.forScope(scope);
+    if (!service) return runtimeUnavailable(context);
+    const result = await (cancel ? service.cancelRequest(requestId) : service.getRequest(requestId));
+    return result ? context.json(result) : context.json({ error: "oauth_request_not_found" }, 404);
+  });
 }
 
 function isExactObject(value: unknown, keys: string[]): value is Record<string, unknown> {
@@ -961,7 +1164,7 @@ async function executeSaasAction(
   context: Context<SaasHonoEnvironment>,
   options: SaasConnectServerOptions,
 ): Promise<Response> {
-  const scope = getSaasRequestScope(context, "action:execute");
+  const scope = getSaasRequestScope(context, "action:execute:v2");
   let body: unknown;
   try {
     body = await readBoundedJson(context);
@@ -994,13 +1197,15 @@ async function executeSaasAction(
 
   try {
     const runtime = options.runtimeDatabaseFactory?.forScope(scope);
-    if (!runtime) return notImplemented(context);
+    if (!runtime) return runtimeUnavailable(context);
+    const native = options.nativeExecutionForScope?.(scope, runtime);
     const connections = createScopedConnectionService({
       catalog: options.catalog,
       providerLoader: options.providerLoader,
       store: runtime.connectionStore,
       oauthCredentials: options.oauthCredentials,
       refreshCoordinator: runtime.refreshCoordinator,
+      marketplace: native?.marketplace,
     });
     const result = await new SaasActionRunner({
       scope,
@@ -1010,13 +1215,16 @@ async function executeSaasAction(
       connections,
       idempotency: runtime.saasIdempotencyStore,
       journal: runtime.executionJournal,
+      actionPolicy: runtime.actionPolicy,
+      saasExecution: native?.saasExecution,
+      marketplace: native?.marketplace,
       transitFiles: runtime.transitFiles,
     }).run({
       actionId,
       connectorConnectionId: body.connectorConnectionId,
       input: body.input,
       idempotencyKey,
-      signal: context.req.raw.signal,
+      signal: scope.requestSignal ?? context.req.raw.signal,
     });
     if (result.ok) {
       return context.json({
@@ -1028,12 +1236,15 @@ async function executeSaasAction(
 
     const status =
       result.error.code === "forbidden" ||
+      result.error.code === "action_not_granted" ||
       result.error.code === "request_hash_mismatch" ||
       result.error.code === "connection_provider_mismatch"
         ? 403
-        : result.error.code === "invalid_input" || result.error.code === "invalid_idempotency_key"
-          ? 400
-          : 409;
+        : result.error.code === "action_policy_unavailable" || result.error.code === "action_schema_unavailable"
+          ? 503
+          : result.error.code === "invalid_input" || result.error.code === "invalid_idempotency_key"
+            ? 400
+            : 409;
     return context.json(
       {
         errorCode: result.error.code,

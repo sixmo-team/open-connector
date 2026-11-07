@@ -1,18 +1,25 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { compactObject, optionalBooleanOrNull, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  isAbortLikeError,
+  ProviderRequestError,
+  providerUserAgent,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 const service = "apiverve";
 const apiverveApiBaseUrl = "https://api.apiverve.com";
-const apiverveDefaultRequestTimeoutMs = 30_000;
 
 type ApivervePhase = "validate" | "execute";
 type ApiverveQueryValue = number | string | undefined;
 type ApiverveActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const apiverveActionHandlers: Record<string, ApiverveActionHandler> = {
+export const apiverveActionHandlers: ProviderActionHandlers<"apiverve", ApiverveActionHandler> = {
   async get_word_definition(input, context) {
     const data = await requestApiverveData({
       path: "/v1/dictionary",
@@ -140,7 +147,7 @@ export const apiverveActionHandlers: Record<string, ApiverveActionHandler> = {
       timezoneDiffHours: readNullableNumber(record.timezoneDiffHours),
       bearing: readNullableNumber(record.bearing),
       direction: readNullableString(record.direction),
-      isInternational: readNullableBoolean(record.isInternational),
+      isInternational: optionalBooleanOrNull(record.isInternational),
       carbonEstimateKg: readNullableNumber(record.carbonEstimateKg),
       airport1: normalizeDistanceAirport(record.airport1, "airport1"),
       airport2: normalizeDistanceAirport(record.airport2, "airport2"),
@@ -177,6 +184,16 @@ export const apiverveActionHandlers: Record<string, ApiverveActionHandler> = {
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, apiverveActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: apiverveApiBaseUrl,
+  auth: { type: "api_key_header", name: "X-API-Key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     await requestApiverveData({
@@ -209,7 +226,7 @@ async function requestApiverveData(input: {
   context: Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
   phase: ApivervePhase;
 }): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(apiverveDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = input.context.signal ? AbortSignal.any([input.context.signal, timeoutSignal]) : timeoutSignal;
 
   try {
@@ -349,7 +366,7 @@ function normalizeAge(value: unknown): Record<string, unknown> {
       chineseZodiac: readNullableString(insights.chineseZodiac),
       birthstone: readNullableString(insights.birthstone),
       dayOfWeekBorn: readNullableString(insights.dayOfWeekBorn),
-      isLeapYearBirth: readNullableBoolean(insights.isLeapYearBirth),
+      isLeapYearBirth: optionalBooleanOrNull(insights.isLeapYearBirth),
       milestones: normalizeMilestones(insights.milestones),
     },
   };
@@ -397,10 +414,10 @@ function normalizeMilestones(value: unknown): Record<string, unknown> {
   const record = readRequiredRecord(value, "milestones");
 
   return {
-    canVoteUS: readNullableBoolean(record.canVoteUS),
-    canDrinkUS: readNullableBoolean(record.canDrinkUS),
-    canRentCarUS: readNullableBoolean(record.canRentCarUS),
-    seniorDiscount: readNullableBoolean(record.seniorDiscount),
+    canVoteUS: optionalBooleanOrNull(record.canVoteUS),
+    canDrinkUS: optionalBooleanOrNull(record.canDrinkUS),
+    canRentCarUS: optionalBooleanOrNull(record.canRentCarUS),
+    seniorDiscount: optionalBooleanOrNull(record.seniorDiscount),
   };
 }
 
@@ -462,7 +479,7 @@ function normalizeAirline(record: Record<string, unknown>): Record<string, unkno
     callsign: readNullableString(record.callsign),
     country: readNullableString(record.country),
     id: readNullableString(record.id),
-    isLowCost: readNullableBoolean(record.islowcost),
+    isLowCost: optionalBooleanOrNull(record.islowcost),
     logoUrl: readNullableString(record.logourl),
     raw: record,
   };
@@ -532,12 +549,4 @@ function readRequiredNumber(value: unknown, fieldName: string): number {
 
 function readNullableNumber(value: unknown): number | null {
   return typeof value === "number" ? value : null;
-}
-
-function readNullableBoolean(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
 }

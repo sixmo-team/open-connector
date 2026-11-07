@@ -1,12 +1,19 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, nullableString, optionalRecord, optionalString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  isAbortLikeError,
+  providerUserAgent,
+  ProviderRequestError,
+  providerInputError,
+  providerResponseError,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 export const affinityApiBaseUrl = "https://api.affinity.co";
 export const affinityValidationPath = "/v2/auth/whoami";
-const affinityRequestTimeoutMs = 30_000;
 
 type AffinityMode = "validation" | "execution";
 type AffinityActionHandler = (input: Record<string, unknown>, context: AffinityActionContext) => Promise<unknown>;
@@ -22,7 +29,7 @@ type AffinityPagedResponse = {
   pagination: unknown;
 };
 
-export const affinityActionHandlers: Record<string, AffinityActionHandler> = {
+export const affinityActionHandlers: ProviderActionHandlers<"affinity", AffinityActionHandler> = {
   get_current_user(_input, context) {
     return getCurrentUser(context);
   },
@@ -431,7 +438,7 @@ async function affinityRequest(
     url.searchParams.set(key, value);
   }
 
-  const timeoutSignal = AbortSignal.timeout(affinityRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
   let response: Response;
@@ -489,7 +496,7 @@ function buildAffinityError(status: number, payload: unknown, mode: AffinityMode
   }
 
   if (mode === "validation" && status === 401) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (mode === "execution" && (status === 401 || status === 403)) {
@@ -497,14 +504,14 @@ function buildAffinityError(status: number, payload: unknown, mode: AffinityMode
   }
 
   if (status === 404) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function extractAffinityErrorMessage(payload: unknown) {
@@ -762,13 +769,4 @@ function readOptionalPositiveIntegerArray(value: unknown, fieldName: string) {
   }
 
   return value.map((item, index) => readPositiveInteger(item, `${fieldName}[${index}]`));
-}
-
-function isAbortLikeError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    (error as { name?: unknown }).name === "AbortError"
-  );
 }

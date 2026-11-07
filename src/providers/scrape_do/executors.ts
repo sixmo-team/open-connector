@@ -1,6 +1,11 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ScrapeDoActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,7 +15,9 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 
 const service = "scrape_do";
 const scrapeDoApiBaseUrl = "https://api.scrape.do";
@@ -21,7 +28,7 @@ type ScrapeDoPhase = "validate" | "execute";
 type ScrapeDoQueryValue = string | number | boolean | undefined;
 type ScrapeDoActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const scrapeDoActionHandlers: Record<ScrapeDoActionName, ScrapeDoActionHandler> = {
+export const scrapeDoActionHandlers: ProviderActionHandlers<"scrape_do", ScrapeDoActionHandler> = {
   fetch_html(input, context) {
     return requestScrapeDoContent(input, context, {
       returnJSON: undefined,
@@ -43,6 +50,16 @@ export const scrapeDoActionHandlers: Record<ScrapeDoActionName, ScrapeDoActionHa
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, scrapeDoActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: scrapeDoApiBaseUrl,
+  auth: { type: "api_key_query", name: "token" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "*/*");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }): Promise<CredentialValidationResult> {
@@ -294,7 +311,7 @@ function createScrapeDoError(status: number, body: string, phase: ScrapeDoPhase)
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status || 500, message);
 }

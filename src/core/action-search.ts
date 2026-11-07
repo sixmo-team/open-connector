@@ -1,4 +1,3 @@
-import type { ActionDefinition } from "./types.ts";
 import type { Options, SearchResult } from "minisearch";
 
 import MiniSearch from "minisearch";
@@ -13,16 +12,14 @@ export interface ActionSearchDocument {
   description: string;
 }
 
-export type ActionSearchResult = ActionSearchDocument;
-
-export type ActionSearchField = "service" | "name" | "description";
+type ActionSearchField = "service" | "name" | "description";
 
 export interface ActionSearchOptions {
   limit?: number;
   fuzzy?: number;
   prefix?: boolean;
-  boost?: Partial<Record<ActionSearchField, number>>;
   service?: string;
+  acceptsAction?: (actionId: string) => boolean;
 }
 
 export interface ActionSearchIndexProvider {
@@ -32,7 +29,7 @@ export interface ActionSearchIndexProvider {
 const indexFields: readonly ActionSearchField[] = ["service", "name", "description"];
 const storeFields = ["id", "service", "name", "description"] as const;
 
-export const DEFAULT_ACTION_SEARCH_BOOST: Record<ActionSearchField, number> = {
+const DEFAULT_ACTION_SEARCH_BOOST: Record<ActionSearchField, number> = {
   service: 3,
   name: 2,
   description: 1,
@@ -198,7 +195,7 @@ const miniSearchOptions: Options<ActionSearchDocument> = {
   processTerm: indexProcessTerm,
 };
 
-export function toActionSearchDocument(action: ActionDefinition): ActionSearchDocument {
+export function toActionSearchDocument(action: ActionSearchDocument): ActionSearchDocument {
   return {
     id: action.id,
     service: action.service,
@@ -207,13 +204,13 @@ export function toActionSearchDocument(action: ActionDefinition): ActionSearchDo
   };
 }
 
-export function buildActionSearchIndex(actions: Iterable<ActionDefinition>): MiniSearch<ActionSearchDocument> {
+export function buildActionSearchIndex(actions: Iterable<ActionSearchDocument>): MiniSearch<ActionSearchDocument> {
   const index = new MiniSearch<ActionSearchDocument>(miniSearchOptions);
   index.addAll(Array.from(actions, toActionSearchDocument));
   return index;
 }
 
-export function createActionSearchIndexProvider(actions: Iterable<ActionDefinition>): ActionSearchIndexProvider {
+export function createActionSearchIndexProvider(actions: Iterable<ActionSearchDocument>): ActionSearchIndexProvider {
   let indexPromise: Promise<MiniSearch<ActionSearchDocument>> | undefined;
   return {
     get() {
@@ -235,22 +232,25 @@ export function searchActions(
   index: MiniSearch<ActionSearchDocument>,
   query: string,
   options: ActionSearchOptions = {},
-): ActionSearchResult[] {
+): ActionSearchDocument[] {
   const {
     limit = DEFAULT_ACTION_SEARCH_LIMIT,
     fuzzy = DEFAULT_ACTION_SEARCH_FUZZY,
     prefix = true,
-    boost,
     service,
+    acceptsAction,
   } = options;
   const results = index.search(query, {
     fuzzy,
     prefix,
     combineWith: "OR",
-    boost: { ...DEFAULT_ACTION_SEARCH_BOOST, ...boost },
+    boost: DEFAULT_ACTION_SEARCH_BOOST,
     weights: { fuzzy: 0.5, prefix: 0.1 },
     processTerm: searchProcessTerm,
-    filter: service ? (result) => result.service === service : undefined,
+    filter:
+      service || acceptsAction
+        ? (result) => (!service || result.service === service) && (!acceptsAction || acceptsAction(result.id as string))
+        : undefined,
   });
   return results.slice(0, limit).map(toActionSearchResult);
 }
@@ -273,7 +273,7 @@ function searchProcessTerm(term: string): string | string[] | null {
   return synonyms ? [...synonyms] : normalized;
 }
 
-function toActionSearchResult(result: SearchResult): ActionSearchResult {
+function toActionSearchResult(result: SearchResult): ActionSearchDocument {
   return {
     id: result.id as string,
     service: result.service as string,

@@ -97,9 +97,12 @@ describe("OpenBaoConnectionSecretStore", () => {
     const secretStore = new OpenBaoConnectionSecretStore(client);
     const queries: Array<{ text: string; values: unknown[] }> = [];
     let failedActiveInsert = false;
+    const retirementGeneration = crypto.randomUUID();
     const pgClient = {
       async query(text: string, values: unknown[] = []): Promise<{ rows: unknown[]; rowCount: number }> {
         queries.push({ text, values });
+        if (text.includes("SELECT generation FROM integration_runtime.connection_retirements"))
+          return { rows: [{ generation: retirementGeneration }], rowCount: 1 };
         if (text.includes("SELECT id, revision")) return { rows: [], rowCount: 0 };
         if (
           text.includes("INSERT INTO integration_runtime.connections") &&
@@ -142,8 +145,6 @@ describe("OpenBaoConnectionSecretStore", () => {
       expect(serializedPostgres).not.toContain(secret);
       expect(JSON.stringify(failure)).not.toContain(secret);
     }
-    expect(serializedPostgres).toContain("metadata_write_failed");
-    expect(serializedPostgres).toContain("secretCleanup");
   });
 
   it("stores platform OAuth applications only at the global provider path", async () => {

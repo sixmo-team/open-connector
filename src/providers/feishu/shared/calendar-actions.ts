@@ -2,14 +2,6 @@ import type { ActionDefinition } from "../../../core/types.ts";
 
 import { s } from "../../../core/json-schema.ts";
 import { defineProviderAction } from "../../../core/provider-definition.ts";
-export const feishuCalendarProviderPermissions: readonly string[] = [
-  "calendar:calendar.event:read",
-  "calendar:calendar.event:create",
-  "calendar:calendar.event:update",
-  "calendar:calendar.event:delete",
-  "calendar:calendar.event:reply",
-  "calendar:calendar.free_busy:read",
-];
 const calendarId = s.string("The Feishu calendar ID. Use `primary` for the caller's primary calendar.", {
   minLength: 1,
 });
@@ -18,9 +10,10 @@ const timeValue = s.string(
   "An RFC 3339 date-time or Unix timestamp in seconds, for example `2026-07-23T09:00:00+08:00`.",
   { minLength: 1 },
 );
-const pageSize = s.positiveInteger("The maximum number of items to return on this page.", {
-  maximum: 500,
+const pageSize = s.positiveInteger("The maximum number of search results, from 1 to 30.", {
+  maximum: 30,
 });
+
 const pageToken = s.string("The page token returned by the previous request.", { minLength: 1 });
 const userIdType = s.stringEnum("The identifier type used for user fields.", ["open_id", "union_id", "user_id"]);
 const looseItem = s.looseRequiredObject(
@@ -62,12 +55,12 @@ const attendee = s.object(
   },
 );
 const eventFields = {
-  summary: s.string("The event title.", { minLength: 1 }),
+  summary: s.nonEmptyString("The event title."),
   description: s.string("The event description in Feishu Markdown."),
   startTime: timeValue,
   endTime: timeValue,
   timezone: s.string("The IANA timezone used by the start and end times."),
-  isAllDay: s.boolean("Whether the event is an all-day event."),
+  isAllDay: s.boolean("Whether the event is all-day; use YYYY-MM-DD startTime and an exclusive YYYY-MM-DD endTime."),
   visibility: s.stringEnum("The event visibility.", ["default", "public", "private"]),
   attendeeAbility: s.stringEnum("The permission granted to attendees.", [
     "none",
@@ -76,31 +69,21 @@ const eventFields = {
     "can_modify_event",
   ]),
   freeBusyStatus: s.stringEnum("How the event affects availability.", ["busy", "free"]),
-  location: s.looseRequiredObject(
-    "The event location object accepted by Feishu.",
-    {},
-    {
-      optional: [],
-    },
-  ),
+  location: s.looseRequiredObject("The event location object accepted by Feishu.", {}),
   recurrence: s.string("The RFC 5545 recurrence rule, without the `RRULE:` prefix."),
   reminders: s.array(
     "Event reminders.",
-    s.object(
-      "A reminder before the event.",
-      {
-        minutes: s.integer("The number of minutes before the event.", { minimum: 0 }),
-      },
-      {
-        optional: [],
-      },
-    ),
+    s.requiredObject("A reminder before the event.", {
+      minutes: s.integer("The number of minutes before the event.", { minimum: 0 }),
+    }),
   ),
 };
+
 export function createFeishuCalendarActions(service: string): readonly ActionDefinition[] {
   return [
     defineProviderAction(service, {
       name: "list_calendar_agenda",
+      operationType: "read",
       description: "List event instances in a Feishu calendar over a bounded time range.",
       requiredScopes: ["calendar:calendar.event:read"],
       providerPermissions: ["calendar:calendar.event:read"],
@@ -119,6 +102,7 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "search_calendar_events",
+      operationType: "read",
       description: "Search Feishu calendar events by text, time range, and attendee identifiers.",
       requiredScopes: ["calendar:calendar.event:read"],
       providerPermissions: ["calendar:calendar.event:read"],
@@ -144,6 +128,7 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "get_calendar_event",
+      operationType: "read",
       description: "Get the complete details of one Feishu calendar event.",
       requiredScopes: ["calendar:calendar.event:read"],
       providerPermissions: ["calendar:calendar.event:read"],
@@ -158,6 +143,7 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "create_calendar_event",
+      operationType: "write",
       description:
         "Create a Feishu calendar event and add attendees, rolling back the event if attendee creation fails.",
       requiredScopes: [
@@ -209,6 +195,7 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "update_calendar_event",
+      operationType: "destructive",
       description: "Update Feishu calendar event fields and incrementally add or remove attendees.",
       requiredScopes: ["calendar:calendar.event:update"],
       providerPermissions: ["calendar:calendar.event:update"],
@@ -270,6 +257,7 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "delete_calendar_event",
+      operationType: "destructive",
       description: "Delete a Feishu calendar event.",
       requiredScopes: ["calendar:calendar.event:delete"],
       providerPermissions: ["calendar:calendar.event:delete"],
@@ -297,6 +285,7 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "query_calendar_freebusy",
+      operationType: "read",
       description: "Query a Feishu user's free/busy periods and RSVP status.",
       requiredScopes: ["calendar:calendar.free_busy:read"],
       providerPermissions: ["calendar:calendar.free_busy:read"],
@@ -317,6 +306,7 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "find_calendar_rooms",
+      operationType: "read",
       description: "Find meeting rooms available for the specified event time slots.",
       requiredScopes: ["calendar:calendar.free_busy:read"],
       providerPermissions: ["calendar:calendar.free_busy:read"],
@@ -373,6 +363,7 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "suggest_calendar_times",
+      operationType: "read",
       description: "Suggest available meeting times for Feishu users and chats.",
       requiredScopes: ["calendar:calendar.free_busy:read"],
       providerPermissions: ["calendar:calendar.free_busy:read"],
@@ -411,6 +402,7 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "reply_calendar_event",
+      operationType: "write",
       description: "Accept, decline, or tentatively accept a Feishu calendar event invitation.",
       requiredScopes: ["calendar:calendar.event:reply"],
       providerPermissions: ["calendar:calendar.event:reply"],
@@ -438,24 +430,28 @@ export function createFeishuCalendarActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "get_calendar_meeting_info",
+      operationType: "read",
       description: "Get video meeting and meeting-note relations for calendar event instances.",
       requiredScopes: ["calendar:calendar.event:read"],
       providerPermissions: ["calendar:calendar.event:read"],
-      inputSchema: s.object(
-        "Identify event instances to inspect.",
-        {
-          calendarId,
-          instanceIds: s.array(
-            "Calendar event instance IDs whose meeting relations should be returned.",
-            s.string("A calendar event instance ID.", { minLength: 1 }),
-            { minItems: 1, maxItems: 50 },
+      inputSchema: s.requiredObject("Identify event instances to inspect.", {
+        calendarId,
+        instanceIds: s.array(
+          "Calendar event instance IDs whose meeting relations should be returned.",
+          s.nonEmptyString("A calendar event instance ID."),
+          { minItems: 1, maxItems: 50 },
+        ),
+      }),
+      outputSchema: {
+        ...pageOutput,
+        properties: {
+          ...(pageOutput.properties as Record<string, import("../../../core/types.ts").JsonSchema>),
+          failedInstances: s.array(
+            "Event instances whose meeting relation lookup failed, including instance_id and fail_msg.",
+            looseItem,
           ),
         },
-        {
-          optional: [],
-        },
-      ),
-      outputSchema: pageOutput,
+      },
     }),
   ];
 }

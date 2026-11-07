@@ -1,9 +1,11 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { Buffer } from "node:buffer";
 import { optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 const gorgiasValidationPath = "/api/account";
 
@@ -32,7 +34,7 @@ interface GorgiasRequestInput {
 
 type GorgiasActionHandler = ProviderRuntimeHandler<GorgiasActionContext>;
 
-export const gorgiasActionHandlers: Record<string, GorgiasActionHandler> = {
+export const gorgiasActionHandlers: ProviderActionHandlers<"gorgias", GorgiasActionHandler> = {
   async get_account(_input, context) {
     return {
       account: normalizeAccount(
@@ -258,16 +260,16 @@ function createGorgiasError(
   const message = extractGorgiasErrorMessage(payload) ?? `Gorgias request failed with ${response.status}`;
 
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 401 || response.status === 403) {
     return new ProviderRequestError(response.status, message);
   }
   if (response.status === 404 && notFoundAsInvalidInput) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 400 || response.status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 429) {
     return new ProviderRequestError(429, message);

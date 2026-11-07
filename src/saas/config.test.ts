@@ -12,6 +12,11 @@ const productionEnvironment: NodeJS.ProcessEnv = {
   OPEN_CONNECTOR_JWT_ISSUER: "https://backend.example.com",
   OPEN_CONNECTOR_JWT_AUDIENCE: "open-connector-saas",
   OPEN_CONNECTOR_JWT_ACTIVE_KID: "connector-2026-08",
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWKS_URL:
+    "http://integration-admin/internal/integrations/.well-known/action-policy-jwks.json",
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ISSUER: "https://operator.example.com",
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_AUDIENCE: "open-connector-action-policy",
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ACTIVE_KID: "policy-control-2026",
   OPEN_CONNECTOR_SEAWEEDFS_ENDPOINT: "http://seaweedfs:8333",
   OPEN_CONNECTOR_SEAWEEDFS_BUCKET: "open-connector-transit",
   OPEN_CONNECTOR_SEAWEEDFS_ACCESS_KEY_ID: "connector-runtime",
@@ -33,6 +38,28 @@ describe("production SaaS configuration", () => {
     });
   });
 
+  it("requires disjoint control key profiles and preserves configurable issuer/audience", () => {
+    expect(() =>
+      readSaasConfig(
+        configured({
+          OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ACTIVE_KID: productionEnvironment.OPEN_CONNECTOR_JWT_ACTIVE_KID,
+        }),
+      ),
+    ).toThrow("must differ");
+    expect(() =>
+      readSaasConfig(
+        configured({ OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWKS_URL: productionEnvironment.OPEN_CONNECTOR_JWKS_URL }),
+      ),
+    ).toThrow("must differ");
+    expect(
+      readSaasConfig(
+        configured({
+          OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ISSUER: "custom-control",
+          OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_AUDIENCE: "custom-audience",
+        }),
+      ),
+    ).toMatchObject({ policyControlIssuer: "custom-control", policyControlAudience: "custom-audience" });
+  });
   it.each([
     "OPEN_CONNECTOR_POSTGRES_URL",
     "OPEN_CONNECTOR_OPENBAO_ADDR",
@@ -44,6 +71,10 @@ describe("production SaaS configuration", () => {
     "OPEN_CONNECTOR_JWT_ISSUER",
     "OPEN_CONNECTOR_JWT_AUDIENCE",
     "OPEN_CONNECTOR_JWT_ACTIVE_KID",
+    "OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWKS_URL",
+    "OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ISSUER",
+    "OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_AUDIENCE",
+    "OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ACTIVE_KID",
     "OPEN_CONNECTOR_SEAWEEDFS_ENDPOINT",
     "OPEN_CONNECTOR_SEAWEEDFS_BUCKET",
     "OPEN_CONNECTOR_SEAWEEDFS_ACCESS_KEY_ID",
@@ -71,6 +102,7 @@ describe("production SaaS configuration", () => {
     ["OPEN_CONNECTOR_TRANSIT_FILE_PATH", "/data/files"],
     ["OOMOL_CONNECT_ALLOWED_ACTIONS", "gmail.*"],
     ["OOMOL_CONNECT_ALLOWED_PROXIES", "*"],
+    ["OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK", "true"],
     ["OPEN_CONNECTOR_PUBLISHED_PORT", "3000"],
     ["OPEN_CONNECTOR_HOST_PORT", "127.0.0.1:3000"],
   ])("rejects unsafe %s", (name, value) => {

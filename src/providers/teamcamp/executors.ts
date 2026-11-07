@@ -4,15 +4,17 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { TeamcampActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
+  requiredInputString,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 const service = "teamcamp";
@@ -22,7 +24,7 @@ type TeamcampQueryValue = boolean | number | string | null | undefined;
 type TeamcampRequestPhase = "validate" | "execute";
 type TeamcampActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const teamcampActionHandlers: Record<TeamcampActionName, TeamcampActionHandler> = {
+export const teamcampActionHandlers: ProviderActionHandlers<"teamcamp", TeamcampActionHandler> = {
   async list_projects(_input, context): Promise<unknown> {
     const projects = await requestTeamcampJson<Record<string, unknown>[]>({
       apiKey: context.apiKey,
@@ -34,7 +36,7 @@ export const teamcampActionHandlers: Record<TeamcampActionName, TeamcampActionHa
     return { projects, raw: projects };
   },
   async get_project(input, context): Promise<unknown> {
-    const projectId = requiredProviderString(input.projectId, "projectId");
+    const projectId = requiredInputString(input.projectId, "projectId");
     const project = await requestTeamcampJson<Record<string, unknown>>({
       apiKey: context.apiKey,
       path: `/project/${encodeURIComponent(projectId)}`,
@@ -49,7 +51,7 @@ export const teamcampActionHandlers: Record<TeamcampActionName, TeamcampActionHa
       apiKey: context.apiKey,
       path: "/task",
       query: compactObject({
-        projectId: requiredProviderString(input.projectId, "projectId"),
+        projectId: requiredInputString(input.projectId, "projectId"),
         complete: typeof input.complete === "boolean" ? input.complete : undefined,
       }),
       context,
@@ -59,7 +61,7 @@ export const teamcampActionHandlers: Record<TeamcampActionName, TeamcampActionHa
     return { tasks, raw: tasks };
   },
   async get_task(input, context): Promise<unknown> {
-    const taskId = requiredProviderString(input.taskId, "taskId");
+    const taskId = requiredInputString(input.taskId, "taskId");
     const task = await requestTeamcampJson<Record<string, unknown>>({
       apiKey: context.apiKey,
       path: `/task/${encodeURIComponent(taskId)}`,
@@ -70,13 +72,13 @@ export const teamcampActionHandlers: Record<TeamcampActionName, TeamcampActionHa
     return { task, raw: task };
   },
   async post_task_comment(input, context): Promise<unknown> {
-    const taskId = requiredProviderString(input.taskId, "taskId");
+    const taskId = requiredInputString(input.taskId, "taskId");
     const comment = await requestTeamcampJson<Record<string, unknown>>({
       apiKey: context.apiKey,
       path: `/task/${encodeURIComponent(taskId)}/comments`,
       method: "POST",
       body: {
-        content: requiredProviderString(input.content, "content"),
+        content: requiredInputString(input.content, "content"),
       },
       context,
       phase: "execute",
@@ -234,7 +236,7 @@ function createTeamcampError(
     response.status === 403 ||
     (response.status === 404 && notFoundAsInvalidInput)
   ) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status || 500, message);
 }
@@ -247,8 +249,4 @@ function extractTeamcampErrorMessage(payload: unknown): string | undefined {
   return record
     ? (optionalString(record.message) ?? optionalString(record.error) ?? optionalString(record.detail))
     : undefined;
-}
-
-function requiredProviderString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }

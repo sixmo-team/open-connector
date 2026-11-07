@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
+import { getRequestSignal, remainingProcessingMs } from "../../core/cancellation.ts";
 
 export type OpenBaoErrorCode =
   | "OPENBAO_UNAUTHORIZED"
@@ -100,13 +101,17 @@ export class OpenBaoClient {
     return new OpenBaoClient({ ...options, token });
   }
 
-  async read<T extends Record<string, unknown>>(path: string, revision?: number): Promise<OpenBaoReadResult<T>> {
+  async read<T extends Record<string, unknown>>(
+    path: string,
+    revision?: number,
+    signal?: AbortSignal,
+  ): Promise<OpenBaoReadResult<T>> {
     const normalizedPath = normalizeDataPath(path);
     if (revision !== undefined && (!Number.isSafeInteger(revision) || revision <= 0)) {
       throw new TypeError("OpenBao revision must be a positive integer");
     }
     const requestPath = revision === undefined ? normalizedPath : `${normalizedPath}?version=${revision}`;
-    const response = await this.request(requestPath, { method: "GET" });
+    const response = await this.request(requestPath, { method: "GET", signal });
     const body = await this.readJson(response, normalizedPath);
     const outer = jsonObject(body, "data", normalizedPath);
     const data = jsonObject(outer, "data", normalizedPath) as T;
@@ -127,13 +132,14 @@ export class OpenBaoClient {
     return outer.keys as string[];
   }
 
-  async write(path: string, data: Record<string, unknown>, cas: number): Promise<number> {
+  async write(path: string, data: Record<string, unknown>, cas: number, signal?: AbortSignal): Promise<number> {
     const normalizedPath = normalizeDataPath(path);
     if (!Number.isSafeInteger(cas) || cas < 0) throw new TypeError("OpenBao CAS must be a non-negative integer");
     let response: Response;
     try {
       response = await this.request(normalizedPath, {
         method: "POST",
+        signal,
         body: JSON.stringify({ data, options: { cas } }),
       });
     } catch (error) {
@@ -148,10 +154,10 @@ export class OpenBaoClient {
   }
 
   /** Permanently remove all KV versions so ephemeral and revoked secrets cannot be recovered. */
-  async delete(path: string): Promise<void> {
+  async delete(path: string, signal?: AbortSignal): Promise<void> {
     const normalizedPath = normalizeDataPath(path);
     const metadataPath = normalizedPath.replace("/data/", "/metadata/");
-    await this.request(metadataPath, { method: "DELETE" });
+    await this.request(metadataPath, { method: "DELETE", signal });
   }
 
   /** Prove exact least-privilege capabilities, then exercise each allowed namespace. */
@@ -202,13 +208,16 @@ export class OpenBaoClient {
   }
 
   private async request(path: string, init: RequestInit): Promise<Response> {
+    const requestSignal = init.signal ?? getRequestSignal();
+    const remaining = remainingProcessingMs({ requestSignal });
+    const timeout = AbortSignal.timeout(Math.min(this.requestTimeoutMs, remaining ?? this.requestTimeoutMs));
     if (typeof init.body === "string" && Buffer.byteLength(init.body) > this.maxRequestBytes) {
       throw new OpenBaoError("OPENBAO_REQUEST_TOO_LARGE", path);
     }
     try {
       const response = await this.fetchFn(`${this.address}/v1/${path}`, {
         ...init,
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
+        signal: requestSignal ? AbortSignal.any([requestSignal, timeout]) : timeout,
         headers: {
           "Content-Type": "application/json",
           "X-Vault-Token": this.token,

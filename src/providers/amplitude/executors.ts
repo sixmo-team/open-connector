@@ -2,13 +2,10 @@ import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } f
 import type { AmplitudeActionContext } from "./runtime.ts";
 
 import { optionalString, requiredString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 import {
   amplitudeActionHandlers,
   buildAmplitudeBasicAuthorizationHeader,
@@ -21,7 +18,6 @@ const service = "amplitude";
 export const executors: ProviderExecutors = defineProviderExecutors<AmplitudeActionContext>({
   service,
   handlers: amplitudeActionHandlers,
-  skipDnsValidation: true,
   async createContext(context, fetcher): Promise<AmplitudeActionContext> {
     const credential = await requireApiKeyCredential(context, service);
     const dataResidency =
@@ -44,7 +40,6 @@ export const credentialValidators: CredentialValidators = {
 
 export const proxy: ProviderProxyExecutor = defineProviderProxy({
   service,
-  skipDnsValidation: true,
   baseUrl: async (context) => {
     const credential = await requireApiKeyCredential(context, service);
     const dataResidency =

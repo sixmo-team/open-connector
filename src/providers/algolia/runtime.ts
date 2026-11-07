@@ -1,9 +1,10 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
-import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 type AlgoliaRequestPhase = "validate" | "execute";
 
@@ -16,7 +17,7 @@ interface AlgoliaActionContext {
 
 type AlgoliaActionHandler = (input: Record<string, unknown>, context: AlgoliaActionContext) => Promise<unknown>;
 
-export const algoliaActionHandlers: Record<string, AlgoliaActionHandler> = {
+export const algoliaActionHandlers: ProviderActionHandlers<"algolia", AlgoliaActionHandler> = {
   list_indices(input, context) {
     return listAlgoliaIndices(input, context);
   },
@@ -130,10 +131,10 @@ async function searchAlgoliaIndex(input: Record<string, unknown>, context: Algol
       aroundRadius: input.aroundRadius,
       insideBoundingBox: input.insideBoundingBox,
       insidePolygon: input.insidePolygon,
-      clickAnalytics: readOptionalBoolean(input.clickAnalytics),
-      analytics: readOptionalBoolean(input.analytics),
-      getRankingInfo: readOptionalBoolean(input.getRankingInfo),
-      sumOrFiltersScores: readOptionalBoolean(input.sumOrFiltersScores),
+      clickAnalytics: optionalBoolean(input.clickAnalytics),
+      analytics: optionalBoolean(input.analytics),
+      getRankingInfo: optionalBoolean(input.getRankingInfo),
+      sumOrFiltersScores: optionalBoolean(input.sumOrFiltersScores),
     }),
     phase: "execute",
   });
@@ -377,10 +378,6 @@ function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function readOptionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function readOptionalStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -437,7 +434,7 @@ function createAlgoliaError(
     `algolia request failed with ${response.status}`;
 
   if (response.status === 400) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 401) {
     return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
@@ -446,7 +443,7 @@ function createAlgoliaError(
     return new ProviderRequestError(phase === "validate" ? 400 : 403, message);
   }
   if (response.status === 404 && notFoundAsInvalidInput) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 429) {
     return new ProviderRequestError(429, message);

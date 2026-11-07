@@ -1,30 +1,27 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { Client } from "@modelcontextprotocol/client";
 
-import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { McpError } from "@modelcontextprotocol/sdk/types.js";
-import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
+import { UnauthorizedError } from "@modelcontextprotocol/client";
+import { SdkHttpError } from "@modelcontextprotocol/client";
+import { ProtocolError } from "@modelcontextprotocol/client";
 import { createHash } from "node:crypto";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { withMcpClient } from "../mcp-client.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "luckin_coffee";
 const luckinMcpOrigin = "https://gwmcp.lkcoffee.com";
 const luckinMcpEndpoint = "https://gwmcp.lkcoffee.com/order/user/mcp";
 const luckinRequestTimeoutMs = 60_000;
-const luckinMcpJsonSchemaValidator = new CfWorkerJsonSchemaValidator();
 
 type LuckinActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type LuckinActionHandler = (input: Record<string, unknown>, context: LuckinActionContext) => Promise<unknown>;
 type LuckinMcpToolResult = Awaited<ReturnType<Client["callTool"]>>;
 
-export const luckinActionHandlers: Record<string, LuckinActionHandler> = {
+export const luckinActionHandlers: ProviderActionHandlers<"luckin_coffee", LuckinActionHandler> = {
   queryShopList(input, context) {
     return callLuckinMcpTool(context, "queryShopList", input);
   },
@@ -98,9 +95,12 @@ async function callLuckinMcpTool(
   argumentsInput: Record<string, unknown>,
 ): Promise<unknown> {
   return withLuckinMcpClient(context, async (client) => {
-    const result = await client.callTool({ name: toolName, arguments: argumentsInput }, undefined, {
-      timeout: luckinRequestTimeoutMs,
-    });
+    const result = await client.callTool(
+      { name: toolName, arguments: argumentsInput },
+      {
+        timeout: luckinRequestTimeoutMs,
+      },
+    );
     return normalizeLuckinMcpToolResult(toolName, result);
   });
 }
@@ -112,23 +112,17 @@ async function withLuckinMcpClient<T>(
   const headers = new Headers();
   headers.set("authorization", `Bearer ${input.apiKey}`);
   headers.set("user-agent", providerUserAgent);
-  const transport = new StreamableHTTPClientTransport(new URL(luckinMcpEndpoint), {
-    fetch: input.fetcher,
-    requestInit: { headers, signal: input.signal },
-  });
-  const client = new Client(
-    { name: "oomol-connect-luckin-coffee", version: "1.0.0" },
-    { jsonSchemaValidator: luckinMcpJsonSchemaValidator },
+  return withMcpClient(
+    {
+      endpoint: new URL(luckinMcpEndpoint),
+      transport: "streamable_http",
+      fetcher: input.fetcher,
+      headers,
+      signal: input.signal,
+      mapError: mapLuckinMcpError,
+    },
+    run,
   );
-
-  try {
-    await client.connect(transport, { timeout: luckinRequestTimeoutMs });
-    return await run(client);
-  } catch (error) {
-    throw mapLuckinMcpError(error);
-  } finally {
-    await client.close().catch(() => undefined);
-  }
 }
 
 function normalizeLuckinMcpToolResult(toolName: string, result: LuckinMcpToolResult): unknown {
@@ -172,8 +166,8 @@ function mapLuckinMcpError(error: unknown): ProviderRequestError {
   if (error instanceof UnauthorizedError) {
     return new ProviderRequestError(401, "Luckin Coffee MCP token is invalid or expired", error);
   }
-  if (error instanceof StreamableHTTPError) {
-    const status = error.code;
+  if (error instanceof SdkHttpError) {
+    const status = error.status;
     return new ProviderRequestError(
       status === 401 || status === 403
         ? 401
@@ -186,7 +180,7 @@ function mapLuckinMcpError(error: unknown): ProviderRequestError {
       error,
     );
   }
-  if (error instanceof McpError) {
+  if (error instanceof ProtocolError) {
     return new ProviderRequestError(502, `Luckin Coffee MCP request failed: ${error.message}`, error);
   }
   return new ProviderRequestError(

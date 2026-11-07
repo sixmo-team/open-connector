@@ -1,7 +1,14 @@
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ClickhelpActionName } from "./actions.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  basicAuthorizationHeader,
+  createProviderTimeout,
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+} from "../provider-runtime.ts";
 
 interface ApiKeyProviderActionInput {
   apiKey: string;
@@ -45,7 +52,7 @@ type ClickhelpActionHandler = (input: ClickhelpActionInput, fetcher: typeof fetc
 
 const clickhelpRequestTimeoutMs = 60_000;
 
-export const clickhelpActionHandlers: Record<ClickhelpActionName, ClickhelpActionHandler> = {
+export const clickhelpActionHandlers: ProviderActionHandlers<"clickhelp", ClickhelpActionHandler> = {
   async list_projects(input, fetcher) {
     const projects = requireObjectArray(
       await requestActionJson(input, fetcher, "projects", {
@@ -237,7 +244,7 @@ async function requestClickhelpJson(input: ClickhelpRequest) {
       method: input.method ?? "GET",
       headers: {
         accept: "application/json",
-        authorization: `Basic ${btoa(`${input.credential.login}:${input.credential.apiKey}`)}`,
+        authorization: basicAuthorizationHeader(`${input.credential.login}:${input.credential.apiKey}`),
         "content-type": "application/json",
         "user-agent": providerUserAgent,
       },
@@ -282,14 +289,14 @@ export function normalizeClickhelpApiBaseUrl(value: unknown): string {
 
 function resolveActionCredential(input: ClickhelpActionInput) {
   return resolveClickhelpCredential(
-    requiredString(input.apiKey, "apiKey", (message) => new ProviderRequestError(400, message)),
+    requiredString(input.apiKey, "apiKey", providerInputError),
     input.providerMetadata?.login ?? input.values?.login,
     input.providerMetadata?.apiBaseUrl ?? input.values?.portalUrl,
   );
 }
 
 function resolveClickhelpCredential(apiKeyInput: string | undefined, loginInput: unknown, portalUrlInput: unknown) {
-  const apiKey = requiredString(apiKeyInput, "apiKey", (message) => new ProviderRequestError(400, message)).trim();
+  const apiKey = requiredString(apiKeyInput, "apiKey", providerInputError).trim();
   if (!apiKey) {
     throw new ProviderRequestError(400, "apiKey is required");
   }
@@ -304,13 +311,13 @@ function resolveClickhelpCredential(apiKeyInput: string | undefined, loginInput:
 
 function mapClickhelpError(status: number, message: string, phase: ClickhelpRequest["phase"]) {
   if (phase === "validate" && (status === 401 || status === 403 || status === 404)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && status === 401) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
   if ([400, 403, 404, 409, 422].includes(status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 429) {
     return new ProviderRequestError(429, message);

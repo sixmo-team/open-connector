@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { optionalRecord, optionalString } from "../../core/cast.ts";
@@ -16,7 +17,10 @@ async function execute(path: string, input: Record<string, unknown>, context: Ap
   return request(path, context.apiKey, body, context.fetcher, "execute");
 }
 
-export const profileapiActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const profileapiActionHandlers: ProviderActionHandlers<
+  "profileapi",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   reverse_lookup_email: (input, context) => execute(`/${apiVersion}/email-contacts/reverse-lookup`, input, context),
   reverse_lookup_phone: (input, context) => execute(`/${apiVersion}/phone-contacts/reverse-lookup`, input, context),
 };

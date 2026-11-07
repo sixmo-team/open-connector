@@ -1,6 +1,6 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { PersonalAiActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,14 +10,15 @@ import {
   optionalRecord,
   optionalString,
 } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const personalAiApiBaseUrl = "https://api.personal.ai";
 
 type PersonalAiMode = "validate" | "execute";
 type PersonalAiActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const personalAiActionHandlers: Record<PersonalAiActionName, PersonalAiActionHandler> = {
+export const personalAiActionHandlers: ProviderActionHandlers<"personal_ai", PersonalAiActionHandler> = {
   async send_message(input, context) {
     const payload = await requestPersonalAiJson(
       "/v1/message",

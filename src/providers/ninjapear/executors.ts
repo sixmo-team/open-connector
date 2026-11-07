@@ -4,8 +4,9 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { NinjapearActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -14,14 +15,10 @@ import {
   optionalNumber,
   optionalRecord,
   optionalString,
-  requiredString,
 } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, requiredInputString } from "../provider-runtime.ts";
 
 const service = "ninjapear";
 export const ninjapearApiBaseUrl = "https://nubela.co";
@@ -31,7 +28,7 @@ type NinjapearQueryValue = string | number | boolean | undefined;
 type NinjapearContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type NinjapearActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
 
-export const ninjapearActionHandlers: Record<NinjapearActionName, NinjapearActionHandler> = {
+export const ninjapearActionHandlers: ProviderActionHandlers<"ninjapear", NinjapearActionHandler> = {
   get_credit_balance(_, context) {
     return requestNinjapear("/api/v1/meta/credit-balance", {}, context, "execute");
   },
@@ -40,7 +37,7 @@ export const ninjapearActionHandlers: Record<NinjapearActionName, NinjapearActio
     return requestNinjapear(
       "/api/v1/contact/disposable-email",
       {
-        email: requiredNinjapearString(input.email, "email"),
+        email: requiredInputString(input.email, "email"),
       },
       context,
       "execute",
@@ -51,7 +48,7 @@ export const ninjapearActionHandlers: Record<NinjapearActionName, NinjapearActio
     return requestNinjapear(
       "/api/v1/company/website",
       {
-        company_name: requiredNinjapearString(input.company_name, "company_name"),
+        company_name: requiredInputString(input.company_name, "company_name"),
         country_code: optionalString(input.country_code),
         hint: optionalString(input.hint),
       },
@@ -64,7 +61,7 @@ export const ninjapearActionHandlers: Record<NinjapearActionName, NinjapearActio
     return requestNinjapear(
       "/api/v1/company/details",
       {
-        website: requiredNinjapearString(input.website, "website"),
+        website: requiredInputString(input.website, "website"),
         include_employee_count: optionalBoolean(input.include_employee_count),
         follower_count: optionalString(input.follower_count),
         addresses: optionalString(input.addresses),
@@ -79,7 +76,7 @@ export const ninjapearActionHandlers: Record<NinjapearActionName, NinjapearActio
     return requestNinjapear(
       "/api/v1/company/employee-count",
       {
-        website: requiredNinjapearString(input.website, "website"),
+        website: requiredInputString(input.website, "website"),
         ...commonCacheQuery(input),
       },
       context,
@@ -91,7 +88,7 @@ export const ninjapearActionHandlers: Record<NinjapearActionName, NinjapearActio
     return requestNinjapear(
       "/api/v1/customer/listing",
       {
-        website: requiredNinjapearString(input.website, "website"),
+        website: requiredInputString(input.website, "website"),
         cursor: optionalString(input.cursor),
         page_size: optionalInteger(input.page_size),
         quality_filter: optionalBoolean(input.quality_filter),
@@ -106,7 +103,7 @@ export const ninjapearActionHandlers: Record<NinjapearActionName, NinjapearActio
     return requestNinjapear(
       "/api/v1/competitor/listing",
       {
-        website: requiredNinjapearString(input.website, "website"),
+        website: requiredInputString(input.website, "website"),
         ...commonCacheQuery(input),
       },
       context,
@@ -118,7 +115,7 @@ export const ninjapearActionHandlers: Record<NinjapearActionName, NinjapearActio
     return requestNinjapear(
       "/api/v1/product/listing",
       {
-        website: requiredNinjapearString(input.website, "website"),
+        website: requiredInputString(input.website, "website"),
         ...commonCacheQuery(input),
       },
       context,
@@ -202,10 +199,6 @@ async function requestNinjapear(
     throw new ProviderRequestError(502, "invalid NinjaPear response", payload);
   }
   return record;
-}
-
-function requiredNinjapearString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function commonCacheQuery(input: Record<string, unknown>): { use_cache: string | undefined } {

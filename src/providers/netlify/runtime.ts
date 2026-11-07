@@ -1,13 +1,12 @@
-import type { NetlifyActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { ProviderRequestError, providerUserAgent, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 import { netlifyConnectorScopes } from "./actions.ts";
 
 export const netlifyApiBaseUrl = "https://api.netlify.com/api/v1";
 const netlifyValidationPath = "/user";
-const sourceFetchTimeoutMs = 30_000;
 const maxSourceBytes = 100 * 1024 * 1024;
 
 type NetlifyRequestPhase = "validate" | "execute";
@@ -18,7 +17,7 @@ export interface NetlifyActionContext {
 
 type NetlifyActionHandler = (input: Record<string, unknown>, context: NetlifyActionContext) => Promise<unknown>;
 
-export const netlifyActionHandlers: Record<NetlifyActionName, NetlifyActionHandler> = {
+export const netlifyActionHandlers: ProviderActionHandlers<"netlify", NetlifyActionHandler> = {
   async get_current_user(_input: Record<string, unknown>, context: NetlifyActionContext): Promise<unknown> {
     return {
       user: objectPayload(
@@ -73,6 +72,34 @@ export const netlifyActionHandlers: Record<NetlifyActionName, NetlifyActionHandl
       }),
     );
     return { sites, count: sites.length };
+  },
+
+  async create_site(input, context) {
+    return {
+      site: objectPayload(
+        await netlifyRequestJson({
+          accessToken: context.accessToken,
+          method: "POST",
+          path: "/sites",
+          query: compactObject({
+            configure_dns: readOptionalBooleanString(input.configureDns),
+          }),
+          body: JSON.stringify(
+            compactObject({
+              name: readOptionalNonEmptyString(input.name),
+              account_id: readOptionalNonEmptyString(input.accountId),
+              custom_domain: readOptionalNonEmptyString(input.customDomain),
+              domain_aliases: input.domainAliases,
+              notification_email: readOptionalNonEmptyString(input.notificationEmail),
+              force_ssl: optionalBoolean(input.forceSsl),
+            }),
+          ),
+          contentType: "application/json",
+          fetcher: context.fetcher,
+          phase: "execute",
+        }),
+      ),
+    };
   },
 
   async get_site(input: Record<string, unknown>, context: NetlifyActionContext): Promise<unknown> {
@@ -332,19 +359,6 @@ export async function validateNetlifyCredential(
   };
 }
 
-export async function executeNetlifyAction(
-  actionName: NetlifyActionName,
-  input: Record<string, unknown>,
-  context: NetlifyActionContext,
-): Promise<unknown> {
-  const handler = netlifyActionHandlers[actionName];
-  if (!handler) {
-    throw new ProviderRequestError(400, `unknown netlify action: ${actionName}`);
-  }
-
-  return handler(input, context);
-}
-
 async function postDeployAction(
   input: Record<string, unknown>,
   context: NetlifyActionContext,
@@ -570,7 +584,7 @@ async function downloadSourceFile(
 }> {
   const url = validateSourceUrl(sourceUrl, fieldName);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), sourceFetchTimeoutMs);
+  const timeout = setTimeout(() => controller.abort(), defaultProviderRequestTimeoutMs);
 
   try {
     const response = await fetcher(url, {

@@ -64,10 +64,11 @@ interface RawAction {
   minimumRole: AdminMinimumRole;
   maxInputBytes: number;
   maxOutputBytes: number;
-  grant: null | { enabled: boolean; approvalOverride: "inherit" | "always" };
-  runCount: number;
-  successCount: number;
-  failureCount: number;
+  permission: AdminAction["permission"];
+  approvalOverride: "inherit" | "always";
+  runCount: number | null;
+  successCount: number | null;
+  failureCount: number | null;
 }
 
 interface RawConnection {
@@ -179,6 +180,11 @@ export async function getAdminActions(scope: AdminScope, fetcher: typeof fetch =
   return actions.map(toAdminAction);
 }
 
+export async function getAdminActionDefaults(fetcher: typeof fetch = fetch): Promise<AdminAction[]> {
+  const response = await requestJson<{ actions: RawAction[] }>(`${adminRoot}/action-defaults`, fetcher);
+  return response.actions.map(toAdminAction);
+}
+
 export async function getAdminConnections(
   scope: AdminScope,
   fetcher: typeof fetch = fetch,
@@ -212,36 +218,77 @@ export async function loadAdminData(scope: AdminScope, fetcher: typeof fetch = f
 export async function putAdminActionGrant(
   actionId: string,
   scope: AdminScope,
-  enabled: boolean,
-  approvalOverride: "inherit" | "always",
+  enabled: boolean | null,
+  reason: string,
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
-  if (!csrfToken) throw new Error("Admin CSRF token is unavailable");
-  const response = await fetcher(withScope(`${adminRoot}/action-grants/${encodeURIComponent(actionId)}`, scope), {
-    method: "PUT",
-    credentials: "same-origin",
-    mode: "same-origin",
-    redirect: "error",
-    cache: "no-store",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "x-csrf-token": csrfToken,
-    },
-    body: JSON.stringify({ enabled, approvalOverride }),
-  });
-  await readResponse<void>(response, false);
+  await putActionChange(withScope(`${adminRoot}/action-grants/${encodeURIComponent(actionId)}`, scope), {
+    enabled, reason: validateReason(reason),
+  }, fetcher);
 }
 
 export async function putAdminActionGrants(
   actionIds: string[],
   scope: AdminScope,
-  enabled: boolean,
-  approvalOverride: "inherit" | "always",
+  enabled: boolean | null,
+  reason: string,
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
+  validateActionBatch(actionIds);
+  await putActionChange(withScope(`${adminRoot}/action-grants`, scope), {
+    actionIds, enabled, reason: validateReason(reason),
+  }, fetcher);
+}
+
+export async function putAdminActionDefault(
+  actionId: string,
+  enabled: boolean,
+  reason: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  await putActionChange(`${adminRoot}/action-defaults/${encodeURIComponent(actionId)}`, {
+    enabled, reason: validateReason(reason),
+  }, fetcher);
+}
+
+export async function putAdminActionDefaults(
+  actionIds: string[],
+  enabled: boolean,
+  reason: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  validateActionBatch(actionIds);
+  await putActionChange(`${adminRoot}/action-defaults`, {
+    actionIds, enabled, reason: validateReason(reason),
+  }, fetcher);
+}
+
+export async function putAdminActionApprovalOverride(
+  actionId: string,
+  scope: AdminScope,
+  approvalOverride: "inherit" | "always",
+  reason: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  await putActionChange(withScope(`${adminRoot}/action-approval-overrides/${encodeURIComponent(actionId)}`, scope), {
+    approvalOverride, reason: validateReason(reason),
+  }, fetcher);
+}
+
+function validateActionBatch(actionIds: string[]): void {
+  if (actionIds.length === 0 || actionIds.length > 5000 || actionIds.some((id) => !id.trim()) ||
+    new Set(actionIds).size !== actionIds.length) throw new Error("Invalid action batch");
+}
+
+function validateReason(reason: string): string {
+  const trimmed = reason.trim();
+  if (!trimmed || trimmed.length > 500) throw new Error("Invalid reason");
+  return trimmed;
+}
+
+async function putActionChange(path: string, body: object, fetcher: typeof fetch): Promise<void> {
   if (!csrfToken) throw new Error("Admin CSRF token is unavailable");
-  const response = await fetcher(withScope(`${adminRoot}/action-grants`, scope), {
+  const response = await fetcher(path, {
     method: "PUT",
     credentials: "same-origin",
     mode: "same-origin",
@@ -252,7 +299,7 @@ export async function putAdminActionGrants(
       "Content-Type": "application/json",
       "x-csrf-token": csrfToken,
     },
-    body: JSON.stringify({ actionIds, enabled, approvalOverride }),
+    body: JSON.stringify(body),
   });
   await readResponse<void>(response, false);
 }
@@ -279,8 +326,8 @@ function toAdminAction(action: RawAction): AdminAction {
     minimumRole: action.minimumRole,
     maxInputBytes: action.maxInputBytes,
     maxOutputBytes: action.maxOutputBytes,
-    granted: action.grant?.enabled ?? false,
-    approvalOverride: action.grant?.approvalOverride ?? "inherit",
+    permission: action.permission,
+    approvalOverride: action.approvalOverride,
     calls: action.runCount,
     successes: action.successCount,
     failures: action.failureCount,

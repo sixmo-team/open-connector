@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -8,12 +9,12 @@ import {
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 export const yGyApiBaseUrl = "https://api.y.gy/api/v1";
 const linksPath = "/link";
 const maxResponseBytes = 10 * 1024 * 1024;
-const requestTimeoutMs = 30_000;
 const updateFields = [
   "destination_url",
   "password",
@@ -38,7 +39,7 @@ type YGyMode = "validate" | "execute";
 type YGyMethod = "GET" | "POST" | "PATCH" | "DELETE";
 type YGyPayload = { kind: "empty" } | { kind: "json"; value: unknown } | { kind: "text"; value: string };
 
-export const yGyActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const yGyActionHandlers: ProviderActionHandlers<"y_gy", ProviderRuntimeHandler<ApiKeyProviderContext>> = {
   async create_link(input, context) {
     const payload = await requestYGyJson(context, {
       path: linksPath,
@@ -209,7 +210,7 @@ async function requestYGy(
     "user-agent": providerUserAgent,
   };
   if (input.body !== undefined) headers["content-type"] = "application/json";
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: input.method ?? "GET",
@@ -259,7 +260,7 @@ function createYGyError(
     return new ProviderRequestError(status, message);
   }
   if (status === 400 || status === 409 || status === 422 || (status === 404 && notFoundAsInvalidInput)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status || 502, message);
 }

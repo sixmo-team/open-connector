@@ -6,17 +6,20 @@ import type {
 } from "../../core/types.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  basicAuthorizationHeader,
+  createProviderFetch,
+  ProviderRequestError,
+  providerUserAgent,
 } from "../provider-runtime.ts";
 import { razorpayActionHandlers, razorpayApiBaseUrl, validateRazorpayCredential } from "./runtime.ts";
 
@@ -60,7 +63,7 @@ export const proxy: ProviderProxyExecutor = async (input, context) => {
 
     const url = createProviderProxyUrl(razorpayApiBaseUrl, input.endpoint, input.query);
     const headers = normalizeProviderProxyHeaders(input.headers);
-    headers.set("authorization", `Basic ${btoa(`${keyId}:${credential.apiKey}`)}`);
+    headers.set("authorization", basicAuthorizationHeader(`${keyId}:${credential.apiKey}`));
     headers.set("user-agent", providerUserAgent);
     if (!headers.has("accept")) {
       headers.set("accept", "application/json");

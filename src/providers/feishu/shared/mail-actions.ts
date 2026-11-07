@@ -2,21 +2,14 @@ import type { ActionDefinition } from "../../../core/types.ts";
 
 import { s } from "../../../core/json-schema.ts";
 import { defineProviderAction } from "../../../core/provider-definition.ts";
-export const feishuMailProviderPermissions: readonly string[] = [
-  "mail:user_mailbox:readonly",
-  "mail:user_mailbox.message:readonly",
-  "mail:user_mailbox.message.address:read",
-  "mail:user_mailbox.message.subject:read",
-  "mail:user_mailbox.message.body:read",
-  "mail:user_mailbox.message:modify",
-  "mail:user_mailbox.message:send",
-];
+const composeOptional = ["from", "cc", "bcc", "text", "html", "attachments"];
 const mailboxId = s.string("The mailbox email address. Use `me` for the authorized user's mailbox.", { minLength: 1 });
 const messageId = s.string("The Feishu mail message ID.", { minLength: 1 });
 const draftId = s.string("The Feishu mail draft ID.", { minLength: 1 });
 const pageSize = s.positiveInteger("The maximum number of results on this page.", {
-  maximum: 50,
+  maximum: 15,
 });
+
 const pageToken = s.string("The page token returned by the previous request.", { minLength: 1 });
 const email = s.email("An email address.");
 const mailItem = s.looseRequiredObject(
@@ -51,16 +44,15 @@ const composeFields = {
       "One URL-backed mail attachment.",
       {
         fileUrl: s.url("The public HTTPS URL of the attachment."),
-        fileName: s.string("The attachment file name.", { minLength: 1 }),
-        contentType: s.string("The attachment MIME type.", { minLength: 1 }),
+        fileName: s.nonEmptyString("The attachment file name."),
+        contentType: s.nonEmptyString("The attachment MIME type."),
       },
-      {
-        optional: ["fileName", "contentType"],
-      },
+      { optional: ["fileName", "contentType"] },
     ),
-    { maxItems: 20 },
+    { maxItems: 250 },
   ),
 };
+
 const draftOutput = s.object(
   "A normalized draft result.",
   {
@@ -105,6 +97,7 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
   return [
     defineProviderAction(service, {
       name: "list_mail_messages",
+      operationType: "read",
       description: "List message IDs in a Feishu mailbox folder or label.",
       requiredScopes: readPermissions,
       providerPermissions: readPermissions,
@@ -115,17 +108,25 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
           folderId: s.string("The folder ID. Defaults to `INBOX`.", { minLength: 1 }),
           labelId: s.string("A label ID. It cannot be combined with folderId.", { minLength: 1 }),
           onlyUnread: s.boolean("Whether to return unread messages only."),
-          pageSize,
+          pageSize: s.integer("The maximum number of messages to return. Defaults to 20.", {
+            minimum: 1,
+            maximum: 20,
+          }),
           pageToken,
         },
         {
           optional: ["mailboxId", "folderId", "labelId", "onlyUnread", "pageSize", "pageToken"],
         },
       ),
-      outputSchema: pageOutput,
+      outputSchema: s.object("A page of Feishu mail message IDs.", {
+        items: s.array("The message IDs returned on this page.", messageId),
+        hasMore: s.boolean("Whether another page is available."),
+        pageToken: s.nullableString("The token for the next page."),
+      }),
     }),
     defineProviderAction(service, {
       name: "search_mail_messages",
+      operationType: "read",
       description: "Search Feishu mail by text, addresses, subject, state, and creation time.",
       requiredScopes: readPermissions,
       providerPermissions: readPermissions,
@@ -133,7 +134,7 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
         "Describe the mailbox search.",
         {
           mailboxId,
-          query: s.string("Full-text search terms."),
+          query: s.string("Full-text search terms.", { maxLength: 50 }),
           from: s.array("Sender addresses to match.", email),
           to: s.array("Recipient addresses to match.", email),
           cc: s.array("CC recipient addresses to match.", email),
@@ -172,6 +173,7 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
     }),
     defineProviderAction(service, {
       name: "get_mail_message",
+      operationType: "read",
       description: "Read one Feishu mail message with body and attachment metadata.",
       requiredScopes: readPermissions,
       providerPermissions: readPermissions,
@@ -196,6 +198,7 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
     }),
     defineProviderAction(service, {
       name: "get_mail_thread",
+      operationType: "read",
       description: "Read every message in a Feishu mail thread in chronological order.",
       requiredScopes: readPermissions,
       providerPermissions: readPermissions,
@@ -225,6 +228,7 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
     ...draftActions(service),
     defineProviderAction(service, {
       name: "send_mail",
+      operationType: "write",
       description: "Compose a new email, create a Feishu draft, and send it immediately.",
       requiredScopes: [
         "mail:user_mailbox.message:modify",
@@ -239,14 +243,13 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
       inputSchema: s.object(
         "Compose the email.",
         { mailboxId, ...composeFields },
-        {
-          optional: ["mailboxId"],
-        },
+        { optional: ["mailboxId", ...composeOptional] },
       ),
       outputSchema: sendOutput,
     }),
     defineProviderAction(service, {
       name: "get_mail_send_status",
+      operationType: "read",
       description: "Get the latest per-recipient delivery status for one sent Feishu mail message.",
       requiredScopes: ["mail:user_mailbox.message:readonly"],
       providerPermissions: ["mail:user_mailbox.message:readonly"],
@@ -265,6 +268,7 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
     }),
     defineProviderAction(service, {
       name: "cancel_scheduled_send",
+      operationType: "destructive",
       description: "Cancel a Feishu mail message before its scheduled delivery time.",
       requiredScopes: ["mail:user_mailbox.message:send"],
       providerPermissions: ["mail:user_mailbox.message:send"],
@@ -284,25 +288,21 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
     ...replyActions(service, readPermissions),
     defineProviderAction(service, {
       name: "recall_sent_mail",
+      operationType: "write",
       description: "Request asynchronous recall of one delivered Feishu mail message within its recall window.",
       requiredScopes: ["mail:user_mailbox.message:modify"],
       providerPermissions: ["mail:user_mailbox.message:modify"],
       inputSchema: messageLifecycleInput(),
-      outputSchema: s.object(
-        "The mail recall request result.",
-        {
-          messageId,
-          recallStatus: s.nullable(s.string("Whether the message is available for recall or unavailable.")),
-          recallRestrictionReason: s.nullable(s.string("Why the message cannot be recalled, when unavailable.")),
-          raw: mailItem,
-        },
-        {
-          optional: [],
-        },
-      ),
+      outputSchema: s.requiredObject("The mail recall request result.", {
+        messageId,
+        recallStatus: s.nullable(s.string("Whether the message is available for recall or unavailable.")),
+        recallRestrictionReason: s.nullable(s.string("Why the message cannot be recalled, when unavailable.")),
+        raw: mailItem,
+      }),
     }),
     defineProviderAction(service, {
       name: "get_mail_recall_detail",
+      operationType: "read",
       description: "Get asynchronous recall progress and per-recipient results for one Feishu mail message.",
       requiredScopes: ["mail:user_mailbox.message:readonly"],
       providerPermissions: ["mail:user_mailbox.message:readonly"],
@@ -326,6 +326,7 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
     }),
     defineProviderAction(service, {
       name: "modify_mail_messages",
+      operationType: "destructive",
       description: "Add or remove labels and move Feishu mail messages in batches of 20.",
       requiredScopes: ["mail:user_mailbox.message:modify"],
       providerPermissions: ["mail:user_mailbox.message:modify"],
@@ -355,6 +356,7 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
     }),
     defineProviderAction(service, {
       name: "trash_mail_messages",
+      operationType: "destructive",
       description: "Move Feishu mail messages to trash in batches of 20.",
       requiredScopes: ["mail:user_mailbox.message:modify"],
       providerPermissions: ["mail:user_mailbox.message:modify"],
@@ -381,6 +383,7 @@ export function createFeishuMailActions(service: string): readonly ActionDefinit
     }),
     defineProviderAction(service, {
       name: "list_mail_signatures",
+      operationType: "read",
       description: "List the authorized user's Feishu mail signatures and default usages.",
       requiredScopes: ["mail:user_mailbox:readonly"],
       providerPermissions: ["mail:user_mailbox:readonly"],
@@ -400,34 +403,33 @@ function draftActions(service: string): readonly ActionDefinition[] {
   return [
     defineProviderAction(service, {
       name: "create_mail_draft",
+      operationType: "write",
       description: "Compose and save a new Feishu mail draft without sending it.",
       requiredScopes: writePermissions,
       providerPermissions: writePermissions,
       inputSchema: s.object(
         "Compose the draft.",
         { mailboxId, ...composeFields },
-        {
-          optional: ["mailboxId"],
-        },
+        { optional: ["mailboxId", "to", ...composeOptional] },
       ),
       outputSchema: draftOutput,
     }),
     defineProviderAction(service, {
       name: "update_mail_draft",
+      operationType: "destructive",
       description: "Replace the complete content of an existing Feishu mail draft.",
       requiredScopes: writePermissions,
       providerPermissions: writePermissions,
       inputSchema: s.object(
         "Identify and compose the replacement draft.",
         { mailboxId, draftId, ...composeFields },
-        {
-          optional: ["mailboxId"],
-        },
+        { optional: ["mailboxId", "to", ...composeOptional] },
       ),
       outputSchema: draftOutput,
     }),
     defineProviderAction(service, {
       name: "delete_mail_draft",
+      operationType: "destructive",
       description: "Delete a Feishu mail draft.",
       requiredScopes: ["mail:user_mailbox.message:modify"],
       providerPermissions: ["mail:user_mailbox.message:modify"],
@@ -451,6 +453,7 @@ function draftActions(service: string): readonly ActionDefinition[] {
     }),
     defineProviderAction(service, {
       name: "send_mail_draft",
+      operationType: "write",
       description: "Send an existing Feishu mail draft immediately or at a scheduled time.",
       requiredScopes: ["mail:user_mailbox.message:send"],
       providerPermissions: ["mail:user_mailbox.message:send"],
@@ -497,6 +500,7 @@ function replyActions(service: string, readPermissions: readonly string[]): read
   return [
     defineProviderAction(service, {
       name: "reply_mail",
+      operationType: "write",
       description: "Reply to a Feishu mail message, preserving conversation headers.",
       requiredScopes: permissions,
       providerPermissions: permissions,
@@ -505,6 +509,7 @@ function replyActions(service: string, readPermissions: readonly string[]): read
     }),
     defineProviderAction(service, {
       name: "reply_all_mail",
+      operationType: "write",
       description: "Reply to all participants of a Feishu mail message.",
       requiredScopes: permissions,
       providerPermissions: permissions,
@@ -513,6 +518,7 @@ function replyActions(service: string, readPermissions: readonly string[]): read
     }),
     defineProviderAction(service, {
       name: "forward_mail",
+      operationType: "write",
       description: "Forward a Feishu mail message to new recipients.",
       requiredScopes: permissions,
       providerPermissions: permissions,

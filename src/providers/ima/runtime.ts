@@ -1,18 +1,24 @@
 import type { CredentialValidationResult, TransitFileWriter } from "../../core/types.ts";
-import type { ImaActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { createHash, createHmac } from "node:crypto";
 import { basename, extname } from "node:path";
 import {
   compactObject,
+  looseArray,
   optionalBoolean,
   optionalIntegerLike,
   optionalRecord,
   optionalString,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl, readBoundedResponseBytes } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 export const imaApiBaseUrl = "https://ima.qq.com";
 
@@ -151,7 +157,7 @@ interface ImaRepeatedNameResult {
 
 type ImaActionHandler = (input: Record<string, unknown>, context: ImaRuntimeContext) => Promise<unknown>;
 
-export const imaActionHandlers: Record<ImaActionName, ImaActionHandler> = {
+export const imaActionHandlers: ProviderActionHandlers<"ima", ImaActionHandler> = {
   search_notes(input, context) {
     return searchImaNotes(input, context);
   },
@@ -224,7 +230,7 @@ export async function validateImaCredential(
     phase: "validate",
   });
 
-  const firstNotebook = asArray(payload.note_folder_infos)
+  const firstNotebook = looseArray(payload.note_folder_infos)
     .map((item) => normalizeNotebook(item))
     .find(isPresent);
 
@@ -266,7 +272,7 @@ async function searchImaNotes(input: Record<string, unknown>, context: ImaRuntim
     phase: "execute",
   });
 
-  const notes = asArray(payload.search_note_infos)
+  const notes = looseArray(payload.search_note_infos)
     .map((item) => normalizeSearchNote(item))
     .filter(isPresent);
   const isEnd = optionalBoolean(payload.is_end) ?? true;
@@ -295,7 +301,7 @@ async function listImaNotebooks(input: Record<string, unknown>, context: ImaRunt
 
   const isEnd = optionalBoolean(payload.is_end) ?? true;
   return {
-    notebooks: asArray(payload.note_folder_infos)
+    notebooks: looseArray(payload.note_folder_infos)
       .map((item) => normalizeNotebook(item))
       .filter(isPresent),
     nextCursor: isEnd ? null : (optionalString(payload.next_cursor) ?? null),
@@ -322,7 +328,7 @@ async function listImaNotes(input: Record<string, unknown>, context: ImaRuntimeC
 
   const isEnd = optionalBoolean(payload.is_end) ?? true;
   return {
-    notes: asArray(payload.note_book_list)
+    notes: looseArray(payload.note_book_list)
       .map((item) => normalizeListedNote(item))
       .filter(isPresent),
     nextCursor: isEnd ? null : (optionalString(payload.next_cursor) ?? null),
@@ -407,7 +413,7 @@ async function searchImaKnowledgeBases(input: Record<string, unknown>, context: 
 
   const isEnd = optionalBoolean(payload.is_end) ?? true;
   return {
-    knowledgeBases: asArray(payload.info_list)
+    knowledgeBases: looseArray(payload.info_list)
       .map((item) => normalizeKnowledgeBase(item))
       .filter(isPresent),
     nextCursor: isEnd ? null : (optionalString(payload.next_cursor) ?? null),
@@ -455,7 +461,7 @@ async function listAddableImaKnowledgeBases(
 
   const isEnd = optionalBoolean(payload.is_end) ?? true;
   return {
-    knowledgeBases: asArray(payload.addable_knowledge_base_list)
+    knowledgeBases: looseArray(payload.addable_knowledge_base_list)
       .map((item) => normalizeKnowledgeBase(item))
       .filter(isPresent),
     nextCursor: isEnd ? null : (optionalString(payload.next_cursor) ?? null),
@@ -483,10 +489,10 @@ async function listImaKnowledgeItems(input: Record<string, unknown>, context: Im
 
   const isEnd = optionalBoolean(payload.is_end) ?? true;
   return {
-    items: asArray(payload.knowledge_list)
+    items: looseArray(payload.knowledge_list)
       .map((item) => normalizeKnowledgeItem(item))
       .filter(isPresent),
-    currentPath: asArray(payload.current_path)
+    currentPath: looseArray(payload.current_path)
       .map((item) => normalizeKnowledgeFolder(item))
       .filter(isPresent),
     nextCursor: isEnd ? null : (optionalString(payload.next_cursor) ?? null),
@@ -512,7 +518,7 @@ async function searchImaKnowledgeItems(input: Record<string, unknown>, context: 
 
   const isEnd = optionalBoolean(payload.is_end) ?? true;
   return {
-    items: asArray(payload.info_list)
+    items: looseArray(payload.info_list)
       .map((item) => normalizeKnowledgeItem(item))
       .filter(isPresent),
     nextCursor: isEnd ? null : (optionalString(payload.next_cursor) ?? null),
@@ -572,7 +578,7 @@ async function checkImaRepeatedNames(input: Record<string, unknown>, context: Im
       {
         knowledgeBaseId: requireImaField(input.knowledgeBaseId, "knowledgeBaseId"),
         folderId: optionalString(input.folderId),
-        files: asArray(input.files).map((item) => {
+        files: looseArray(input.files).map((item) => {
           const raw = optionalRecord(item) ?? {};
           return {
             name: requireImaField(raw.name, "files.name"),
@@ -594,7 +600,7 @@ async function uploadImaFileToKnowledgeBase(
   const contentType = optionalString(input.contentType);
   const sourceUrl = assertPublicHttpUrl(requireImaField(input.fileUrl, "fileUrl"), {
     fieldName: "fileUrl",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
   });
   const duplicatePolicy = optionalString(input.duplicatePolicy) ?? "fail";
 
@@ -663,7 +669,7 @@ async function requestImaRepeatedNames(
     phase: "execute",
   });
 
-  return asArray(payload.results).map((item) => {
+  return looseArray(payload.results).map((item) => {
     const raw = optionalRecord(item) ?? {};
     return {
       name: optionalString(raw.name) ?? "",
@@ -854,7 +860,7 @@ async function getImaKnowledgeItemOriginal(
   const bytes = await readBoundedResponseBytes(response, {
     maxBytes: maxImaDownloadBytes,
     fieldName: "IMA media URL",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
   });
   const mimeType = response.headers.get("content-type") ?? "application/octet-stream";
   const name = optionalString(input.fileName) ?? inferFileNameFromUrl(mediaInfo.url, mimeType);
@@ -901,7 +907,7 @@ async function downloadUrlBytes(
     bytes: await readBoundedResponseBytes(response, {
       maxBytes: maxImaDownloadBytes,
       fieldName: "IMA upload source",
-      createError: (message) => new ProviderRequestError(400, message),
+      createError: providerInputError,
     }),
     contentType: response.headers.get("content-type") ?? undefined,
   };
@@ -959,9 +965,9 @@ function mapImaError(code: number | undefined, message: string, phase: "validate
     return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
   }
   if (code != null && imaInvalidInputCodes.has(code)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function parseImaResponse(value: string): unknown {
@@ -1007,7 +1013,7 @@ function requireImaText(value: unknown, fieldName: string): string {
 }
 
 function readInteger(value: unknown): number | undefined {
-  return optionalIntegerLike(value, "integer", (message) => new ProviderRequestError(502, message));
+  return optionalIntegerLike(value, "integer", providerResponseError);
 }
 
 function mapNoteSortType(value: unknown): number {
@@ -1332,10 +1338,6 @@ function inferExtensionFromMimeType(mimeType: string): string | null {
     return null;
   }
   return subtype.replace(/[^a-z0-9]+/g, "") || null;
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {

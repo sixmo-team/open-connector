@@ -1,5 +1,6 @@
 import type { FeishuJsonRequest } from "./client.ts";
 
+import { compactObject } from "../../../core/cast.ts";
 import { ProviderRequestError } from "../../provider-runtime.ts";
 
 interface FeishuSheetsActionHandler {
@@ -62,7 +63,7 @@ export function createFeishuSheetsActionHandlers(
       result: await getSheetChangeset(request, input),
     }),
     get_sheet: async (input) => ({
-      sheet: await resolveSheet(request, input),
+      sheet: await resolveFeishuSheet(request, input),
     }),
     create_sheet: async (input) => ({
       result: await callSheetTool(
@@ -294,7 +295,7 @@ async function getSheetChangeset(
   });
 }
 
-async function resolveSheet(
+export async function resolveFeishuSheet(
   request: FeishuJsonRequest,
   input: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -729,7 +730,7 @@ function parseCellReference(value: string) {
   return { column: column - 1, row };
 }
 
-function columnIndexToLetters(index: number) {
+export function columnIndexToLetters(index: number): string {
   let value = index + 1;
   let result = "";
   while (value > 0) {
@@ -760,16 +761,6 @@ function stringifyCellValue(value: unknown) {
   } else {
     return JSON.stringify(value);
   }
-}
-
-function compactObject(value: Record<string, unknown>) {
-  const result: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (item !== undefined) {
-      result[key] = item;
-    }
-  }
-  return result;
 }
 
 function segment(value: string) {

@@ -1,0 +1,8 @@
+OpenConnector is private at {{ include "open-connector.fullname" . }}:3000 inside this namespace.
+No public ingress or standalone customer/operator console was created.
+Only pods selected by networkPolicy.backendPodSelector may connect; the cluster must enforce NetworkPolicy.
+Use the existing authenticated backend/BFF for all requests and protected console delivery.
+Verify /ready from that trusted network before traffic; /health only proves process liveness.
+External Secrets must already exist, including the distinct migration owner URL.
+Rotate short-lived OpenBao/JWKS token Secrets and restart connector pods through the approved rollout procedure.
+The image is {{ include "open-connector.image" . }}. Rendering/installing a chart does not qualify this image or infrastructure.

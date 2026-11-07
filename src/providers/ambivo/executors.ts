@@ -1,21 +1,22 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
-  requireApiKeyCredential,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 const service = "ambivo";
 const ambivoApiBaseUrl = "https://fapi.ambivo.com";
 const ambivoValidationPath = "/crm/leads";
-const ambivoRequestTimeoutMs = 30_000;
 const ambivoMaxResponseBytes = 10 * 1024 * 1024;
 
 interface AmbivoRequestOptions {
@@ -31,7 +32,7 @@ interface AmbivoRequestOptions {
 
 type AmbivoActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const ambivoActionHandlers: Record<string, AmbivoActionHandler> = {
+export const ambivoActionHandlers: ProviderActionHandlers<"ambivo", AmbivoActionHandler> = {
   list_leads(input, context) {
     return listPaginatedRecords(input, context, {
       path: "/crm/leads",
@@ -243,7 +244,7 @@ async function requestAmbivoJson(options: AmbivoRequestOptions) {
     headers["content-type"] = "application/json";
   }
 
-  const timeout = createProviderTimeout(options.signal, ambivoRequestTimeoutMs);
+  const timeout = createProviderTimeout(options.signal);
   try {
     const response = await options.fetcher(url, {
       method: options.method ?? "GET",
@@ -311,7 +312,7 @@ function mapAmbivoError(status: number, payload: unknown, mode: "validate" | "ex
   } else if (status === 400 || status === 404 || status === 409 || status === 422) {
     return new ProviderRequestError(status, message);
   } else {
-    return new ProviderRequestError(502, message);
+    return providerResponseError(message);
   }
 }
 
@@ -446,7 +447,7 @@ function readObjectArray(value: unknown, fieldName: string) {
 
 function requireObject(value: unknown, message: string) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return value as Record<string, unknown>;
 }

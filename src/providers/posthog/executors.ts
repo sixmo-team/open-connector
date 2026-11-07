@@ -1,15 +1,18 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { PosthogRuntimeContext } from "./runtime.ts";
 
 import { optionalString } from "../../core/cast.ts";
-import { defineProviderExecutors, ProviderRequestError } from "../provider-runtime.ts";
+import { defineProviderExecutors, mapProviderActionSources } from "../provider-executors.ts";
+import { credentialProviderProxyBaseUrl, defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError } from "../provider-runtime.ts";
 import { posthogActionHandlers, validatePosthogCredential } from "./runtime.ts";
 
 const service = "posthog";
 
-const posthogExecutorHandlers = Object.fromEntries(
-  Object.entries(posthogActionHandlers).map(([actionName, handler]) => [
-    actionName,
+const posthogExecutorHandlers = mapProviderActionSources(
+  service,
+  posthogActionHandlers,
+  (actionName, handler) =>
     async (input: Record<string, unknown>, context: PosthogRuntimeContext): Promise<unknown> =>
       handler(
         {
@@ -20,7 +23,6 @@ const posthogExecutorHandlers = Object.fromEntries(
         },
         context.fetcher,
       ),
-  ]),
 );
 
 export const executors: ProviderExecutors = defineProviderExecutors<PosthogRuntimeContext>({
@@ -91,3 +93,9 @@ export const credentialValidators: CredentialValidators = {
     }
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: credentialProviderProxyBaseUrl("baseUrl", "posthog_base_url"),
+  auth: { type: "bearer" },
+});

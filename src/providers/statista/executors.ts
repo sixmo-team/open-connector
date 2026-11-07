@@ -1,6 +1,7 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 
-import { defineApiKeyProviderExecutors } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { statistaActionHandlers, validateStatistaCredential } from "./runtime.ts";
 
 const service = "statista";
@@ -12,3 +13,9 @@ export const credentialValidators: CredentialValidators = {
     return validateStatistaCredential(input.apiKey, fetcher, signal);
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.statista.ai",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

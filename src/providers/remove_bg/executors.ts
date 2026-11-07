@@ -1,5 +1,6 @@
-import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidationResult, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,7 +11,9 @@ import {
   optionalString,
 } from "../../core/cast.ts";
 import { readBoundedResponseBytes } from "../../core/request.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "remove_bg";
 const removeBgApiBaseUrl = "https://api.remove.bg/v1.0";
@@ -21,7 +24,7 @@ const removeBgSupportedResultMimeTypes = new Set(["image/png", "image/jpeg", "im
 
 type RemoveBgActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const removeBgActionHandlers: Record<string, RemoveBgActionHandler> = {
+export const removeBgActionHandlers: ProviderActionHandlers<"remove_bg", RemoveBgActionHandler> = {
   remove_background(input, context) {
     return removeBgRemoveBackground(input, context);
   },
@@ -468,3 +471,9 @@ function pickNonEmptyString(input: Record<string, unknown>, ...keys: string[]): 
   }
   return undefined;
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.remove.bg/v1.0",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

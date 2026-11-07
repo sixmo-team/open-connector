@@ -1,14 +1,24 @@
 import type { CredentialValidationResult, TransitFileWriter } from "../../core/types.ts";
-import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { WhatsAppActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
 
-import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import {
+  compactObject,
+  looseArray,
+  optionalBoolean,
+  optionalInteger,
+  optionalNumber,
+  optionalRecord,
+  optionalString,
+} from "../../core/cast.ts";
 import { jsonObject } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent, readTransitFileInput } from "../provider-runtime.ts";
+import { readTransitFileInput } from "../provider-files.ts";
+import { ProviderRequestError, providerInputError, providerUserAgent } from "../provider-runtime.ts";
 
 export const whatsappGraphApiBaseUrl = "https://graph.facebook.com";
 export const whatsappGraphApiVersion = "v23.0";
 const whatsappMeFields = "id,name";
+const analyticsDefaultWindowSeconds = 30 * 24 * 60 * 60;
 
 type WhatsAppPhase = "validate" | "execute";
 type WhatsAppActionHandler = ProviderRuntimeHandler<WhatsAppActionContext>;
@@ -34,7 +44,7 @@ interface WhatsAppRequestInput {
   rawBody?: BodyInit;
 }
 
-export const whatsappActionHandlers: Record<WhatsAppActionName, WhatsAppActionHandler> = {
+export const whatsappActionHandlers: ProviderActionHandlers<"whatsapp", WhatsAppActionHandler> = {
   get_phone_numbers(input, context) {
     return whatsappGetPhoneNumbers(input, context);
   },
@@ -49,6 +59,15 @@ export const whatsappActionHandlers: Record<WhatsAppActionName, WhatsAppActionHa
   },
   get_template_status(input, context) {
     return whatsappGetTemplateStatus(input, context);
+  },
+  get_message_analytics(input, context) {
+    return whatsappGetMessageAnalytics(input, context);
+  },
+  get_pricing_analytics(input, context) {
+    return whatsappGetPricingAnalytics(input, context);
+  },
+  get_template_analytics(input, context) {
+    return whatsappGetTemplateAnalytics(input, context);
   },
   create_message_template(input, context) {
     return whatsappCreateMessageTemplate(input, context);
@@ -130,14 +149,14 @@ async function whatsappGetPhoneNumbers(
   const payload = await whatsappRequest<Record<string, unknown>>({
     accessToken: context.accessToken,
     path: `/${wabaId}/phone_numbers`,
-    query: { limit: input.limit },
+    query: { after: input.after, limit: input.limit },
     fetcher: context.fetcher,
     signal: context.signal,
     operation: "get_phone_numbers",
     phase: "execute",
   });
   return {
-    phone_numbers: extractArray(payload.data ?? payload).map((item) => normalizePhoneNumber(item)),
+    phone_numbers: looseArray(payload.data ?? payload).map((item) => normalizePhoneNumber(item)),
     paging: normalizePaging(payload.paging),
   };
 }
@@ -196,7 +215,7 @@ async function whatsappGetMessageTemplates(
     phase: "execute",
   });
   return {
-    templates: extractArray(payload.data ?? payload).map((item) => normalizeTemplate(item)),
+    templates: looseArray(payload.data ?? payload).map((item) => normalizeTemplate(item)),
     paging: normalizePaging(payload.paging),
   };
 }
@@ -215,6 +234,114 @@ async function whatsappGetTemplateStatus(
     phase: "execute",
   });
   return normalizeTemplate(payload);
+}
+
+interface AnalyticsWindow {
+  start: number;
+  end: number;
+}
+
+async function whatsappGetMessageAnalytics(
+  input: Record<string, unknown>,
+  context: WhatsAppActionContext,
+): Promise<unknown> {
+  const wabaId = requireWabaId(input, context, "get_message_analytics");
+  const window = resolveAnalyticsWindow(input, "get_message_analytics");
+  const granularity = readString(input.granularity) ?? "DAY";
+  const payload = await whatsappRequest<Record<string, unknown>>({
+    accessToken: context.accessToken,
+    path: `/${wabaId}`,
+    query: {
+      fields: graphAnalyticsField("analytics", {
+        start: window.start,
+        end: window.end,
+        granularity,
+        phone_numbers: input.phone_numbers,
+        product_types: input.product_types,
+        country_codes: input.country_codes,
+      }),
+    },
+    fetcher: context.fetcher,
+    signal: context.signal,
+    operation: "get_message_analytics",
+    phase: "execute",
+  });
+  const analytics = asRecord(payload.analytics, "analytics");
+  return compactObject({
+    granularity: readString(analytics.granularity) ?? granularity,
+    phone_numbers: readStringArray(analytics.phone_numbers),
+    country_codes: readStringArray(analytics.country_codes),
+    data_points: looseArray(analytics.data_points).map((item) => normalizeMessageAnalyticsDataPoint(item)),
+  });
+}
+
+async function whatsappGetPricingAnalytics(
+  input: Record<string, unknown>,
+  context: WhatsAppActionContext,
+): Promise<unknown> {
+  const wabaId = requireWabaId(input, context, "get_pricing_analytics");
+  const window = resolveAnalyticsWindow(input, "get_pricing_analytics");
+  const payload = await whatsappRequest<Record<string, unknown>>({
+    accessToken: context.accessToken,
+    path: `/${wabaId}`,
+    query: {
+      fields: graphAnalyticsField("pricing_analytics", {
+        start: window.start,
+        end: window.end,
+        granularity: readString(input.granularity) ?? "DAILY",
+        phone_numbers: input.phone_numbers,
+        country_codes: input.country_codes,
+        metric_types: input.metric_types,
+        pricing_types: input.pricing_types,
+        pricing_categories: input.pricing_categories,
+        dimensions: input.dimensions,
+      }),
+    },
+    fetcher: context.fetcher,
+    signal: context.signal,
+    operation: "get_pricing_analytics",
+    phase: "execute",
+  });
+  const analytics = asRecord(payload.pricing_analytics, "pricing_analytics");
+  return {
+    data_points: flattenAnalyticsData(analytics.data).map((item) => normalizePricingAnalyticsDataPoint(item)),
+  };
+}
+
+async function whatsappGetTemplateAnalytics(
+  input: Record<string, unknown>,
+  context: WhatsAppActionContext,
+): Promise<unknown> {
+  const wabaId = requireWabaId(input, context, "get_template_analytics");
+  const useWabaTimezone = optionalBoolean(input.use_waba_timezone) ?? false;
+  const window = resolveTemplateAnalyticsWindow(input, useWabaTimezone);
+  const templateIds = looseArray(input.template_ids);
+  const payload = await whatsappRequest<Record<string, unknown>>({
+    accessToken: context.accessToken,
+    path: `/${wabaId}/template_analytics`,
+    query: {
+      start: window.start,
+      end: window.end,
+      // The template_analytics edge accepts DAILY only.
+      granularity: "DAILY",
+      // Meta's documented syntax: template_ids=[id,id] and metric_types=a,b, both unquoted.
+      template_ids: `[${templateIds.map((id) => String(id)).join(",")}]`,
+      metric_types: graphList(input.metric_types),
+      product_type: input.product_type,
+      use_waba_timezone: useWabaTimezone ? "true" : undefined,
+      after: input.after,
+    },
+    fetcher: context.fetcher,
+    signal: context.signal,
+    operation: "get_template_analytics",
+    phase: "execute",
+  });
+  const buckets = looseArray(payload.data).map((entry) => optionalRecord(entry));
+  return compactObject({
+    waba_timezone: buckets.map((bucket) => readString(bucket?.waba_timezone)).find((zone) => zone !== undefined),
+    data_points: flattenAnalyticsData(payload.data).map((item) => normalizeTemplateAnalyticsDataPoint(item)),
+    paging: normalizePaging(payload.paging),
+  });
 }
 
 async function whatsappCreateMessageTemplate(
@@ -402,7 +529,7 @@ function whatsappSendInteractiveButtons(
   input: Record<string, unknown>,
   context: WhatsAppActionContext,
 ): Promise<unknown> {
-  const buttons = extractArray(input.buttons).map((item) => {
+  const buttons = looseArray(input.buttons).map((item) => {
     const record = asRecord(item, "buttons[]");
     return {
       type: "reply",
@@ -532,7 +659,7 @@ function normalizeWhatsAppError(input: {
   phase: WhatsAppPhase;
   payload: unknown;
 }): ProviderRequestError {
-  const graphErrorCode = readNumber(input.graphError?.code);
+  const graphErrorCode = optionalNumber(input.graphError?.code);
   const baseMessage =
     readString(input.graphError?.message) ??
     readString(input.graphError?.error_user_msg) ??
@@ -545,7 +672,7 @@ function normalizeWhatsAppError(input: {
       return new ProviderRequestError(input.status || 400, message, input.payload);
     }
   } else {
-    if (input.status === 401 || graphErrorCode === 190) return new ProviderRequestError(409, message, input.payload);
+    if (input.status === 401 || graphErrorCode === 190) return new ProviderRequestError(401, message, input.payload);
     if (input.status === 400 || input.status === 403 || input.status === 404) {
       return new ProviderRequestError(input.status, message, input.payload);
     }
@@ -555,14 +682,14 @@ function normalizeWhatsAppError(input: {
 
 function normalizeMessageSendResponse(payload: Record<string, unknown>): Record<string, unknown> {
   return {
-    contacts: extractArray(payload.contacts).map((item) => {
+    contacts: looseArray(payload.contacts).map((item) => {
       const record = asRecord(item, "contacts[]");
       return {
         input: readString(record.input) ?? "",
         wa_id: readString(record.wa_id) ?? "",
       };
     }),
-    messages: extractArray(payload.messages).map((item) => {
+    messages: looseArray(payload.messages).map((item) => {
       const record = asRecord(item, "messages[]");
       return { id: readString(record.id) ?? "" };
     }),
@@ -606,7 +733,7 @@ function normalizeTemplate(value: unknown): Record<string, unknown> {
     status: readString(record.status) ?? "",
     category: readString(record.category) ?? "",
     language: readString(record.language) ?? "",
-    components: extractArray(record.components).map((item) => normalizeTemplateComponent(item)),
+    components: looseArray(record.components).map((item) => normalizeTemplateComponent(item)),
     created_time: readString(record.created_time),
     updated_time: readString(record.updated_time),
     quality_rating: readString(record.quality_rating),
@@ -623,7 +750,7 @@ function normalizeTemplateComponent(value: unknown): Record<string, unknown> {
     type: readString(record.type) ?? "",
     format: readString(record.format),
     text: readString(record.text),
-    buttons: extractArray(record.buttons).map((item) => normalizeTemplateButton(item)),
+    buttons: looseArray(record.buttons).map((item) => normalizeTemplateButton(item)),
     example: optionalRecord(record.example),
   });
 }
@@ -644,7 +771,7 @@ function normalizeTemplateQualityScore(value: unknown): Record<string, unknown> 
   if (!record) return undefined;
   return compactObject({
     score: readString(record.score),
-    date: readNumber(record.date) ?? readString(record.date),
+    date: optionalNumber(record.date) ?? readString(record.date),
   });
 }
 
@@ -655,7 +782,7 @@ function normalizeMediaInfo(value: unknown): Record<string, unknown> {
     url: readString(record.url),
     mime_type: readString(record.mime_type),
     sha256: readString(record.sha256),
-    file_size: readNumber(record.file_size),
+    file_size: optionalNumber(record.file_size),
     messaging_product: readString(record.messaging_product),
   });
 }
@@ -672,6 +799,137 @@ function normalizeWebhookConfiguration(value: unknown): Record<string, unknown> 
   return compactObject({ application: readString(record.application) });
 }
 
+function resolveAnalyticsWindow(input: Record<string, unknown>, actionName: string): AnalyticsWindow {
+  const end = optionalInteger(input.end) ?? Math.floor(Date.now() / 1000);
+  const start = optionalInteger(input.start) ?? end - analyticsDefaultWindowSeconds;
+  if (start >= end) throw providerInputError(`whatsapp ${actionName} requires start to be earlier than end`);
+  return { start, end };
+}
+
+/**
+ * Render a WABA analytics field with Meta's dot-chained modifier syntax, e.g.
+ * `pricing_analytics.start(1).end(2).granularity(DAILY).dimensions(PRICING_CATEGORY,COUNTRY)`.
+ * Every value is written bare, exactly as Meta's reference examples do: no
+ * quotes around enums or phone numbers, lists as comma-separated items. Empty
+ * lists are omitted, which Meta reads as "no filter", the same as an absent
+ * modifier.
+ */
+function graphAnalyticsField(field: string, modifiers: Record<string, unknown>): string {
+  let rendered = field;
+  for (const [key, value] of Object.entries(modifiers)) {
+    const item = Array.isArray(value) ? graphList(value) : value;
+    if (item == null) continue;
+    rendered += `.${key}(${String(item)})`;
+  }
+  return rendered;
+}
+
+/** Comma-separated bare items, the list form Meta's analytics reference uses; `undefined` when empty. */
+function graphList(value: unknown): string | undefined {
+  const items = looseArray(value);
+  if (items.length === 0) return undefined;
+  return items.map((item) => String(item)).join(",");
+}
+
+/**
+ * The template_analytics edge takes a UNIX timestamp or a YYYY-MM-DD date, and
+ * insists on the date form when use_waba_timezone is set. A timestamp given in
+ * that mode is converted to its UTC calendar date so the caller can use one
+ * input shape for both modes.
+ */
+function resolveTemplateAnalyticsWindow(
+  input: Record<string, unknown>,
+  useWabaTimezone: boolean,
+): { start: string | number; end: string | number } {
+  const startDate = readString(input.start);
+  const endDate = readString(input.end);
+  for (const date of [startDate, endDate]) {
+    if (
+      date !== undefined &&
+      (!Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date)
+    )
+      throw providerInputError("whatsapp template analytics requires valid calendar dates");
+  }
+  const window = resolveAnalyticsWindow(
+    {
+      start: startDate === undefined ? optionalInteger(input.start) : Date.parse(startDate) / 1000,
+      end: endDate === undefined ? optionalInteger(input.end) : Date.parse(endDate) / 1000,
+    },
+    "get_template_analytics",
+  );
+  const start = startDate ?? window.start;
+  const end = endDate ?? window.end;
+  if (!useWabaTimezone) return { start, end };
+  const calendarStart = toCalendarDate(start);
+  const calendarEnd = toCalendarDate(end);
+  if (calendarStart >= calendarEnd) {
+    throw providerInputError("whatsapp get_template_analytics requires start to be earlier than end");
+  }
+  return { start: calendarStart, end: calendarEnd };
+}
+
+function toCalendarDate(value: string | number): string {
+  if (typeof value === "string") return value;
+  return new Date(value * 1000).toISOString().slice(0, 10);
+}
+
+/** Meta nests `data_points` under one `data[]` entry per granularity/product bucket; callers want one flat list. */
+function flattenAnalyticsData(value: unknown): unknown[] {
+  return looseArray(value).flatMap((entry) => looseArray(optionalRecord(entry)?.data_points));
+}
+
+function normalizeMessageAnalyticsDataPoint(value: unknown): Record<string, unknown> {
+  const record = asRecord(value, "analytics.data_points[]");
+  return compactObject({
+    start: optionalNumber(record.start),
+    end: optionalNumber(record.end),
+    sent: optionalNumber(record.sent),
+    delivered: optionalNumber(record.delivered),
+  });
+}
+
+function normalizePricingAnalyticsDataPoint(value: unknown): Record<string, unknown> {
+  const record = asRecord(value, "pricing_analytics.data_points[]");
+  return compactObject({
+    start: optionalNumber(record.start),
+    end: optionalNumber(record.end),
+    volume: optionalNumber(record.volume),
+    cost: optionalNumber(record.cost),
+    phone_number: readString(record.phone_number),
+    country: readString(record.country),
+    pricing_category: readString(record.pricing_category),
+    pricing_type: readString(record.pricing_type),
+    tier: readString(record.tier),
+  });
+}
+
+function normalizeTemplateAnalyticsDataPoint(value: unknown): Record<string, unknown> {
+  const record = asRecord(value, "template_analytics.data_points[]");
+  return compactObject({
+    template_id: readString(record.template_id) ?? "",
+    start: optionalNumber(record.start),
+    end: optionalNumber(record.end),
+    sent: optionalNumber(record.sent),
+    delivered: optionalNumber(record.delivered),
+    read: optionalNumber(record.read),
+    clicked: looseArray(record.clicked).map((item) => {
+      const click = asRecord(item, "template_analytics.clicked[]");
+      return compactObject({
+        type: readString(click.type) ?? "",
+        button_content: readString(click.button_content) ?? "",
+        count: optionalNumber(click.count) ?? 0,
+      });
+    }),
+    cost: looseArray(record.cost).map((item) => {
+      const cost = asRecord(item, "template_analytics.cost[]");
+      return compactObject({
+        type: readString(cost.type) ?? "",
+        value: optionalNumber(cost.value),
+      });
+    }),
+  });
+}
+
 function normalizePaging(value: unknown): Record<string, unknown> | undefined {
   const record = optionalRecord(value);
   if (!record) return undefined;
@@ -682,10 +940,15 @@ function normalizePaging(value: unknown): Record<string, unknown> | undefined {
         after: readString(cursorsRecord.after),
       })
     : undefined;
+  const next = readString(record.next);
   return compactObject({
     cursors,
     previous: readString(record.previous),
-    next: readString(record.next),
+    next,
+    // Meta keeps `cursors.after` on the final page and signals the end by
+    // omitting `next`; a caller walking `after` alone cannot tell the last
+    // page from a middle one, so the end is spelled out as a boolean.
+    hasMore: next !== undefined,
   });
 }
 
@@ -705,12 +968,8 @@ function extractGraphError(value: unknown): Record<string, unknown> | null {
   return optionalRecord(error) ?? null;
 }
 
-function extractArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
 function extractFirstRecord(value: unknown): Record<string, unknown> | undefined {
-  return extractArray(value).find((item): item is Record<string, unknown> => optionalRecord(item) !== undefined);
+  return looseArray(value).find((item): item is Record<string, unknown> => optionalRecord(item) !== undefined);
 }
 
 function asRecord(value: unknown, fieldName: string): Record<string, unknown> {
@@ -721,10 +980,6 @@ function asRecord(value: unknown, fieldName: string): Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function readNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function readStringArray(value: unknown): string[] | undefined {

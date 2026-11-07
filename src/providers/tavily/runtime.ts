@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -7,10 +8,10 @@ import {
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 export const tavilyApiBaseUrl = "https://api.tavily.com";
-const defaultTimeoutMs = 30_000;
 
 type TavilyActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
@@ -21,7 +22,7 @@ interface TavilyRequestInput {
   phase?: "validate" | "execute";
 }
 
-export const tavilyActionHandlers: Record<string, TavilyActionHandler> = {
+export const tavilyActionHandlers: ProviderActionHandlers<"tavily", TavilyActionHandler> = {
   search(input, context) {
     return tavilyRequest(context, { method: "POST", path: "/search", body: input });
   },
@@ -94,7 +95,7 @@ async function tavilyRawRequest(
   context: Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">,
   input: TavilyRequestInput,
 ): Promise<Response> {
-  const timeout = createProviderTimeout(context.signal, defaultTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     return await context.fetcher(new URL(input.path, tavilyApiBaseUrl), {
       method: input.method ?? "POST",
@@ -110,7 +111,7 @@ async function tavilyRawRequest(
     if (timeout.didTimeout() && isAbortLikeError(error)) {
       throw new ProviderRequestError(
         502,
-        `Tavily request timed out after ${Math.ceil(defaultTimeoutMs / 1000)} seconds`,
+        `Tavily request timed out after ${Math.ceil(defaultProviderRequestTimeoutMs / 1000)} seconds`,
       );
     }
     throw new ProviderRequestError(

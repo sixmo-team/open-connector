@@ -1,29 +1,26 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { booleanString, compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { providerUserAgent, ProviderRequestError, requiredInputString } from "../provider-runtime.ts";
 
 const service = "postgrid_verify";
-const postgridVerifyApiBaseUrl = "https://api.postgrid.com/v1/addver";
+export const postgridVerifyApiBaseUrl = "https://api.postgrid.com/v1/addver";
 const postgridVerifyValidationEndpoint = "/zip_codes";
 
 type PostgridVerifyPhase = "validate" | "execute";
-type PostgridVerifyActionName =
-  | "verify_address"
-  | "autocomplete_address"
-  | "parse_address"
-  | "lookup_city_state_from_postal";
 type PostgridVerifyActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const postgridVerifyActionHandlers: Record<PostgridVerifyActionName, PostgridVerifyActionHandler> = {
+export const postgridVerifyActionHandlers: ProviderActionHandlers<"postgrid_verify", PostgridVerifyActionHandler> = {
   verify_address(input, context) {
     return requestPostgridVerifyJson({
       path: "/verifications",
       query: {
-        includeDetails: optionalBooleanString(input.includeDetails),
-        geocode: optionalBooleanString(input.geocode),
-        properCase: optionalBooleanString(input.properCase),
+        includeDetails: booleanString(input.includeDetails),
+        geocode: booleanString(input.geocode),
+        properCase: booleanString(input.properCase),
       },
       body: compactObject({
         address: optionalString(input.address),
@@ -42,7 +39,7 @@ export const postgridVerifyActionHandlers: Record<PostgridVerifyActionName, Post
     return requestPostgridVerifyJson({
       path: "/completions",
       body: compactObject({
-        partialStreet: requireInputString(input.partialStreet, "partialStreet"),
+        partialStreet: requiredInputString(input.partialStreet, "partialStreet"),
         index: optionalString(input.index),
         pcFilter: optionalString(input.pcFilter),
         cityFilter: optionalString(input.cityFilter),
@@ -57,7 +54,7 @@ export const postgridVerifyActionHandlers: Record<PostgridVerifyActionName, Post
     return requestPostgridVerifyJson({
       path: "/parses",
       body: {
-        address: requireInputString(input.address, "address"),
+        address: requiredInputString(input.address, "address"),
       },
       context,
       phase: "execute",
@@ -67,7 +64,7 @@ export const postgridVerifyActionHandlers: Record<PostgridVerifyActionName, Post
     return requestPostgridVerifyJson({
       path: postgridVerifyValidationEndpoint,
       body: {
-        postalOrZip: requireInputString(input.postalOrZip, "postalOrZip"),
+        postalOrZip: requiredInputString(input.postalOrZip, "postalOrZip"),
       },
       context,
       phase: "execute",
@@ -83,7 +80,7 @@ export async function validatePostgridVerifyCredential(
   signal?: AbortSignal,
 ): Promise<CredentialValidationResult> {
   const context: ApiKeyProviderContext = {
-    apiKey: requireInputString(input.apiKey, "apiKey"),
+    apiKey: requiredInputString(input.apiKey, "apiKey"),
     fetcher,
     signal,
   };
@@ -195,12 +192,4 @@ function extractPostgridVerifyErrorMessage(payload: unknown): string | undefined
   }
 
   return optionalString(record.message) ?? optionalString(record.error) ?? optionalString(record.status);
-}
-
-function requireInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
-function optionalBooleanString(value: unknown): string | undefined {
-  return typeof value === "boolean" ? String(value) : undefined;
 }

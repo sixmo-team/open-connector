@@ -44,26 +44,25 @@ export function createFeishuContactActions(input: FeishuContactActionOptions): r
   const actions: ActionDefinition[] = [
     defineProviderAction(input.service, {
       name: "get_user",
+      operationType: "read",
       description: "Get a Feishu user profile. User identity may omit userId to return the authenticated user.",
       requiredScopes: getUserPermissions,
       providerPermissions: getUserPermissions,
       inputSchema: s.object(
         "Identify the user to retrieve.",
         {
-          userId: s.string(
+          userId: s.nonEmptyString(
             "The Feishu user identifier. Omit only when using user identity to get the authenticated user.",
-            { minLength: 1 },
           ),
           userIdType: userIdTypeSchema,
         },
-        {
-          optional: ["userId", "userIdType"],
-        },
+        { optional: input.identity === "tenant" ? ["userIdType"] : ["userId", "userIdType"] },
       ),
       outputSchema: userOutputSchema,
     }),
     defineProviderAction(input.service, {
       name: "list_departments",
+      operationType: "read",
       description: "List child departments below a Feishu department visible to the app.",
       requiredScopes: directoryPermissions,
       providerPermissions: directoryPermissions,
@@ -85,6 +84,7 @@ export function createFeishuContactActions(input: FeishuContactActionOptions): r
     }),
     defineProviderAction(input.service, {
       name: "list_department_users",
+      operationType: "read",
       description: "List users in a Feishu department visible to the app.",
       requiredScopes: directoryPermissions,
       providerPermissions: directoryPermissions,
@@ -108,6 +108,7 @@ export function createFeishuContactActions(input: FeishuContactActionOptions): r
     actions.push(
       defineProviderAction(input.service, {
         name: "search_users",
+        operationType: "read",
         description: "Search Feishu users by keyword, open_id list, or relationship filters using user identity.",
         requiredScopes: ["contact:user:search"],
         providerPermissions: ["contact:user:search"],

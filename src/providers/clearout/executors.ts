@@ -3,22 +3,23 @@ import type {
   CredentialValidators,
   ExecutionContext,
   ProviderExecutors,
+  ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ClearoutActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineProviderExecutors,
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
-  requireApiKeyCredential,
 } from "../provider-runtime.ts";
 
 const service = "clearout";
 const clearoutDefaultBaseUrl = "https://api.clearout.io/v2";
-const clearoutDefaultRequestTimeoutMs = 30_000;
 
 interface ClearoutContext {
   apiKey: string;
@@ -30,7 +31,7 @@ interface ClearoutContext {
 type ClearoutRequestPhase = "validate" | "execute";
 type ClearoutActionHandler = (input: Record<string, unknown>, context: ClearoutContext) => Promise<unknown>;
 
-export const clearoutActionHandlers: Record<ClearoutActionName, ClearoutActionHandler> = {
+export const clearoutActionHandlers: ProviderActionHandlers<"clearout", ClearoutActionHandler> = {
   get_available_credits(_input, context) {
     return requestClearoutJson({
       path: "/email_verify/getcredits",
@@ -83,6 +84,18 @@ export const executors: ProviderExecutors = defineProviderExecutors<ClearoutCont
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context): Promise<string> {
+    const credential = await requireApiKeyCredential(context, service);
+    return normalizeBaseUrl(optionalString(credential.values.baseUrl) ?? optionalString(credential.metadata.baseUrl));
+  },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 
@@ -144,7 +157,7 @@ async function requestClearoutJson(input: {
   body?: Record<string, unknown>;
   timeoutMs?: number;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, input.timeoutMs ?? clearoutDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal, input.timeoutMs);
   try {
     const response = await input.context.fetcher(buildUrl(input.context.baseUrl, input.path), {
       method: input.method,

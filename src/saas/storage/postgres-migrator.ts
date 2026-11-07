@@ -13,7 +13,37 @@ const baselineRuntimeTables = [
   "refresh_leases",
   "transit_files",
 ] as const;
-const runtimeTables = [...baselineRuntimeTables, "connection_revocation_receipts"] as const;
+const policyTablePrivileges = {
+  action_defaults: "SELECT, INSERT, UPDATE",
+  action_grants: "SELECT, INSERT, UPDATE, DELETE",
+  action_policy_audit: "SELECT, INSERT, DELETE",
+} as const;
+const runtimeTables = [
+  ...baselineRuntimeTables,
+  "connection_revocation_receipts",
+  "connection_retirements",
+  "connection_requests",
+  "managed_projects",
+  "oauth_sources",
+  "saas_cleanup",
+  "managed_account_retirements",
+  "trigger_subscriptions",
+  "trigger_source_applications",
+  "trigger_secret_cleanup",
+  "trigger_execution_leases",
+  ...Object.keys(policyTablePrivileges),
+] as const;
+export const nativeManagedFenceSequence = "integration_runtime.managed_account_fence_seq";
+export const scopedRuntimeFunctions = [
+  { signature: "integration_runtime.lock_managed_account(uuid,text)", definer: false },
+  { signature: "integration_runtime.retire_managed_account(uuid,text)", definer: true },
+  { signature: "integration_runtime.is_managed_account_referenced(uuid,text)", definer: true },
+  { signature: "integration_runtime.is_managed_account_cleanup_pending(uuid,text)", definer: true },
+  { signature: "integration_runtime.is_managed_account_retired(uuid,text,bigint)", definer: true },
+  { signature: "integration_runtime.can_cleanup_trigger_connection(uuid)", definer: true },
+  { signature: "integration_runtime.trigger_cleanup_connection(uuid)", definer: true },
+  { signature: "integration_runtime.is_trigger_secret_referenced(text)", definer: true },
+] as const;
 
 export interface PostgresMigrationOptions {
   migratorConnectionString: string;
@@ -178,7 +208,10 @@ async function grantRuntimeAccess(
        AND class.relname = ANY($1::text[])`,
     [runtimeTables],
   );
-  const tables = available.rows.map(({ relname }) => `integration_runtime.${quoteIdentifier(relname)}`).join(", ");
+  const tables = available.rows
+    .filter(({ relname }) => !(relname in policyTablePrivileges))
+    .map(({ relname }) => `integration_runtime.${quoteIdentifier(relname)}`)
+    .join(", ");
   await client.query(`
     REVOKE ALL ON SCHEMA integration_runtime FROM PUBLIC;
     REVOKE CREATE ON SCHEMA integration_runtime FROM ${runtimeRoleIdentifier};
@@ -191,6 +224,25 @@ async function grantRuntimeAccess(
     ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRoleIdentifier} IN SCHEMA integration_runtime
       REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM ${runtimeRoleIdentifier};
   `);
+  for (const [table, privileges] of Object.entries(policyTablePrivileges)) {
+    if (!available.rows.some(({ relname }) => relname === table)) continue;
+    await client.query(`REVOKE ALL ON integration_runtime.${quoteIdentifier(table)} FROM ${runtimeRoleIdentifier};
+      GRANT ${privileges} ON integration_runtime.${quoteIdentifier(table)} TO ${runtimeRoleIdentifier}`);
+  }
+  for (const { signature } of scopedRuntimeFunctions) {
+    const exists = await client.query<{ present: boolean }>("SELECT to_regprocedure($1) IS NOT NULL AS present", [
+      signature,
+    ]);
+    if (exists.rows[0]?.present)
+      await client.query(`REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION ${signature} TO ${runtimeRoleIdentifier}`);
+  }
+  const sequence = await client.query<{ present: boolean }>("SELECT to_regclass($1) IS NOT NULL AS present", [
+    nativeManagedFenceSequence,
+  ]);
+  if (sequence.rows[0]?.present)
+    await client.query(`REVOKE ALL ON SEQUENCE ${nativeManagedFenceSequence} FROM PUBLIC, ${runtimeRoleIdentifier};
+    GRANT USAGE ON SEQUENCE ${nativeManagedFenceSequence} TO ${runtimeRoleIdentifier}`);
 }
 
 async function verifyRuntimeBoundary(

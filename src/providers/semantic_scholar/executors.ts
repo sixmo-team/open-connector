@@ -1,19 +1,34 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
-import type { SemanticScholarActionName } from "./actions.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
-import { compactObject, optionalRawString, optionalRecord } from "../../core/cast.ts";
-import { encodePathSegment } from "../../core/request.ts";
 import {
-  createProviderTimeout,
-  defineProviderExecutors,
-  providerUserAgent,
+  compactObject,
+  looseArray,
+  optionalRawString,
+  optionalRecord,
+  rawStringOrNull,
+  recordOrEmpty,
+} from "../../core/cast.ts";
+import { encodePathSegment } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors, mapProviderActionSources } from "../provider-executors.ts";
+import { defineProviderProxy, providerProxyEndpointPrefixes } from "../provider-proxy.ts";
+import {
   ProviderRequestError,
-  requireApiKeyCredential,
+  providerUserAgent,
+  runProviderRequest,
+  providerInputError,
 } from "../provider-runtime.ts";
+
+const service = "semantic_scholar";
 
 const graphApiBaseUrl = "https://api.semanticscholar.org/graph/v1";
 const recommendationsApiBaseUrl = "https://api.semanticscholar.org/recommendations/v1";
-const semanticScholarDefaultRequestTimeoutMs = 30_000;
 
 type SemanticScholarPhase = "validate" | "execute";
 type SemanticScholarApiFamily = "graph" | "recommendations";
@@ -29,7 +44,7 @@ interface SemanticScholarActionContext {
   signal?: AbortSignal;
 }
 
-export const semanticScholarActionHandlers: Record<SemanticScholarActionName, SemanticScholarActionHandler> = {
+export const semanticScholarActionHandlers: ProviderActionHandlers<"semantic_scholar", SemanticScholarActionHandler> = {
   async get_paper(input, fetcher, apiKey) {
     const paper = await requestSemanticScholarJson({
       family: "graph",
@@ -102,7 +117,7 @@ export const semanticScholarActionHandlers: Record<SemanticScholarActionName, Se
 
     return {
       paper: optionalRecord(payload),
-      raw: normalizeRawObject(payload),
+      raw: recordOrEmpty(payload),
     };
   },
   async autocomplete_papers(input, fetcher, apiKey) {
@@ -118,8 +133,8 @@ export const semanticScholarActionHandlers: Record<SemanticScholarActionName, Se
 
     const payloadRecord = optionalRecord(payload);
     return {
-      completions: normalizeArray(payloadRecord?.matches ?? payloadRecord?.data),
-      raw: normalizeRawObject(payload),
+      completions: looseArray(payloadRecord?.matches ?? payloadRecord?.data),
+      raw: recordOrEmpty(payload),
     };
   },
   async get_paper_authors(input, fetcher, apiKey) {
@@ -236,8 +251,8 @@ export const semanticScholarActionHandlers: Record<SemanticScholarActionName, Se
       total: readNullableInteger(payloadRecord?.total),
       offset: readNullableInteger(payloadRecord?.offset),
       next: readNullableInteger(payloadRecord?.next),
-      snippets: normalizeArray(payloadRecord?.data),
-      raw: normalizeRawObject(payload),
+      snippets: looseArray(payloadRecord?.data),
+      raw: recordOrEmpty(payload),
     };
   },
   async recommend_for_paper(input, fetcher, apiKey) {
@@ -270,24 +285,20 @@ export const semanticScholarActionHandlers: Record<SemanticScholarActionName, Se
 
     return normalizePaperList(payload);
   },
-} satisfies Record<SemanticScholarActionName, SemanticScholarActionHandler>;
+};
 
-const semanticScholarExecutorHandlers = Object.fromEntries(
-  Object.entries(semanticScholarActionHandlers).map(([name, handler]) => [
-    name,
-    (input: Record<string, unknown>, context: SemanticScholarActionContext) =>
-      handler(input, context.fetcher, context.apiKey),
-  ]),
-) as Record<
-  SemanticScholarActionName,
-  (input: Record<string, unknown>, context: SemanticScholarActionContext) => Promise<unknown>
->;
+const semanticScholarExecutorHandlers = mapProviderActionSources(
+  service,
+  semanticScholarActionHandlers,
+  (_name, handler) => (input: Record<string, unknown>, context: SemanticScholarActionContext) =>
+    handler(input, context.fetcher, context.apiKey),
+);
 
 export const executors: ProviderExecutors = defineProviderExecutors<SemanticScholarActionContext>({
-  service: "semantic_scholar",
+  service,
   handlers: semanticScholarExecutorHandlers,
   async createContext(context: ExecutionContext, fetcher: typeof fetch): Promise<SemanticScholarActionContext> {
-    const credential = await requireApiKeyCredential(context, "semantic_scholar");
+    const credential = await requireApiKeyCredential(context, service);
     return {
       apiKey: credential.apiKey,
       fetcher,
@@ -341,14 +352,12 @@ async function requestSemanticScholarJson(input: {
   fetcher: typeof fetch;
   phase: SemanticScholarPhase;
 }) {
-  const timeoutHandle = createProviderTimeout(undefined, semanticScholarDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ label: "Semantic Scholar" }, async (signal) => {
     const response = await input.fetcher(buildSemanticScholarUrl(input), {
       method: input.method,
       headers: buildSemanticScholarHeaders(input),
       body: input.method === "POST" ? JSON.stringify(input.body ?? {}) : undefined,
-      signal: timeoutHandle.signal,
+      signal,
     });
     const payload = await readSemanticScholarPayload(response);
 
@@ -357,22 +366,7 @@ async function requestSemanticScholarJson(input: {
     }
 
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeoutHandle.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Semantic Scholar request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Semantic Scholar request failed: ${error.message}` : "Semantic Scholar request failed",
-    );
-  } finally {
-    timeoutHandle.cleanup();
-  }
+  });
 }
 
 function buildSemanticScholarHeaders(input: { method: "GET" | "POST"; apiKey: string }) {
@@ -428,7 +422,7 @@ function createSemanticScholarError(status: number, payload: unknown, phase: Sem
   }
 
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (phase === "execute" && (status === 401 || status === 403)) {
@@ -511,9 +505,9 @@ function normalizePaperList(payload: unknown) {
     total: readNullableInteger(payloadRecord?.total),
     offset: readNullableInteger(payloadRecord?.offset),
     next: readNullableInteger(payloadRecord?.next),
-    token: readNullableString(payloadRecord?.token),
-    papers: normalizeArray(payloadRecord?.data ?? payloadRecord?.recommendedPapers),
-    raw: normalizeRawObject(payload),
+    token: rawStringOrNull(payloadRecord?.token),
+    papers: looseArray(payloadRecord?.data ?? payloadRecord?.recommendedPapers),
+    raw: recordOrEmpty(payload),
   };
 }
 
@@ -523,8 +517,8 @@ function normalizeAuthorList(payload: unknown) {
     total: readNullableInteger(payloadRecord?.total),
     offset: readNullableInteger(payloadRecord?.offset),
     next: readNullableInteger(payloadRecord?.next),
-    authors: normalizeArray(payloadRecord?.data),
-    raw: normalizeRawObject(payload),
+    authors: looseArray(payloadRecord?.data),
+    raw: recordOrEmpty(payload),
   };
 }
 
@@ -534,25 +528,13 @@ function normalizeEdgeList(payload: unknown) {
     total: readNullableInteger(payloadRecord?.total),
     offset: readNullableInteger(payloadRecord?.offset),
     next: readNullableInteger(payloadRecord?.next),
-    data: normalizeArray(payloadRecord?.data),
-    raw: normalizeRawObject(payload),
+    data: looseArray(payloadRecord?.data),
+    raw: recordOrEmpty(payload),
   };
-}
-
-function normalizeArray(value: unknown) {
-  return Array.isArray(value) ? value : [];
-}
-
-function normalizeRawObject(value: unknown) {
-  return optionalRecord(value) ?? {};
 }
 
 function readNullableInteger(value: unknown) {
   return Number.isInteger(value) ? (value as number) : null;
-}
-
-function readNullableString(value: unknown) {
-  return typeof value === "string" ? value : null;
 }
 
 function readRequiredString(value: unknown, fieldName: string) {
@@ -570,6 +552,9 @@ function readStringList(value: unknown) {
   return value.map((item) => readRequiredString(item, "id"));
 }
 
-function isAbortLikeError(error: unknown) {
-  return error instanceof DOMException && error.name === "AbortError";
-}
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.semanticscholar.org",
+  auth: { type: "api_key_header", name: "x-api-key" },
+  allowedEndpoint: providerProxyEndpointPrefixes("/graph/v1", "/recommendations/v1", "/datasets/v1"),
+});

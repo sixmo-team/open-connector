@@ -1,13 +1,11 @@
 import type { CredentialValidationResult, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "refiner";
 const refinerApiBaseUrl = "https://api.refiner.io/v1";
@@ -25,7 +23,7 @@ interface RefinerRequestOptions {
   mode: "validate" | "execute";
 }
 
-export const refinerActionHandlers: Record<string, RefinerActionHandler> = {
+export const refinerActionHandlers: ProviderActionHandlers<"refiner", RefinerActionHandler> = {
   get_account_info(_input, context) {
     return refinerGetAccountInfo(context);
   },

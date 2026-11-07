@@ -1,9 +1,22 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 
 import { optionalStringArray } from "../../core/cast.ts";
 import { isPrivateNetworkAccessAllowed } from "../../core/request.ts";
-import { createProviderFetch, defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
-import { createWandbMcpContext, validateWandbMcpCredential, wandbMcpActionHandlers } from "./runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { createProviderFetch } from "../provider-runtime.ts";
+import {
+  createWandbMcpContext,
+  normalizeWandbMcpEndpoint,
+  validateWandbMcpCredential,
+  wandbMcpActionHandlers,
+} from "./runtime.ts";
 
 const service = "wandb";
 
@@ -23,6 +36,24 @@ export const executors: ProviderExecutors = defineProviderExecutors({
   },
   fallbackMessage: "W&B MCP request failed",
   allowPrivateNetwork: isPrivateNetworkAccessAllowed,
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context) {
+    const credential = await requireApiKeyCredential(context, service);
+    return normalizeWandbMcpEndpoint(
+      typeof credential.metadata.mcpEndpoint === "string"
+        ? credential.metadata.mcpEndpoint
+        : credential.values.mcpEndpoint,
+      isPrivateNetworkAccessAllowed(),
+    ).toString();
+  },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  allowPrivateNetwork: isPrivateNetworkAccessAllowed,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json, text/event-stream");
+  },
 });
 
 export const credentialValidators: CredentialValidators = {

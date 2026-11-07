@@ -1,8 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 import { missiveMailboxFilterNames } from "./actions.ts";
 
 const service = "missive";
@@ -20,7 +23,7 @@ interface MissiveRequestOptions {
   notFoundAsInvalidInput?: boolean;
 }
 
-export const missiveActionHandlers: Record<string, MissiveActionHandler> = {
+export const missiveActionHandlers: ProviderActionHandlers<"missive", MissiveActionHandler> = {
   list_users(_input, context) {
     return requestMissiveJson({
       path: missiveValidationPath,
@@ -64,7 +67,7 @@ export const missiveActionHandlers: Record<string, MissiveActionHandler> = {
   },
   async get_contact(input, context) {
     const payload = await requestMissiveJson({
-      path: `/v1/contacts/${encodeURIComponent(requiredString(input.id, "id", invalidInputError))}`,
+      path: `/v1/contacts/${encodeURIComponent(requiredString(input.id, "id", providerInputError))}`,
       context,
       notFoundAsInvalidInput: true,
     });
@@ -101,7 +104,7 @@ export const missiveActionHandlers: Record<string, MissiveActionHandler> = {
   },
   async get_conversation(input, context) {
     const payload = await requestMissiveJson({
-      path: `/v1/conversations/${encodeURIComponent(requiredString(input.id, "id", invalidInputError))}`,
+      path: `/v1/conversations/${encodeURIComponent(requiredString(input.id, "id", providerInputError))}`,
       context,
       notFoundAsInvalidInput: true,
     });
@@ -111,6 +114,16 @@ export const missiveActionHandlers: Record<string, MissiveActionHandler> = {
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, missiveActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: missiveApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -262,18 +275,16 @@ function createMissiveError(
 ): ProviderRequestError {
   const message = extractMissiveMessage(payload) ?? response.statusText ?? "missive request failed";
   if (response.status === 401 || response.status === 403) {
-    return phase === "validate"
-      ? new ProviderRequestError(400, message)
-      : new ProviderRequestError(response.status, message);
+    return phase === "validate" ? providerInputError(message) : new ProviderRequestError(response.status, message);
   }
   if (response.status === 404 && notFoundAsInvalidInput) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 429) {
     return new ProviderRequestError(429, message);
   }
   if (response.status >= 400 && response.status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status || 502, message);
 }
@@ -292,8 +303,4 @@ function extractMissiveMessage(payload: unknown): string | undefined {
   }
 
   return undefined;
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

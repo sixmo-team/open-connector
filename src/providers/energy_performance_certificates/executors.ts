@@ -1,8 +1,10 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 
-import { defineApiKeyProviderExecutors } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   energyPerformanceCertificatesActionHandlers,
+  energyPerformanceCertificatesApiBaseUrl,
   validateEnergyPerformanceCertificatesCredential,
 } from "./runtime.ts";
 
@@ -12,6 +14,16 @@ export const executors: ProviderExecutors = defineApiKeyProviderExecutors(
   service,
   energyPerformanceCertificatesActionHandlers,
 );
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: energyPerformanceCertificatesApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   apiKey(input, { fetcher, signal }) {

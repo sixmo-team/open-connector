@@ -50,6 +50,7 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
   return [
     defineProviderAction(service, {
       name: "create_slides_presentation",
+      operationType: "write",
       description: "Create a Feishu Slides presentation and optionally add up to ten initial pages.",
       requiredScopes: [feishuSlidesProviderScopes.create, feishuSlidesProviderScopes.write],
       providerPermissions: [feishuSlidesProviderScopes.create, feishuSlidesProviderScopes.write],
@@ -87,6 +88,7 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
     }),
     defineProviderAction(service, {
       name: "get_slides_presentation",
+      operationType: "read",
       description: "Get the complete SML 2.0 XML of a Feishu Slides presentation.",
       requiredScopes: [feishuSlidesProviderScopes.read],
       providerPermissions: [feishuSlidesProviderScopes.read],
@@ -119,6 +121,7 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
     }),
     defineProviderAction(service, {
       name: "get_slide",
+      operationType: "read",
       description: "Get one Feishu Slides page as SML 2.0 XML by stable ID or page number.",
       requiredScopes: [feishuSlidesProviderScopes.read],
       providerPermissions: [feishuSlidesProviderScopes.read],
@@ -153,6 +156,7 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
     }),
     defineProviderAction(service, {
       name: "create_slide",
+      operationType: "write",
       description: "Create a page in an existing Feishu Slides presentation.",
       requiredScopes: [feishuSlidesProviderScopes.update, feishuSlidesProviderScopes.write],
       providerPermissions: [feishuSlidesProviderScopes.update, feishuSlidesProviderScopes.write],
@@ -176,6 +180,7 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
     }),
     defineProviderAction(service, {
       name: "delete_slide",
+      operationType: "destructive",
       description: "Delete a page from a Feishu Slides presentation.",
       requiredScopes: [feishuSlidesProviderScopes.update, feishuSlidesProviderScopes.write],
       providerPermissions: [feishuSlidesProviderScopes.update, feishuSlidesProviderScopes.write],
@@ -207,6 +212,7 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
     }),
     defineProviderAction(service, {
       name: "replace_slide_elements",
+      operationType: "destructive",
       description:
         "Replace or insert structural elements on one Slides page, with SML boilerplate added for common shape replacements.",
       requiredScopes: [feishuSlidesProviderScopes.update, feishuSlidesProviderScopes.write],
@@ -219,29 +225,19 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
           parts: s.array(
             "Structural replacement and insertion operations.",
             s.anyOf("One structural Slides edit.", [
-              s.object(
-                "Replace one existing element.",
-                {
-                  action: s.literal("block_replace", { description: "The structural edit action." }),
-                  blockId: s.string("The existing element ID.", { minLength: 1 }),
-                  replacement: s.string("The replacement SML element.", { minLength: 1 }),
-                },
-                {
-                  optional: [],
-                },
-              ),
+              s.requiredObject("Replace one existing element.", {
+                action: s.literal("block_replace", { description: "The structural edit action." }),
+                blockId: s.nonEmptyString("The existing element ID."),
+                replacement: s.nonEmptyString("The replacement SML element."),
+              }),
               s.object(
                 "Insert one or more SML elements.",
                 {
                   action: s.literal("block_insert", { description: "The structural edit action." }),
-                  insertion: s.string("The SML element or elements to insert.", {
-                    minLength: 1,
-                  }),
-                  insertBeforeBlockId: s.string("Insert before this element ID; omit it to append.", { minLength: 1 }),
+                  insertion: s.nonEmptyString("The SML element or elements to insert."),
+                  insertBeforeBlockId: s.nonEmptyString("Insert before this element ID; omit it to append."),
                 },
-                {
-                  optional: ["insertBeforeBlockId"],
-                },
+                { optional: ["insertBeforeBlockId"] },
               ),
             ]),
             { minItems: 1, maxItems: 200 },
@@ -249,13 +245,9 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
           revisionId: s.integer("The base revision for optimistic locking; `-1` uses the latest revision.", {
             minimum: -1,
           }),
-          transactionId: s.string("An optional concurrent-edit transaction ID.", {
-            minLength: 1,
-          }),
+          transactionId: s.nonEmptyString("An optional concurrent-edit transaction ID."),
         },
-        {
-          optional: ["presentationType", "revisionId", "transactionId"],
-        },
+        { optional: ["presentationType", "revisionId", "transactionId"] },
       ),
       outputSchema: s.looseRequiredObject(
         "The structural Slides edit result.",
@@ -263,17 +255,16 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
           presentationId: s.string("The resolved presentation ID."),
           slideId: slideIdSchema,
           partsCount: s.positiveInteger("The number of submitted edit parts."),
-          revisionId: s.integer("The resulting presentation revision ID."),
-          failedPartIndex: s.integer("The index of a failed part, when reported."),
-          failedReason: s.string("The reason a part failed, when reported."),
+          revisionId: s.optional(s.integer("The resulting presentation revision ID.")),
+          failedPartIndex: s.optional(s.integer("The index of a failed part, when reported.")),
+          failedReason: s.optional(s.string("The reason a part failed, when reported.")),
         },
-        {
-          optional: ["revisionId", "failedPartIndex", "failedReason"],
-        },
+        { optional: ["revisionId", "failedPartIndex", "failedReason"] },
       ),
     }),
     defineProviderAction(service, {
       name: "replace_slides",
+      operationType: "destructive",
       description:
         "Replace multiple Slides pages by creating each replacement before its old page and then deleting the old page.",
       requiredScopes: [feishuSlidesProviderScopes.update, feishuSlidesProviderScopes.write],
@@ -330,6 +321,7 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
     }),
     defineProviderAction(service, {
       name: "list_slides_history",
+      operationType: "read",
       description: "List historical versions of a Feishu Slides presentation.",
       requiredScopes: [feishuSlidesProviderScopes.read],
       providerPermissions: [feishuSlidesProviderScopes.read],
@@ -350,6 +342,7 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
     }),
     defineProviderAction(service, {
       name: "revert_slides_history",
+      operationType: "destructive",
       description: "Revert a Feishu Slides presentation to a historical version and return its task metadata.",
       requiredScopes: [feishuSlidesProviderScopes.update, feishuSlidesProviderScopes.write],
       providerPermissions: [feishuSlidesProviderScopes.update, feishuSlidesProviderScopes.write],
@@ -367,6 +360,7 @@ export function createFeishuSlidesActions(service: string): readonly ActionDefin
     }),
     defineProviderAction(service, {
       name: "get_slides_revert_status",
+      operationType: "read",
       description: "Get the status of a Slides history revert task.",
       requiredScopes: [feishuSlidesProviderScopes.read],
       providerPermissions: [feishuSlidesProviderScopes.read],

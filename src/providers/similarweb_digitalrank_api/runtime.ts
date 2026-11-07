@@ -1,9 +1,9 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { SimilarwebDigitalRankApiActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 export const similarwebApiBaseUrl = "https://api.similarweb.com";
 
@@ -11,8 +11,8 @@ type SimilarwebQueryValue = string | number | boolean | undefined;
 type SimilarwebRequestPhase = "validate" | "execute";
 type SimilarwebActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const similarwebDigitalRankApiActionHandlers: Record<
-  SimilarwebDigitalRankApiActionName,
+export const similarwebDigitalRankApiActionHandlers: ProviderActionHandlers<
+  "similarweb_digitalrank_api",
   SimilarwebActionHandler
 > = {
   get_subscription_status(_input, context) {
@@ -172,13 +172,13 @@ function createSimilarwebError(
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && response.status === 401) {
     return new ProviderRequestError(401, message);
   }
   if (response.status === 400) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status || 500, message);
 }

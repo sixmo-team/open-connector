@@ -1,9 +1,10 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { PushbulletActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalNumber, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const pushbulletApiBaseUrl = "https://api.pushbullet.com/v2";
 const pushbulletValidationPath = "/users/me";
@@ -31,7 +32,7 @@ interface PushbulletErrorPayload {
   };
 }
 
-export const pushbulletActionHandlers: Record<PushbulletActionName, PushbulletActionHandler> = {
+export const pushbulletActionHandlers: ProviderActionHandlers<"pushbullet", PushbulletActionHandler> = {
   get_current_user(input, context) {
     return getCurrentUser(input, context);
   },

@@ -1,16 +1,18 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { LogsnagActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "logsnag";
 const logsnagApiBaseUrl = "https://api.logsnag.com/v1";
 
 type LogsnagActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const logsnagActionHandlers: Record<LogsnagActionName, LogsnagActionHandler> = {
+export const logsnagActionHandlers: ProviderActionHandlers<"logsnag", LogsnagActionHandler> = {
   publish_event(input, context) {
     return requestLogsnag("log", "POST", input, context);
   },
@@ -26,6 +28,16 @@ export const logsnagActionHandlers: Record<LogsnagActionName, LogsnagActionHandl
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, logsnagActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: logsnagApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input) {

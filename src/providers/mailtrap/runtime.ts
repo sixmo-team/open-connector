@@ -1,6 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
-import type { MailtrapActionName } from "./actions.ts";
 
 import {
   compactObject,
@@ -18,10 +18,10 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
-const mailtrapApiBaseUrl = "https://mailtrap.io";
-const mailtrapRequestTimeoutMs = 30_000;
+export const mailtrapApiBaseUrl: string = "https://mailtrap.io";
 
 type MailtrapPhase = "validate" | "execute";
 type MailtrapRequestMethod = "GET" | "POST" | "PATCH" | "DELETE";
@@ -37,7 +37,7 @@ interface MailtrapActionContext {
 
 type MailtrapActionHandler = (input: Record<string, unknown>, context: MailtrapActionContext) => Promise<unknown>;
 
-export const mailtrapActionHandlers: Record<MailtrapActionName, MailtrapActionHandler> = {
+export const mailtrapActionHandlers: ProviderActionHandlers<"mailtrap", MailtrapActionHandler> = {
   async list_accounts(_input, context) {
     return {
       accounts: await listMailtrapAccounts(context, "execute"),
@@ -783,7 +783,7 @@ interface MailtrapRequestOptions {
 }
 
 async function requestMailtrapJson(input: MailtrapRequestOptions): Promise<unknown> {
-  const timeout = createProviderTimeout(input.signal, mailtrapRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(buildMailtrapUrl(input.path, input.query), {
       method: input.method ?? "GET",
@@ -804,7 +804,7 @@ async function requestMailtrapJson(input: MailtrapRequestOptions): Promise<unkno
 }
 
 async function requestMailtrapText(input: Omit<MailtrapRequestOptions, "method" | "body"> & { accept: string }) {
-  const timeout = createProviderTimeout(input.signal, mailtrapRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(buildMailtrapUrl(input.path, input.query), {
       method: "GET",
@@ -1034,7 +1034,7 @@ function normalizeMailtrapTransportError(error: unknown, didTimeout: boolean): P
   if (didTimeout || isAbortLikeError(error)) {
     return new ProviderRequestError(
       504,
-      `Mailtrap request timed out after ${Math.ceil(mailtrapRequestTimeoutMs / 1000)} seconds`,
+      `Mailtrap request timed out after ${Math.ceil(defaultProviderRequestTimeoutMs / 1000)} seconds`,
     );
   }
   return new ProviderRequestError(

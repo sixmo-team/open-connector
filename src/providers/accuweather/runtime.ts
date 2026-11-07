@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
-import type { AccuweatherActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { optionalBoolean, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
@@ -12,7 +13,7 @@ type AccuweatherQueryValue = string | number | boolean | undefined;
 type AccuweatherActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type AccuweatherActionHandler = (input: Record<string, unknown>, context: AccuweatherActionContext) => Promise<unknown>;
 
-export const accuweatherActionHandlers: Record<AccuweatherActionName, AccuweatherActionHandler> = {
+export const accuweatherActionHandlers: ProviderActionHandlers<"accuweather", AccuweatherActionHandler> = {
   async search_locations(input, context) {
     const payload = await accuweatherGetJson(
       {

@@ -1,15 +1,20 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ContactoutActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  requiredResponseRecord,
+  providerInputError,
+} from "../provider-runtime.ts";
 
-const contactoutApiBaseUrl = "https://api.contactout.com";
+export const contactoutApiBaseUrl = "https://api.contactout.com";
 
 type ContactoutActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const contactoutActionHandlers: Record<ContactoutActionName, ContactoutActionHandler> = {
+export const contactoutActionHandlers: ProviderActionHandlers<"contactout", ContactoutActionHandler> = {
   enrich_linkedin_profile(input, context) {
     return getContactoutObject("/v1/linkedin/enrich", input, context, "enrich_linkedin_profile");
   },
@@ -72,7 +77,7 @@ export async function validateContactoutCredential(
   fetcher: typeof fetch,
   signal?: AbortSignal,
 ): Promise<CredentialValidationResult> {
-  const payload = requireContactoutObject(
+  const payload = requiredResponseRecord(
     await requestContactout({
       path: "/v1/stats",
       method: "GET",
@@ -106,7 +111,7 @@ async function getContactoutObject(
   context: ApiKeyProviderContext,
   actionName: string,
 ): Promise<Record<string, unknown>> {
-  return requireContactoutObject(
+  return requiredResponseRecord(
     await requestContactout({
       path,
       method: "GET",
@@ -126,7 +131,7 @@ async function postContactoutObject(
   context: ApiKeyProviderContext,
   actionName: string,
 ): Promise<Record<string, unknown>> {
-  return requireContactoutObject(
+  return requiredResponseRecord(
     await requestContactout({
       path,
       method: "POST",
@@ -214,13 +219,13 @@ async function readContactoutPayload(response: Response): Promise<unknown> {
 function mapContactoutError(status: number, payload: unknown, phase: "validate" | "execute"): ProviderRequestError {
   const message = readContactoutErrorMessage(payload, status);
   if (phase === "validate" && (status === 400 || status === 401)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (status === 401 || status === 403)) {
     return new ProviderRequestError(status, message);
   }
   if (status === 400 || status === 401 || status === 403 || status === 404 || status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status || 500, message, payload);
 }
@@ -250,7 +255,7 @@ function flattenFiltersInput(input: Record<string, unknown>, passthroughKeys: st
 }
 
 function requireFilters(value: unknown): Record<string, unknown> {
-  const filters = requiredRecord(value, "filters", (message) => new ProviderRequestError(400, message));
+  const filters = requiredRecord(value, "filters", providerInputError);
   if (Object.keys(filters).length === 0) {
     throw new ProviderRequestError(400, "filters must contain at least one search filter.");
   }
@@ -280,13 +285,5 @@ function assertAnyString(input: Record<string, unknown>, keys: string[], message
   if (keys.some((key) => optionalString(input[key]))) {
     return;
   }
-  throw new ProviderRequestError(400, message);
-}
-
-function requireContactoutObject(value: unknown, label: string): Record<string, unknown> {
-  const record = optionalRecord(value);
-  if (!record) {
-    throw new ProviderRequestError(502, `${label} must be an object`);
-  }
-  return record;
+  throw providerInputError(message);
 }

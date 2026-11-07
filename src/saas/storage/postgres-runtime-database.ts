@@ -1,4 +1,5 @@
-import type { IConnectionStore, StoredConnection } from "../../connection-service.ts";
+import type { CatalogStore } from "../../catalog-store.ts";
+import type { IConnectionStore, StoredConnection } from "../../connection-store.ts";
 import type { IOAuthStateStore } from "../../oauth/oauth-flow-service.ts";
 import type { ExecutionJournal, SaasActionIdempotencyStore } from "../actions/saas-action-runner.ts";
 import type {
@@ -8,7 +9,13 @@ import type {
 import type { SaasRequestScope } from "../contracts.ts";
 import type { SeaweedFsTransitFileOptions } from "../files/seaweedfs-transit-files.ts";
 import type { ITransitFileService } from "../files/transit-file-store.ts";
-import type { ConnectionSecretStore, SafeStoredConnection } from "./postgres-connection-store.ts";
+import type { ISecretCodec, NativeSecretScope } from "../secrets/secret-codec.ts";
+import type { TriggerLifecycleCleanup } from "../triggers/postgres-trigger-store.ts";
+import type {
+  ConnectionSecretStore,
+  SafeStoredConnection,
+  LifecycleConnectionRetirement,
+} from "./postgres-connection-store.ts";
 import type { OAuthStateSecretStore } from "./postgres-oauth-state-store.ts";
 import type { RefreshLeaseStore } from "./postgres-refresh-lease-store.ts";
 import type { TransitFileMetadataStore } from "./postgres-transit-file-store.ts";
@@ -20,11 +27,19 @@ import { readdir, readFile } from "node:fs/promises";
 import { SeaweedFsTransitFileService } from "../files/seaweedfs-transit-files.ts";
 import { ScopedLifecycleService } from "../lifecycle/scoped-lifecycle-service.ts";
 import { PostgresRefreshCoordinator } from "../oauth/postgres-refresh-coordinator.ts";
+import { SaasCleanupService } from "../saas-cleanup-service.ts";
+import { PostgresTriggerStore } from "../triggers/postgres-trigger-store.ts";
+import { PostgresActionPolicyStore } from "./postgres-action-policy-store.ts";
+import { PostgresConnectionRequestStore } from "./postgres-connection-request-store.ts";
 import { PostgresConnectionStore } from "./postgres-connection-store.ts";
 import { PostgresIdempotencyStore } from "./postgres-idempotency-store.ts";
+import { scopedRuntimeFunctions, nativeManagedFenceSequence } from "./postgres-migrator.ts";
+import { PostgresNativeConfigurationStore } from "./postgres-native-configuration-store.ts";
+import { PostgresNativeLifecycleInventory } from "./postgres-native-lifecycle-inventory.ts";
 import { PostgresOAuthStateStore } from "./postgres-oauth-state-store.ts";
 import { PostgresRefreshLeaseStore } from "./postgres-refresh-lease-store.ts";
 import { PostgresRunStore } from "./postgres-run-store.ts";
+import { PostgresSaasProjectStore } from "./postgres-saas-project-store.ts";
 import { PostgresTransitFileStore } from "./postgres-transit-file-store.ts";
 
 const requiredRuntimeTables = [
@@ -35,6 +50,19 @@ const requiredRuntimeTables = [
   "refresh_leases",
   "transit_files",
   "connection_revocation_receipts",
+  "connection_retirements",
+  "connection_requests",
+  "managed_projects",
+  "oauth_sources",
+  "saas_cleanup",
+  "managed_account_retirements",
+  "trigger_subscriptions",
+  "trigger_source_applications",
+  "trigger_secret_cleanup",
+  "trigger_execution_leases",
+  "action_defaults",
+  "action_grants",
+  "action_policy_audit",
 ] as const;
 
 /** Fail startup unless the connected PostgreSQL role is constrained by forced RLS. */
@@ -84,6 +112,82 @@ export async function probeSaasRuntimeDatabase(pool: Pool): Promise<void> {
     const table = tables.get(name);
     if (!table || table.owner_name === role.rolname || !table.relrowsecurity || !table.relforcerowsecurity) {
       throw new Error(`Unsafe SaaS PostgreSQL runtime boundary for integration_runtime.${name}`);
+    }
+  }
+
+  for (const { signature, definer } of scopedRuntimeFunctions) {
+    const result = await pool.query<{
+      owner_name: string;
+      prosecdef: boolean;
+      proconfig: string[] | null;
+      executable: boolean;
+      public_executable: boolean;
+    }>(
+      `SELECT pg_get_userbyid(p.proowner) AS owner_name,p.prosecdef,p.proconfig,
+        has_function_privilege(current_user,p.oid,'EXECUTE') AS executable,
+        EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+          WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS public_executable
+       FROM pg_proc p WHERE p.oid=to_regprocedure($1)`,
+      [signature],
+    );
+    const fn = result.rows[0];
+    if (
+      !fn ||
+      fn.owner_name !== tables.get("connections")!.owner_name ||
+      fn.prosecdef !== definer ||
+      !fn.executable ||
+      fn.public_executable ||
+      !fn.proconfig?.some((setting) => setting.replaceAll(" ", "") === "search_path=pg_catalog,pg_temp")
+    )
+      throw new Error(`Unsafe scoped runtime function boundary for ${signature}`);
+  }
+  const sequence = (
+    await pool.query<{ owner_name: string; usage: boolean; update: boolean; public_access: boolean }>(
+      `SELECT pg_get_userbyid(c.relowner) AS owner_name,
+       has_sequence_privilege(current_user,c.oid,'USAGE') AS usage,
+       has_sequence_privilege(current_user,c.oid,'UPDATE') AS update,
+       EXISTS (SELECT 1 FROM aclexplode(COALESCE(c.relacl,acldefault('s',c.relowner))) a
+         WHERE a.grantee=0) AS public_access
+     FROM pg_class c WHERE c.oid=to_regclass($1) AND c.relkind='S'`,
+      [nativeManagedFenceSequence],
+    )
+  ).rows[0];
+  if (
+    !sequence ||
+    sequence.owner_name !== tables.get("connections")!.owner_name ||
+    !sequence.usage ||
+    sequence.update ||
+    sequence.public_access
+  )
+    throw new Error("Unsafe managed account monotonic sequence boundary");
+
+  const policyPrivileges = await pool.query<{
+    relname: string;
+    can_select: boolean;
+    can_insert: boolean;
+    can_update: boolean;
+    can_delete: boolean;
+    can_truncate: boolean;
+  }>(
+    `SELECT class.relname,
+      has_table_privilege(current_user, class.oid, 'SELECT') AS can_select,
+      has_table_privilege(current_user, class.oid, 'INSERT') AS can_insert,
+      has_table_privilege(current_user, class.oid, 'UPDATE') AS can_update,
+      has_table_privilege(current_user, class.oid, 'DELETE') AS can_delete,
+      has_table_privilege(current_user, class.oid, 'TRUNCATE') AS can_truncate
+    FROM pg_class AS class JOIN pg_namespace AS namespace ON namespace.oid = class.relnamespace
+    WHERE namespace.nspname = 'integration_runtime' AND class.relname = ANY($1::text[])`,
+    [["action_defaults", "action_grants", "action_policy_audit"]],
+  );
+  for (const table of policyPrivileges.rows) {
+    if (
+      !table.can_select ||
+      !table.can_insert ||
+      table.can_truncate ||
+      table.can_update !== (table.relname !== "action_policy_audit") ||
+      table.can_delete !== (table.relname !== "action_defaults")
+    ) {
+      throw new Error(`Unsafe SaaS PostgreSQL policy privileges for integration_runtime.${table.relname}`);
     }
   }
 
@@ -147,6 +251,12 @@ export async function probeSaasRuntimeDatabase(pool: Pool): Promise<void> {
 }
 
 export interface SaasRuntimeConnectionStore extends IConnectionStore {
+  listExactOwnedRetirementsForLifecycle(
+    cursor: string | undefined,
+    limit: number,
+  ): Promise<{ items: LifecycleConnectionRetirement[]; nextCursor?: string }>;
+  countExactOwnedRetirementsForLifecycle(): Promise<number>;
+  purgeExactOwnedRetirementsForLifecycle(): Promise<number>;
   listSafeConnections(): Promise<SafeStoredConnection[]>;
   getSafeConnection(connectionId: string): Promise<SafeStoredConnection | undefined>;
   getCredentialReplacementTarget(connectionId: string): Promise<StoredConnection | undefined>;
@@ -163,7 +273,12 @@ export interface SaasRuntimeConnectionStore extends IConnectionStore {
 
 export interface SaasRuntimeDatabase {
   connectionStore: SaasRuntimeConnectionStore;
+  actionPolicy: PostgresActionPolicyStore;
   oauthStateStore: IOAuthStateStore;
+  connectionRequests: PostgresConnectionRequestStore;
+  saasProjects: PostgresSaasProjectStore;
+  triggers: PostgresTriggerStore;
+  secretCodec: ISecretCodec;
   runLogStore: IRunLogStore;
   executionJournal: ExecutionJournal;
   saasIdempotencyStore: SaasActionIdempotencyStore;
@@ -175,8 +290,10 @@ export interface SaasRuntimeDatabase {
 
 export interface SaasRuntimeDatabaseFactoryOptions {
   pool: Pool;
+  catalog: Pick<CatalogStore, "actionsById" | "providers">;
   connectionSecrets: ConnectionSecretStore;
   oauthStateSecrets: OAuthStateSecretStore;
+  secretCodecForScope: (scope: Readonly<NativeSecretScope>) => ISecretCodec;
   runLimit?: number;
   oauthStateMaxAgeMs?: number;
   transitFiles?: Omit<SeaweedFsTransitFileOptions, "metadata" | "scope">;
@@ -185,9 +302,15 @@ export interface SaasRuntimeDatabaseFactoryOptions {
 /** Creates fresh upstream-compatible store adapters for each verified request. */
 export class SaasRuntimeDatabaseFactory {
   private readonly options: SaasRuntimeDatabaseFactoryOptions;
+  readonly actionPolicy: PostgresActionPolicyStore;
+  readonly nativeConfiguration: PostgresNativeConfigurationStore;
+  readonly nativeLifecycleInventory: PostgresNativeLifecycleInventory;
 
   constructor(options: SaasRuntimeDatabaseFactoryOptions) {
     this.options = options;
+    this.actionPolicy = new PostgresActionPolicyStore(options.pool, options.catalog);
+    this.nativeConfiguration = new PostgresNativeConfigurationStore(options.pool, options.secretCodecForScope);
+    this.nativeLifecycleInventory = new PostgresNativeLifecycleInventory(options.pool);
   }
 
   forScope(scope: Readonly<SaasRequestScope>): SaasRuntimeDatabase {
@@ -196,8 +319,24 @@ export class SaasRuntimeDatabaseFactory {
     const transitFileStore = new PostgresTransitFileStore(this.options.pool, capturedScope);
     const runStore = new PostgresRunStore(this.options.pool, capturedScope, this.options.runLimit);
     const idempotencyStore = new PostgresIdempotencyStore(this.options.pool, capturedScope);
+    const connectionStore = new PostgresConnectionStore(
+      this.options.pool,
+      capturedScope,
+      this.options.connectionSecrets,
+    );
+    const secretCodec = this.options.secretCodecForScope(capturedScope);
     return {
-      connectionStore: new PostgresConnectionStore(this.options.pool, capturedScope, this.options.connectionSecrets),
+      actionPolicy: this.actionPolicy,
+      connectionRequests: new PostgresConnectionRequestStore(
+        this.options.pool,
+        capturedScope,
+        secretCodec,
+        connectionStore,
+      ),
+      saasProjects: new PostgresSaasProjectStore(this.options.pool, capturedScope, secretCodec),
+      triggers: new PostgresTriggerStore(this.options.pool, capturedScope, secretCodec),
+      secretCodec,
+      connectionStore,
       oauthStateStore: new PostgresOAuthStateStore(
         this.options.pool,
         capturedScope,
@@ -223,6 +362,7 @@ export class SaasRuntimeDatabaseFactory {
   lifecycleForScope(
     scope: Readonly<SaasRequestScope>,
     credentialRevoker?: SaasProviderCredentialRevoker,
+    triggerCleanup?: TriggerLifecycleCleanup,
   ): ScopedLifecycleService {
     const capturedScope = freezeScope(scope);
     const connections = new PostgresConnectionStore(this.options.pool, capturedScope, this.options.connectionSecrets);
@@ -241,10 +381,32 @@ export class SaasRuntimeDatabaseFactory {
           scope: capturedScope,
         })
       : undefined;
+    const secretCodec = this.options.secretCodecForScope(capturedScope);
+    const connectionRequests = new PostgresConnectionRequestStore(
+      this.options.pool,
+      capturedScope,
+      secretCodec,
+      connections,
+    );
+    const saasProjects = new PostgresSaasProjectStore(this.options.pool, capturedScope, secretCodec);
+    const triggers = new PostgresTriggerStore(this.options.pool, capturedScope, secretCodec);
     return new ScopedLifecycleService({
       pool: this.options.pool,
       scope: capturedScope,
       connections,
+      actionPolicy: this.actionPolicy,
+      connectionRequests,
+      saasProjects,
+      triggers,
+      ...(triggerCleanup ? { triggerCleanup } : {}),
+      runSaasCleanup: async () => {
+        const cleanup = new SaasCleanupService({ ...capturedScope, store: saasProjects, requests: connectionRequests });
+        try {
+          await cleanup.run();
+        } finally {
+          await cleanup.close();
+        }
+      },
       oauthStates,
       runLogs,
       transitMetadata,

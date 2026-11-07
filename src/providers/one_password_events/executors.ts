@@ -1,9 +1,17 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { OnePasswordEventsContext } from "./runtime.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   onePasswordEventsActionHandlers,
+  resolveOnePasswordEventsBaseUrl,
   resolveOnePasswordEventsCredentialContext,
   validateOnePasswordEventsCredential,
 } from "./runtime.ts";
@@ -24,6 +32,18 @@ export const executors: ProviderExecutors = defineProviderExecutors<OnePasswordE
     );
   },
   fallbackMessage: "one_password_events request failed",
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context) {
+    const credential = await requireApiKeyCredential(context, service);
+    return resolveOnePasswordEventsBaseUrl(credential.values, credential.metadata);
+  },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
 });
 
 export const credentialValidators: CredentialValidators = {

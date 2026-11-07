@@ -1,9 +1,10 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import { assertPublicHttpUrl, readBoundedResponseBytes } from "../../core/request.ts";
-import { providerFetch, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { assertPublicHttpUrl, readBoundedResponseBytes, storeResponseInTransit } from "../../core/request.ts";
+import { providerFetch, providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 type KlangioActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 type KlangioJobOutput = "mxml" | "midi" | "pdf" | "gp5" | "json" | "midi_quant";
@@ -26,7 +27,7 @@ export const klangioApiBaseUrl = "https://api.klang.io";
 const klangioValidationJobId = "00000000-0000-0000-0000-000000000000";
 const maxKlangioUploadSourceBytes = 100 * 1024 * 1024;
 
-export const klangioActionHandlers: Record<string, KlangioActionHandler> = {
+export const klangioActionHandlers: ProviderActionHandlers<"klangio", KlangioActionHandler> = {
   async create_transcription_job(input, context) {
     const formData = await createFileFormData(input.file, context);
     for (const output of readStringArray(input.outputs, "outputs")) {
@@ -219,20 +220,19 @@ async function downloadKlangioFile(input: {
     throw createKlangioError(response, payload);
   }
 
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: input.context.transitFiles.maxBytes,
-    fieldName: `Klangio ${input.actionName} file`,
-    createError: (message) => new ProviderRequestError(413, message),
-  });
-  if (bytes.byteLength === 0) {
-    throw new ProviderRequestError(502, `Klangio ${input.actionName} response did not include file bytes`);
-  }
-
   const contentType = normalizeMimeType(response.headers.get("content-type")) ?? input.fallbackMimeType;
   const name = appendExtensionIfMissing(input.fileName, extensionForMimeType(contentType));
-  const upload = await input.context.transitFiles.create(
-    new File([Uint8Array.from(bytes)], name, { type: contentType }),
-  );
+  const upload = await storeResponseInTransit(response, input.context.transitFiles, {
+    name,
+    mimeType: contentType,
+    fieldName: `Klangio ${input.actionName} file`,
+    createError: (message) => new ProviderRequestError(413, message),
+    signal: input.context.signal,
+  });
+  if (upload.sizeBytes === 0) {
+    await input.context.transitFiles.delete(upload.fileId).catch(() => undefined);
+    throw new ProviderRequestError(502, `Klangio ${input.actionName} response did not include file bytes`);
+  }
 
   return {
     file: {
@@ -244,7 +244,7 @@ async function downloadKlangioFile(input: {
       mimeType: contentType,
     },
     contentType,
-    contentLength: bytes.byteLength,
+    contentLength: upload.sizeBytes,
   };
 }
 
@@ -264,7 +264,7 @@ async function resolveKlangioUploadSource(
   if (fileUrl) {
     const url = assertPublicHttpUrl(fileUrl, {
       fieldName: "file.url",
-      createError: (message) => new ProviderRequestError(400, message),
+      createError: providerInputError,
     });
     const response = await providerFetch(url, {
       method: "GET",
@@ -323,7 +323,7 @@ async function readKlangioUploadSourceBytes(response: Response): Promise<Uint8Ar
   return readBoundedResponseBytes(response, {
     maxBytes: maxKlangioUploadSourceBytes,
     fieldName: "klangio upload source",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
   });
 }
 
@@ -398,7 +398,7 @@ function createKlangioError(response: Response, payload: unknown): ProviderReque
   }
 
   if (response.status >= 400 && response.status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(response.status || 500, message);

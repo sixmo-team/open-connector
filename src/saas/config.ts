@@ -1,3 +1,7 @@
+import { parseActionPolicyList } from "../core/action-policy.ts";
+import { parseEgressTrustedHosts, parsePrivateNetworkAccessFlag } from "../core/request.ts";
+import { parseManagedCompletionUri } from "./saas-oauth-service.ts";
+
 export interface SaasConfig {
   postgresUrl: string;
   openBaoAddress: string;
@@ -12,6 +16,13 @@ export interface SaasConfig {
   jwtIssuer: string;
   jwtAudience: "open-connector-saas";
   jwtActiveKid: string;
+  policyControlJwksUrl: string;
+  policyControlIssuer: string;
+  policyControlAudience: string;
+  policyControlActiveKid: string;
+  managedCompletionUri?: string;
+  allowedCustomOAuth: readonly string[];
+  egressTrustedHosts: readonly string[];
   seaweedFsEndpoint: string;
   seaweedFsBucket: string;
   seaweedFsAccessKeyId: string;
@@ -34,6 +45,10 @@ const requiredVariables = {
   jwtIssuer: "OPEN_CONNECTOR_JWT_ISSUER",
   jwtAudience: "OPEN_CONNECTOR_JWT_AUDIENCE",
   jwtActiveKid: "OPEN_CONNECTOR_JWT_ACTIVE_KID",
+  policyControlJwksUrl: "OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWKS_URL",
+  policyControlIssuer: "OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ISSUER",
+  policyControlAudience: "OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_AUDIENCE",
+  policyControlActiveKid: "OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ACTIVE_KID",
   seaweedFsEndpoint: "OPEN_CONNECTOR_SEAWEEDFS_ENDPOINT",
   seaweedFsBucket: "OPEN_CONNECTOR_SEAWEEDFS_BUCKET",
   seaweedFsAccessKeyId: "OPEN_CONNECTOR_SEAWEEDFS_ACCESS_KEY_ID",
@@ -57,6 +72,13 @@ export function readSaasConfig(environment: NodeJS.ProcessEnv = process.env): Sa
   }
   requirePrivateServiceUrl(values.internalOrigin, "OPEN_CONNECTOR_INTERNAL_URL");
   requirePrivateServiceUrl(values.jwksUrl, "OPEN_CONNECTOR_JWKS_URL");
+  requirePrivateServiceUrl(values.policyControlJwksUrl, "OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWKS_URL");
+  if (
+    new URL(values.policyControlJwksUrl).href === new URL(values.jwksUrl).href ||
+    values.policyControlActiveKid === values.jwtActiveKid
+  ) {
+    throw new Error("Action policy control JWKS URL and kid must differ from execution profile");
+  }
   requirePublicCallbackOrigin(values.oauthCallbackOrigin);
   requirePrivateServiceUrl(values.seaweedFsEndpoint, "OPEN_CONNECTOR_SEAWEEDFS_ENDPOINT");
   if (values.openBaoTokenFile !== openBaoTokenPath) {
@@ -69,10 +91,15 @@ export function readSaasConfig(environment: NodeJS.ProcessEnv = process.env): Sa
     throw new Error("OPEN_CONNECTOR_JWT_AUDIENCE must be open-connector-saas");
   }
   rejectUnsafeSaasOverrides(environment);
+  const managedCompletionUri = environment.OOMOL_CONNECT_MANAGED_COMPLETION_URI?.trim() || undefined;
+  if (managedCompletionUri) parseManagedCompletionUri(managedCompletionUri);
 
   return Object.freeze({
     ...values,
     jwtAudience: "open-connector-saas" as const,
+    managedCompletionUri,
+    allowedCustomOAuth: Object.freeze(parseActionPolicyList(environment.OOMOL_CONNECT_ALLOWED_CUSTOM_OAUTH)),
+    egressTrustedHosts: Object.freeze(parseEgressTrustedHosts(environment.OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS)),
     openBaoRequestTimeoutMs: readBoundedInteger(
       environment.OPEN_CONNECTOR_OPENBAO_REQUEST_TIMEOUT_MS,
       5_000,
@@ -158,6 +185,9 @@ function rejectUnsafeSaasOverrides(environment: NodeJS.ProcessEnv): void {
     if (environment[name]?.trim()) {
       throw new Error(`${name} is not supported in SaaS mode`);
     }
+  }
+  if (parsePrivateNetworkAccessFlag(environment.OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK)) {
+    throw new Error("OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK is not supported in SaaS mode");
   }
 
   if (environment.TRANSIT_FILES_BACKEND?.trim().toLowerCase() === "local") {

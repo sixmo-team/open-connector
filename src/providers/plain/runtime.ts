@@ -1,9 +1,15 @@
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  providerUserAgent,
+  ProviderRequestError,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
-const plainApiUrl = "https://core-api.uk.plain.com/graphql/v1";
+export const plainApiUrl = "https://core-api.uk.plain.com/graphql/v1";
 
 const customerSelection = `
   id
@@ -94,7 +100,7 @@ interface PlainGraphqlPayload {
 
 type PlainHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const plainActionHandlers: Record<string, PlainHandler> = {
+export const plainActionHandlers: ProviderActionHandlers<"plain", PlainHandler> = {
   get_customer_by_email(input, context) {
     return getCustomerByEmail(input, context);
   },
@@ -319,9 +325,9 @@ function createPlainGraphqlError(errors: unknown[], phase: "validate" | "execute
     code === "GRAPHQL_VALIDATION_FAILED" ||
     code === "GRAPHQL_PARSE_FAILED"
   ) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function mapPlainMutationError(error: Record<string, unknown>): ProviderRequestError {
@@ -332,9 +338,9 @@ function mapPlainMutationError(error: Record<string, unknown>): ProviderRequestE
     return new ProviderRequestError(401, message);
   }
   if (type === "INTERNAL" || code === "internal") {
-    return new ProviderRequestError(502, message);
+    return providerResponseError(message);
   }
-  return new ProviderRequestError(400, message);
+  return providerInputError(message);
 }
 
 function buildUpsertCustomerInput(input: Record<string, unknown>): Record<string, unknown> {

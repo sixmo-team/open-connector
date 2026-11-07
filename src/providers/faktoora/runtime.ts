@@ -1,21 +1,19 @@
+import type { ApiKeyActionRequest, ProviderActionHandlers } from "../provider-executors.ts";
 import type { FaktooraActionName } from "./actions.ts";
 
 import { requiredString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 export interface FaktooraCredentialCheck {
   providerAccountId?: string;
   accountLabel: string;
   providerScopes: string[];
   providerMetadata: Record<string, unknown>;
-}
-
-interface ApiKeyProviderActionInput {
-  apiKey: string;
-  actionName: string;
-  input: Record<string, unknown>;
-  providerMetadata?: Record<string, unknown>;
-  values?: Record<string, string>;
 }
 
 export const faktooraApiBaseUrl = "https://api.faktoora.com/api/v1";
@@ -38,7 +36,7 @@ interface FaktooraActionHandler {
   (input: Record<string, unknown>, context: FaktooraContext): Promise<unknown>;
 }
 
-export const faktooraActionHandlers: Record<FaktooraActionName, FaktooraActionHandler> = {
+export const faktooraActionHandlers: ProviderActionHandlers<"faktoora", FaktooraActionHandler> = {
   async list_projects(input, context) {
     return requestFaktooraJson({
       ...context,
@@ -110,9 +108,9 @@ export const faktooraActionHandlers: Record<FaktooraActionName, FaktooraActionHa
 
 export async function validateFaktooraCredential(
   input: Record<string, string>,
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch,
 ): Promise<FaktooraCredentialCheck> {
-  const apiKey = requiredString(input.apiKey, "apiKey", (message) => new ProviderRequestError(400, message));
+  const apiKey = requiredString(input.apiKey, "apiKey", providerInputError);
   await requestFaktooraJson({
     apiKey,
     fetcher,
@@ -137,7 +135,7 @@ export async function validateFaktooraCredential(
 export async function executeFaktooraAction(
   actionName: FaktooraActionName,
   input: Record<string, unknown>,
-  providerInput: ApiKeyProviderActionInput,
+  providerInput: ApiKeyActionRequest,
   fetcher: typeof fetch,
 ): Promise<unknown> {
   return faktooraActionHandlers[actionName](input, {
@@ -194,15 +192,15 @@ function createFaktooraError(status: number, payload: unknown, phase: FaktooraRe
   const message = extractMessage(payload) ?? `Faktoora request failed with status ${status}`;
   if (status === 429) return new ProviderRequestError(429, message);
   if ((status === 401 || status === 403) && phase === "validate") {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 401 || status === 403) {
     return new ProviderRequestError(401, message);
   }
   if (status === 400 || status === 404 || status === 409 || status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function extractMessage(payload: unknown) {

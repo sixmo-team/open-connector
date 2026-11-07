@@ -1,9 +1,17 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { MuxContext } from "./runtime.ts";
 
 import { requiredString } from "../../core/cast.ts";
-import { defineProviderExecutors, ProviderRequestError, requireApiKeyCredential } from "../provider-runtime.ts";
-import { muxActionHandlers, validateMuxCredential } from "./runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { basicAuthorizationHeader, ProviderRequestError } from "../provider-runtime.ts";
+import { muxActionHandlers, muxApiOrigin, validateMuxCredential } from "./runtime.ts";
 
 const service = "mux";
 
@@ -19,6 +27,21 @@ export const executors: ProviderExecutors = defineProviderExecutors<MuxContext>(
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: muxApiOrigin,
+  auth: { type: "none" },
+  skipDnsValidation: true,
+  async customizeRequest({ context, headers }) {
+    const credential = await requireApiKeyCredential(context, service);
+    headers.set(
+      "authorization",
+      basicAuthorizationHeader(`${requireMuxTokenId(credential.values.tokenId)}:${credential.apiKey}`),
+    );
+    if (!headers.has("accept")) headers.set("accept", "application/json");
   },
 });
 

@@ -4,23 +4,35 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FilesComActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import {
-  defineProviderExecutors,
-  defineProviderProxy,
+  compactObject,
+  optionalInteger,
+  optionalRawString,
+  optionalRecord,
+  optionalString,
+  requiredString,
+} from "../../core/cast.ts";
+import { assertPublicHttpUrl, storeResponseInTransit } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  providerFetch,
   providerUserAgent,
   ProviderRequestError,
-  requireApiKeyCredential,
+  readProviderErrorTextBody,
+  readProviderTextBody,
+  requiredInputString,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "files_com";
 const filesComApiHostSuffix = ".files.com";
 const filesComApiPathPrefix = "/api/rest/v1";
 const filesComValidationEndpoint = "/users/me.json";
-const filesComDefaultRequestTimeoutMs = 30_000;
 
 interface FilesComActionContext extends ApiKeyProviderContext {
   subdomain: string;
@@ -41,14 +53,14 @@ interface FilesComRequestInput {
   signal?: AbortSignal;
 }
 
-export const filesComActionHandlers: Record<FilesComActionName, FilesComActionHandler> = {
+export const filesComActionHandlers: ProviderActionHandlers<"files_com", FilesComActionHandler> = {
   list_folder(input, context) {
     const page = optionalInteger(input.page);
     const perPage = optionalInteger(input.perPage);
     return requestAndWrapFilesComList(
       {
         context,
-        path: `/folders/${encodeRemotePath(readInputString(input.path, "path"))}.json`,
+        path: `/folders/${encodeRemotePath(requiredInputString(input.path, "path"))}.json`,
         query: compactObject({
           page: page === undefined ? undefined : String(page),
           per_page: perPage === undefined ? undefined : String(perPage),
@@ -61,14 +73,17 @@ export const filesComActionHandlers: Record<FilesComActionName, FilesComActionHa
   get_file(input, context) {
     return requestAndWrapFilesComJson({
       context,
-      path: `/files/${encodeRemotePath(readInputString(input.path, "path"))}.json`,
+      path: `/files/${encodeRemotePath(requiredInputString(input.path, "path"))}.json`,
       wrapper: "file",
     });
+  },
+  download_file(input, context) {
+    return downloadFilesComFile(input, context);
   },
   create_folder(input, context) {
     return requestAndWrapFilesComJson({
       context,
-      path: `/folders/${encodeRemotePath(readInputString(input.path, "path"))}.json`,
+      path: `/folders/${encodeRemotePath(requiredInputString(input.path, "path"))}.json`,
       method: "POST",
       body: compactObject({
         mkdir_parents: input.mkdirParents,
@@ -79,7 +94,7 @@ export const filesComActionHandlers: Record<FilesComActionName, FilesComActionHa
   update_metadata(input, context) {
     return requestAndWrapFilesComJson({
       context,
-      path: `/files/${encodeRemotePath(readInputString(input.path, "path"))}.json`,
+      path: `/files/${encodeRemotePath(requiredInputString(input.path, "path"))}.json`,
       method: "PATCH",
       body: {
         custom_metadata: optionalRecord(input.customMetadata) ?? {},
@@ -88,7 +103,7 @@ export const filesComActionHandlers: Record<FilesComActionName, FilesComActionHa
     });
   },
   async delete_file(input, context) {
-    const path = readInputString(input.path, "path");
+    const path = requiredInputString(input.path, "path");
     const raw = await requestFilesComJson({
       subdomain: context.subdomain,
       apiKey: context.apiKey,
@@ -111,6 +126,7 @@ export const executors: ProviderExecutors = defineProviderExecutors<FilesComActi
       apiKey: credential.apiKey,
       subdomain: requireFilesComSubdomain(credential.values.subdomain ?? credential.metadata.subdomain),
       fetcher,
+      transitFiles: context.transitFiles,
       signal: context.signal,
     };
   },
@@ -152,6 +168,93 @@ export const credentialValidators: CredentialValidators = {
     };
   },
 };
+
+async function downloadFilesComFile(
+  input: Record<string, unknown>,
+  context: FilesComActionContext,
+): Promise<Record<string, unknown>> {
+  if (!context.transitFiles) {
+    throw new ProviderRequestError(400, "files_com download_file requires local transit file storage");
+  }
+
+  const requestedPath = requiredInputString(input.path, "path");
+  const payload = optionalRecord(
+    await requestFilesComJson({
+      subdomain: context.subdomain,
+      apiKey: context.apiKey,
+      fetcher: context.fetcher,
+      signal: context.signal,
+      phase: "execute",
+      path: `/files/${encodeRemotePath(requestedPath)}.json`,
+    }),
+  );
+  if (!payload) {
+    throw new ProviderRequestError(502, "files_com download metadata is malformed");
+  }
+  if (optionalString(payload.type) !== "file") {
+    throw new ProviderRequestError(400, "files_com download_file requires a file path");
+  }
+
+  const remotePath = optionalString(payload.path) ?? requestedPath;
+  const remoteName = readFilesComFileName(payload.display_name, remotePath);
+  const reportedSizeBytes = optionalInteger(payload.size);
+  if (reportedSizeBytes !== undefined && reportedSizeBytes > context.transitFiles.maxBytes) {
+    throw new ProviderRequestError(
+      413,
+      `Files.com file exceeds local transit limit of ${context.transitFiles.maxBytes} bytes`,
+    );
+  }
+
+  const downloadUrl = readFilesComDownloadUrl(
+    requiredString(payload.download_uri, "download_uri", (message) => new ProviderRequestError(502, message)),
+  );
+  const downloadSignal = composeFilesComRequestSignal(context.signal);
+  const transitName = optionalString(input.fileName) ?? remoteName;
+  try {
+    const response = await providerFetch(downloadUrl, {
+      headers: {
+        accept: "*/*",
+        "user-agent": providerUserAgent,
+      },
+      signal: downloadSignal,
+    });
+    if (!response.ok) {
+      const text = await readProviderErrorTextBody(response, "Files.com download error response");
+      throw new ProviderRequestError(
+        response.status >= 500 ? 502 : response.status,
+        text || `files_com download failed with HTTP ${response.status}`,
+      );
+    }
+
+    const mimeType =
+      optionalString(response.headers.get("content-type")) ??
+      optionalString(payload.mime_type) ??
+      "application/octet-stream";
+    const file = await storeResponseInTransit(response, context.transitFiles, {
+      name: transitName,
+      mimeType,
+      fieldName: "Files.com download",
+      createError: (message) => new ProviderRequestError(413, message),
+      signal: downloadSignal,
+    });
+
+    return {
+      fileId: remotePath,
+      name: remoteName,
+      mimeType,
+      sizeBytes: file.sizeBytes,
+      file,
+    };
+  } catch (error) {
+    if (error instanceof ProviderRequestError) {
+      throw error;
+    }
+    if (isAbortError(error)) {
+      throw new ProviderRequestError(504, "Files.com request timed out");
+    }
+    throw error;
+  }
+}
 
 async function requestAndWrapFilesComJson(input: {
   context: FilesComActionContext;
@@ -209,9 +312,7 @@ async function requestFilesComJson(input: FilesComRequestInput): Promise<unknown
     }
   }
 
-  const signal = input.signal
-    ? AbortSignal.any([input.signal, AbortSignal.timeout(filesComDefaultRequestTimeoutMs)])
-    : AbortSignal.timeout(filesComDefaultRequestTimeoutMs);
+  const signal = composeFilesComRequestSignal(input.signal);
 
   try {
     const response = await input.fetcher(url, {
@@ -260,15 +361,38 @@ function requireFilesComSubdomain(value: unknown): string {
   return trimmed;
 }
 
-function readInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function encodeRemotePath(path: string): string {
   return path
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
+}
+
+function readFilesComFileName(displayName: unknown, remotePath: string): string {
+  const rawName = optionalRawString(displayName);
+  if (rawName && rawName.length > 0) {
+    return rawName;
+  }
+  return remotePath.split("/").findLast((segment) => segment.length > 0) ?? "files-com-file";
+}
+
+function readFilesComDownloadUrl(value: string): URL {
+  let url: URL;
+  try {
+    url = assertPublicHttpUrl(value, {
+      fieldName: "download_uri",
+      createError: (message) => new ProviderRequestError(502, message),
+    });
+  } catch (error) {
+    if (error instanceof ProviderRequestError) {
+      throw error;
+    }
+    throw new ProviderRequestError(502, "files_com returned an invalid download URL");
+  }
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new ProviderRequestError(502, "files_com returned an untrusted download URL");
+  }
+  return url;
 }
 
 function readObjectArray(value: unknown): Array<Record<string, unknown>> | undefined {
@@ -279,7 +403,7 @@ function readObjectArray(value: unknown): Array<Record<string, unknown>> | undef
 }
 
 async function readFilesComPayload(response: Response): Promise<unknown> {
-  const text = await response.text();
+  const text = await readProviderTextBody(response, "Files.com API response");
   if (!text) {
     return {};
   }
@@ -326,6 +450,11 @@ function pickAccountLabel(payload: unknown): string | undefined {
     return undefined;
   }
   return optionalString(record.username) ?? optionalString(record.name) ?? optionalString(record.email);
+}
+
+function composeFilesComRequestSignal(parent?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
+  return parent ? AbortSignal.any([parent, timeout]) : timeout;
 }
 
 function isAbortError(error: unknown): boolean {

@@ -4,7 +4,8 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -15,13 +16,9 @@ import {
   requiredString,
 } from "../../core/cast.ts";
 import { encodePathSegment, queryParams } from "../../core/request.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  providerUserAgent,
-  readProviderJsonBody,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent, readProviderJsonBody } from "../provider-runtime.ts";
 
 const service = "crypto_apis";
 const cryptoApisApiBaseUrl = "https://rest.cryptoapis.io";
@@ -29,7 +26,10 @@ const cryptoApisApiVersion = "2024-12-12";
 
 type CryptoApisPhase = "validate" | "execute";
 
-export const cryptoApisActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const cryptoApisActionHandlers: ProviderActionHandlers<
+  "crypto_apis",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   list_supported_assets(input, context) {
     return listSupportedAssets(input, context, "execute");
   },

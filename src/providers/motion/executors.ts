@@ -1,20 +1,25 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { MotionActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { optionalRecord, optionalString, requiredString, stringArray } from "../../core/cast.ts";
+import { optionalRecord, optionalString, stringArray } from "../../core/cast.ts";
 import { jsonObject, queryParams } from "../../core/request.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  isAbortLikeError,
-  providerUserAgent,
   ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 const service = "motion";
 const motionApiBaseUrl = "https://api.usemotion.com/v1";
-const motionDefaultRequestTimeoutMs = 30_000;
 const taskUpdateFieldNames = [
   "name",
   "workspaceId",
@@ -33,7 +38,7 @@ type MotionPhase = "validate" | "execute";
 type MotionMethod = "GET" | "POST" | "PATCH" | "DELETE";
 type MotionActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const motionActionHandlers: Record<MotionActionName, MotionActionHandler> = {
+export const motionActionHandlers: ProviderActionHandlers<"motion", MotionActionHandler> = {
   async list_workspaces(_input, context): Promise<unknown> {
     const payload = await requestMotionJson({
       context,
@@ -256,13 +261,11 @@ async function requestMotionJson(input: {
   query?: Record<string, string>;
   body?: Record<string, unknown>;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, motionDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ signal: input.context.signal, label: "Motion" }, async (signal) => {
     const response = await input.context.fetcher(buildMotionUrl(input.path, input.query), {
       method: input.method ?? "GET",
       headers: buildMotionHeaders(input.context.apiKey, input.body),
-      signal: timeout.signal,
+      signal,
       ...(input.body ? { body: JSON.stringify(input.body) } : {}),
     });
     const payload = await readMotionPayload(response);
@@ -272,22 +275,7 @@ async function requestMotionJson(input: {
     }
 
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Motion request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Motion request failed: ${error.message}` : "Motion request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildMotionUrl(path: string, query?: Record<string, string>): URL {
@@ -355,10 +343,6 @@ function buildBody(input: Record<string, unknown>, options: { skip?: Set<string>
   );
 }
 
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function readOptionalStringArray(value: unknown): string[] | undefined {
   if (value === undefined) {
     return undefined;
@@ -392,3 +376,9 @@ function readArrayPayload(value: unknown, key: string, context: string): unknown
   }
   return readArrayProperty(value, key, context);
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.usemotion.com/v1",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

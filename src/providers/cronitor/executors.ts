@@ -4,30 +4,32 @@ import type {
   ProviderProxyExecutor,
   ProxyExecutionResult,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { CronitorActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
-import { compactObject, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  isAbortLikeError,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredResponseRecord,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 const service = "cronitor";
 const cronitorApiBaseUrl = "https://cronitor.io/api";
 const cronitorApiVersion = "2025-11-28";
-const cronitorDefaultRequestTimeoutMs = 30_000;
 
 const cronitorFetch = createProviderFetch({ skipDnsValidation: true });
 
@@ -35,7 +37,7 @@ type CronitorPhase = "validate" | "execute";
 type CronitorMethod = "GET" | "POST" | "DELETE";
 type CronitorActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const cronitorActionHandlers: Record<CronitorActionName, CronitorActionHandler> = {
+export const cronitorActionHandlers: ProviderActionHandlers<"cronitor", CronitorActionHandler> = {
   async list_monitors(_input, context) {
     const payload = await requestCronitorJson({ context, path: "/monitors", phase: "execute" });
     return { monitors: readMonitorsPayload(payload) };
@@ -47,7 +49,7 @@ export const cronitorActionHandlers: Record<CronitorActionName, CronitorActionHa
       path: `/monitors/${encodeURIComponent(key)}`,
       phase: "execute",
     });
-    return { monitor: requireObject(payload, "Cronitor monitor response") };
+    return { monitor: requiredResponseRecord(payload, "Cronitor monitor response") };
   },
   async create_monitor(input, context) {
     const payload = await requestCronitorJson({
@@ -57,7 +59,7 @@ export const cronitorActionHandlers: Record<CronitorActionName, CronitorActionHa
       body: buildMonitorMutationBody(input),
       phase: "execute",
     });
-    return { monitor: requireObject(payload, "Cronitor create monitor response") };
+    return { monitor: requiredResponseRecord(payload, "Cronitor create monitor response") };
   },
   async update_monitor(input, context) {
     const key = requiredString(input.key, "key", providerInputError);
@@ -72,7 +74,7 @@ export const cronitorActionHandlers: Record<CronitorActionName, CronitorActionHa
       body,
       phase: "execute",
     });
-    return { monitor: requireObject(payload, "Cronitor update monitor response") };
+    return { monitor: requiredResponseRecord(payload, "Cronitor update monitor response") };
   },
   async delete_monitor(input, context) {
     const key = requiredString(input.key, "key", providerInputError);
@@ -150,12 +152,11 @@ async function requestCronitorJson(input: {
   method?: CronitorMethod;
   body?: Record<string, unknown>;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, cronitorDefaultRequestTimeoutMs);
-  try {
+  return runProviderRequest({ signal: input.context.signal, label: "Cronitor" }, async (signal) => {
     const response = await input.context.fetcher(buildCronitorUrl(input.path), {
       method: input.method ?? "GET",
       headers: buildCronitorHeaders(input.context.apiKey, input.body !== undefined),
-      signal: timeout.signal,
+      signal,
       body: input.body === undefined ? undefined : JSON.stringify(input.body),
     });
     const payload = await readCronitorPayload(response);
@@ -163,20 +164,7 @@ async function requestCronitorJson(input: {
       throw createCronitorError(response.status, payload, input.phase);
     }
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Cronitor request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Cronitor request failed: ${error.message}` : "Cronitor request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildCronitorUrl(path: string): URL {
@@ -263,17 +251,9 @@ function readMonitorsPayload(payload: unknown): unknown[] {
   if (Array.isArray(payload)) {
     return payload;
   }
-  const record = requireObject(payload, "Cronitor monitors response");
+  const record = requiredResponseRecord(payload, "Cronitor monitors response");
   if (!Array.isArray(record.monitors)) {
     throw new ProviderRequestError(502, "Cronitor monitors response is missing monitors");
   }
   return record.monitors;
-}
-
-function requireObject(value: unknown, context: string): Record<string, unknown> {
-  return requiredRecord(value, context, (message) => new ProviderRequestError(502, message));
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

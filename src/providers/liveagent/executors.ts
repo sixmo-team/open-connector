@@ -4,26 +4,27 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalInteger, optionalNumber, optionalRawString, optionalRecord } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  createProviderTimeout,
-  defineProviderExecutors,
-  defineProviderProxy,
-  isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
-  requireApiKeyCredential,
+  runProviderRequest,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 const service = "liveagent";
 const liveagentCredentialHelpUrl = "https://support.liveagent.com/741982-API-key";
 const liveagentValidationPath = "/my_account/_link";
 const liveagentApiPathPrefix = "/api/v3";
-const liveagentDefaultRequestTimeoutMs = 30_000;
 const liveagentMaxResponseBytes = 10 * 1024 * 1024;
 
 type LiveagentMode = "validate" | "execute";
@@ -39,7 +40,7 @@ interface LiveagentContext {
 
 type LiveagentActionHandler = (input: Record<string, unknown>, context: LiveagentContext) => Promise<unknown>;
 
-export const liveagentActionHandlers: Record<string, LiveagentActionHandler> = {
+export const liveagentActionHandlers: ProviderActionHandlers<"liveagent", LiveagentActionHandler> = {
   async list_tickets(input, context) {
     const payload = await requestLiveagentJson({
       ...context,
@@ -301,7 +302,7 @@ function normalizeLiveagentBaseUrl(value: unknown) {
 
   const url = assertPublicHttpUrl(value.trim(), {
     fieldName: "baseUrl",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
   });
 
   if (url.username || url.password) {
@@ -350,14 +351,12 @@ async function requestLiveagentJson(input: {
   readonly body?: unknown;
   readonly signal?: AbortSignal;
 }) {
-  const timeout = createProviderTimeout(input.signal, liveagentDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ signal: input.signal, label: "LiveAgent" }, async (signal) => {
     const response = await input.fetcher(buildLiveagentUrl(input.apiBaseUrl, input.path, input.query), {
       method: input.method ?? "GET",
       headers: buildLiveagentHeaders(input.apiKey, input.body !== undefined),
       ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readLiveagentPayload(response);
 
@@ -366,22 +365,7 @@ async function requestLiveagentJson(input: {
     }
 
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "LiveAgent request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `LiveAgent request failed: ${error.message}` : "LiveAgent request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildLiveagentUrl(apiBaseUrl: string, path: string, query?: Record<string, QueryValue>) {
@@ -427,7 +411,7 @@ function createLiveagentError(status: number, payload: unknown, mode: LiveagentM
   const message = readErrorMessage(payload) ?? `LiveAgent request failed with status ${status}`;
 
   if (status === 401 || status === 403) {
-    return mode === "validate" ? new ProviderRequestError(400, message) : new ProviderRequestError(status, message);
+    return mode === "validate" ? providerInputError(message) : new ProviderRequestError(status, message);
   }
 
   if (status === 429) {
@@ -438,7 +422,7 @@ function createLiveagentError(status: number, payload: unknown, mode: LiveagentM
     return new ProviderRequestError(status === 404 ? 404 : 400, message);
   }
 
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function buildPageQuery(input: Record<string, unknown>) {
@@ -566,14 +550,14 @@ function normalizeDepartment(value: Record<string, unknown>) {
 function asObject(value: unknown, errorMessage: string) {
   const object = optionalRecord(value);
   if (!object) {
-    throw new ProviderRequestError(502, errorMessage);
+    throw providerResponseError(errorMessage);
   }
   return object;
 }
 
 function asObjectArray(value: unknown, errorMessage: string) {
   if (!Array.isArray(value)) {
-    throw new ProviderRequestError(502, errorMessage);
+    throw providerResponseError(errorMessage);
   }
   return value.map((item) => asObject(item, errorMessage));
 }

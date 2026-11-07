@@ -2,6 +2,7 @@ import type { ActionDefinition, JsonSchema } from "../../core/types.ts";
 
 import { s } from "../../core/json-schema.ts";
 import { defineProviderAction } from "../../core/provider-definition.ts";
+import { gmailMaxAttachmentBytes, gmailMaxAttachmentCount, gmailMaxMimeBytes } from "./limits.ts";
 import {
   gmailComposeScopes,
   gmailLabelScopes,
@@ -9,7 +10,6 @@ import {
   gmailReadScopes,
   gmailSendScopes,
   gmailSettingsBasicScopes,
-  gmailSettingsSharingScopes,
 } from "./scopes.ts";
 
 const service = "gmail";
@@ -25,6 +25,11 @@ const maxResults = s.integer({
 const messageId = s.string({ minLength: 1, description: "Gmail message ID." });
 const threadId = s.string({ minLength: 1, description: "Gmail thread ID." });
 const draftId = s.string({ minLength: 1, description: "Gmail draft ID." });
+const replyToMessageId = s.string({
+  minLength: 1,
+  description:
+    "Gmail message ID to reply to. Requires mailbox read access. If threadId is also supplied, it must match this message's thread.",
+});
 const labelId = s.string({ minLength: 1, description: "Gmail label ID." });
 const filterId = s.string({ minLength: 1, description: "Gmail filter ID." });
 const labelIds = s.array(s.string({ minLength: 1 }), { description: "Gmail label IDs." });
@@ -37,6 +42,64 @@ const success = s.object(
   { required: ["success"], description: "Operation result." },
 );
 
+const attachmentInput = s.requireExactlyOneProperty(
+  s.object(
+    {
+      filename: s.string({
+        description: "Attachment filename. Omit for an unnamed Base64 attachment; defaults to the transit file name.",
+      }),
+      mimeType: s.string({
+        description:
+          "Attachment MIME type as type/subtype without parameters. Defaults to the transit file MIME type or application/octet-stream.",
+      }),
+      contentBase64: s.string({
+        description:
+          "Standard Base64 file content. An empty string represents a zero-byte file. Supply exactly one of contentBase64 or file.",
+      }),
+      file: s.transitFile("An uploaded transit file. Supply exactly one of file or contentBase64."),
+      contentId: s.string({
+        minLength: 1,
+        description: "Bare Content-ID without cid: or angle brackets. Reference it in HTML as cid:<contentId>.",
+      }),
+      disposition: s.stringEnum(["inline", "attachment"], {
+        description:
+          "Defaults to inline when contentId is present, otherwise attachment. Inline attachments require contentId.",
+      }),
+    },
+    { description: "An email attachment or CID inline image." },
+  ),
+  ["contentBase64", "file"],
+);
+attachmentInput.allOf = [
+  {
+    if: { properties: { disposition: { const: "inline" } }, required: ["disposition"] },
+    then: { required: ["contentId"] },
+  },
+];
+const attachments = s.array(attachmentInput, {
+  maxItems: gmailMaxAttachmentCount,
+  description: `Email attachments and CID inline images, up to ${gmailMaxAttachmentBytes} decoded bytes in total and ${gmailMaxMimeBytes} bytes for the complete MIME message. Provide file bytes or a transit file reference; HTML image conversion is performed by the caller.`,
+});
+const attachmentSummary = s.object(
+  {
+    attachmentId: s.nullable(
+      s.string({ description: "Gmail attachment ID, or null when bytes are stored directly in the message part." }),
+    ),
+    filename: s.string({ description: "Attachment filename; empty for unnamed parts." }),
+    mimeType: s.string({ description: "Attachment MIME type." }),
+    size: s.integer({ minimum: 0, description: "Attachment size in bytes." }),
+    partId: s.nullable(s.string({ description: "Gmail MIME part ID when supplied." })),
+    contentId: s.nullable(s.string({ description: "Bare Content-ID without angle brackets, when supplied." })),
+    disposition: s.nullable(
+      s.stringEnum(["inline", "attachment"], { description: "Content-Disposition when supplied and recognized." }),
+    ),
+  },
+  {
+    required: ["attachmentId", "filename", "mimeType", "size", "partId", "contentId", "disposition"],
+    description: "Attachment or inline resource metadata from a Gmail MIME part.",
+  },
+);
+
 const messageSummaryProperties = {
   messageId,
   threadId,
@@ -45,6 +108,10 @@ const messageSummaryProperties = {
   sender: s.string({ description: "Message sender." }),
   to: s.string({ description: "Message recipients." }),
   messageTimestamp: s.string({ description: "Message timestamp." }),
+  historyId: s.string({ description: "Gmail history ID when the resource carries one." }),
+  internalDate: s.string({ description: "Gmail internal date as epoch milliseconds when present." }),
+  sizeEstimate: s.integer({ description: "Estimated message size in bytes when present." }),
+  snippet: s.string({ description: "Gmail snippet when present." }),
 };
 
 const messageSummary = s.object(messageSummaryProperties, {
@@ -58,8 +125,12 @@ const message = s.object(
     ...messageSummaryProperties,
     preview: gmailObject,
     payload: s.nullable(gmailObject),
-    messageText: s.string({ description: "Extracted message body text." }),
-    attachmentList: s.array(gmailObject, { description: "Message attachments." }),
+    messageText: s.string({
+      description: "Extracted message body; HTML is preferred when both HTML and plain-text alternatives are present.",
+    }),
+    attachmentList: s.array(attachmentSummary, {
+      description: "Message attachments and inline resources, including unnamed CID parts.",
+    }),
     raw: s.string({ description: "Raw RFC 2822 message when requested." }),
   },
   {
@@ -93,6 +164,17 @@ const draft = s.object(
     additionalProperties: true,
     description: "Gmail draft.",
   },
+);
+
+const listedDraft = s.object(
+  {
+    id: draftId,
+    message: s.union([
+      message,
+      s.object({ messageId, threadId }, { description: "Draft message IDs returned when verbose is false." }),
+    ]),
+  },
+  { required: ["id", "message"], description: "Draft with message IDs or hydrated message details." },
 );
 
 const labelColor = s.object(
@@ -138,6 +220,7 @@ const filter = s.object(
 
 const action = (input: {
   name: string;
+  operationType: ActionDefinition["operationType"];
   description: string;
   requiredScopes: string[];
   properties?: Record<string, JsonSchema>;
@@ -146,6 +229,7 @@ const action = (input: {
 }): ActionDefinition =>
   defineProviderAction(service, {
     name: input.name,
+    operationType: input.operationType,
     description: input.description,
     requiredScopes: input.requiredScopes,
     inputSchema: s.object(input.properties ?? {}, {
@@ -176,6 +260,7 @@ const recipientFields = (): Record<string, JsonSchema> => ({
   body: s.string({ description: "Email body content." }),
   messageBody: s.string({ description: "Reply or draft body content." }),
   isHtml: s.boolean({ description: "Whether the body is HTML." }),
+  attachments,
   fromEmail: s.string({ description: "Verified Gmail send-as alias." }),
 });
 
@@ -186,7 +271,35 @@ const labelMutation = (): Record<string, JsonSchema> => ({
 
 export const gmailActions: ActionDefinition[] = [
   action({
+    name: "download_attachment",
+    operationType: "read",
+    description:
+      "Decode a Gmail attachment into a downloadable transit file with bounded memory. Requires the filesystem transit backend; the configured file size limit still applies.",
+    requiredScopes: gmailReadScopes,
+    properties: withUser({
+      messageId,
+      attachmentId: s.string({ minLength: 1, description: "Attachment ID from the message part body." }),
+      fileName: s.string({ description: "Download name from the message part; defaults to attachment." }),
+      mimeType: s.string({ description: "MIME type from the message part; defaults to application/octet-stream." }),
+    }),
+    required: ["messageId", "attachmentId"],
+    outputSchema: s.object(
+      {
+        fileId: s.string(),
+        downloadUrl: s.string(),
+        sizeBytes: s.integer(),
+        name: s.string(),
+        mimeType: s.string(),
+      },
+      {
+        required: ["fileId", "downloadUrl", "sizeBytes", "name", "mimeType"],
+        description: "Completed transit file. Download bytes from downloadUrl; normal transit expiry applies.",
+      },
+    ),
+  }),
+  action({
     name: "search_threads",
+    operationType: "read",
     description:
       "Search Gmail threads by query and return lightweight thread summaries. Spam and trash stay excluded unless explicitly targeted in the query.",
     requiredScopes: gmailReadScopes,
@@ -199,6 +312,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "list_threads",
+    operationType: "read",
     description: "List Gmail threads with optional query filtering and pagination.",
     requiredScopes: gmailReadScopes,
     properties: pageFields({ query, verbose: s.boolean({ description: "Hydrate each thread." }) }),
@@ -213,6 +327,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "fetch_emails",
+    operationType: "read",
     description:
       "List Gmail messages with optional query, label, and pagination filters. Use detail to choose IDs, summaries, or full messages.",
     requiredScopes: gmailReadScopes,
@@ -238,6 +353,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "get_message",
+    operationType: "read",
     description: "Get a Gmail message by message ID with a simplified normalized output.",
     requiredScopes: gmailReadScopes,
     properties: { messageId },
@@ -257,6 +373,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "fetch_message_by_message_id",
+    operationType: "read",
     description: "Fetch a Gmail message by message ID with a controllable response format.",
     requiredScopes: gmailReadScopes,
     properties: { messageId, format },
@@ -265,6 +382,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "fetch_message_by_thread_id",
+    operationType: "read",
     description: "Fetch all messages in a Gmail thread.",
     requiredScopes: gmailReadScopes,
     properties: { threadId },
@@ -273,6 +391,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "get_profile",
+    operationType: "read",
     description: "Get the connected Gmail profile, including mailbox totals and the current historyId.",
     requiredScopes: gmailReadScopes,
     properties: withUser(),
@@ -291,59 +410,84 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "send_email",
-    description: "Send an email from the connected Gmail account.",
+    operationType: "write",
+    description: "Send an email with optional attachments and CID inline images from the connected Gmail account.",
     requiredScopes: gmailSendScopes,
     properties: recipientFields(),
-    outputSchema: s.object({ messageId }, { required: ["messageId"], description: "Sent message result." }),
+    outputSchema: s.object({ messageId, threadId }, { required: ["messageId"], description: "Sent message result." }),
   }),
   action({
     name: "reply_email",
-    description: "Reply to an existing Gmail thread using the original message's reply headers.",
-    requiredScopes: gmailSendScopes,
-    properties: { threadId, messageId, body: s.string({ description: "Reply body." }) },
+    operationType: "write",
+    description:
+      "Reply to an existing Gmail thread using the original message's reply headers. Supply to to follow up with the recipient of your own sent message; omit it to reply to the original Reply-To or From address.",
+    requiredScopes: [...gmailReadScopes, ...gmailSendScopes],
+    properties: {
+      threadId,
+      messageId,
+      to: s.email("Optional recipient email address overriding the original Reply-To or From address.", {
+        minLength: 1,
+      }),
+      body: s.string({ description: "Reply body." }),
+      isHtml: s.boolean({ description: "Whether the reply body is HTML." }),
+      attachments,
+    },
     required: ["threadId", "messageId", "body"],
-    outputSchema: s.object({ messageId }, { required: ["messageId"], description: "Reply result." }),
+    outputSchema: s.object({ messageId, threadId }, { required: ["messageId"], description: "Reply result." }),
   }),
   action({
     name: "reply_to_thread",
-    description: "Reply to an existing Gmail thread while preserving Gmail threading.",
-    requiredScopes: gmailSendScopes,
+    operationType: "write",
+    description:
+      "Reply to the most recent non-draft message in an existing Gmail thread while preserving Gmail threading.",
+    requiredScopes: [...gmailReadScopes, ...gmailSendScopes],
     properties: { threadId, ...recipientFields() },
     required: ["threadId"],
     outputSchema: s.object({ messageId, threadId }, { required: ["messageId"], description: "Thread reply result." }),
   }),
   action({
     name: "create_draft",
-    description: "Create a Gmail draft with a simplified input and output shape.",
+    operationType: "write",
+    description:
+      "Create a Gmail draft with optional attachments and CID inline images using simplified input fields. Returns the stable draft ID and current message and thread IDs.",
     requiredScopes: gmailComposeScopes,
     properties: {
       to: s.string(),
       subject: s.string(),
       body: s.string(),
       cc: s.union([s.string(), s.array(s.string())]),
+      isHtml: s.boolean({ description: "Whether the draft body is HTML." }),
+      attachments,
     },
     required: ["to", "subject", "body"],
-    outputSchema: s.object({ draftId }, { required: ["draftId"], description: "Created draft result." }),
+    outputSchema: s.object(
+      { draftId, messageId, threadId },
+      { required: ["draftId"], description: "Created draft result." },
+    ),
   }),
   action({
     name: "create_email_draft",
-    description: "Create a Gmail draft with recipients, subject, body, and optional threading.",
+    operationType: "write",
+    description:
+      "Create a Gmail draft with optional attachments or CID inline images. Supply replyToMessageId to reply to a message, or threadId to reply to its most recent non-draft message. Threaded creation additionally requires mailbox read access. Omit subject and To recipients to inherit them from the reply target; a supplied subject must match the target, ignoring Re: prefixes.",
     requiredScopes: gmailComposeScopes,
-    properties: { ...recipientFields(), threadId },
+    properties: { ...recipientFields(), threadId, replyToMessageId },
     outputSchema: s.object({ draftId, messageId, threadId }, { required: ["draftId"], description: "Created draft." }),
   }),
   action({
     name: "list_drafts",
+    operationType: "read",
     description: "List Gmail drafts with pagination.",
     requiredScopes: gmailComposeScopes,
     properties: pageFields({ verbose: s.boolean({ description: "Hydrate each draft." }) }),
     outputSchema: s.object(
-      { drafts: s.array(draft), nextPageToken: s.nullable(pageToken) },
+      { drafts: s.array(listedDraft), nextPageToken: s.nullable(pageToken) },
       { required: ["drafts"], description: "Draft list result." },
     ),
   }),
   action({
     name: "get_draft",
+    operationType: "read",
     description: "Get a Gmail draft by draft ID.",
     requiredScopes: gmailComposeScopes,
     properties: { draftId, format },
@@ -352,16 +496,41 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "update_draft",
-    description: "Update an existing Gmail draft in place.",
+    operationType: "write",
+    description:
+      "Update a Gmail draft while preserving omitted fields, attachments, CID inline images, and reply headers. Supply replyToMessageId or a different threadId to rebuild the reply association; this additionally requires mailbox read access. A reply draft's subject must match its reply target, ignoring Re: prefixes. Omit body to preserve existing MIME body alternatives; supply body to replace them with one text or HTML body. Omit attachments to preserve them, supply a list to replace all attachments and inline images, or [] to remove them. The draft ID stays stable, but the message ID changes on replacement.",
     requiredScopes: gmailComposeScopes,
-    properties: { draftId, ...recipientFields(), threadId },
+    properties: {
+      draftId,
+      ...recipientFields(),
+      threadId,
+      replyToMessageId,
+      body: s.string({
+        description:
+          "Replacement body. Omit to preserve all existing text and HTML alternatives; an empty string clears the body.",
+      }),
+      messageBody: s.string({
+        description:
+          "Alias for the replacement body. Omit both body fields to preserve existing MIME body alternatives.",
+      }),
+      isHtml: s.boolean({
+        description:
+          "Whether the replacement body is HTML. Omit to inherit the existing body type (HTML when an HTML alternative exists). Set false for plain text or true for HTML. Requires body or messageBody.",
+      }),
+      attachments: s.describe(
+        attachments,
+        "Omit to preserve all attachments and CID inline images. A supplied list replaces all of them; [] clears all attachments and inline images.",
+      ),
+    },
     required: ["draftId"],
     outputSchema: s.object({ draftId, messageId, threadId }, { required: ["draftId"], description: "Updated draft." }),
   }),
   action({
     name: "send_draft",
-    description: "Send an existing Gmail draft as-is.",
-    requiredScopes: gmailSendScopes,
+    operationType: "write",
+    description:
+      "Send an existing Gmail draft as-is. Gmail deletes the draft and returns the new sent message ID and its thread ID.",
+    requiredScopes: gmailComposeScopes,
     properties: { draftId },
     required: ["draftId"],
     outputSchema: s.object(
@@ -371,6 +540,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_draft",
+    operationType: "destructive",
     description: "Permanently delete a Gmail draft by draft ID.",
     requiredScopes: gmailComposeScopes,
     properties: withUser({ draftId }),
@@ -379,6 +549,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "list_labels",
+    operationType: "read",
     description: "List all system and user-created Gmail labels.",
     requiredScopes: gmailLabelScopes,
     properties: withUser(),
@@ -386,6 +557,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "get_label",
+    operationType: "read",
     description: "Get details for a Gmail label.",
     requiredScopes: gmailLabelScopes,
     properties: withUser({ labelId }),
@@ -394,6 +566,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "create_label",
+    operationType: "write",
     description: "Create a new Gmail label and return its internal label ID.",
     requiredScopes: gmailLabelScopes,
     properties: withUser({
@@ -407,6 +580,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "patch_label",
+    operationType: "write",
     description: "Patch a user-created Gmail label.",
     requiredScopes: gmailLabelScopes,
     properties: withUser({
@@ -421,6 +595,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "update_label",
+    operationType: "write",
     description: "Update an existing Gmail label.",
     requiredScopes: gmailLabelScopes,
     properties: withUser({
@@ -435,6 +610,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_label",
+    operationType: "destructive",
     description: "Permanently delete a user-created Gmail label.",
     requiredScopes: gmailLabelScopes,
     properties: withUser({ labelId }),
@@ -443,6 +619,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "add_label_to_email",
+    operationType: "write",
     description: "Add and/or remove labels on a single Gmail message.",
     requiredScopes: gmailModifyScopes,
     properties: withUser({ messageId, ...labelMutation() }),
@@ -451,6 +628,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "batch_modify_messages",
+    operationType: "write",
     description: "Add and/or remove labels on up to 1,000 Gmail messages.",
     requiredScopes: gmailModifyScopes,
     properties: withUser({
@@ -462,6 +640,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "move_to_trash",
+    operationType: "destructive",
     description: "Move a Gmail message to trash.",
     requiredScopes: gmailModifyScopes,
     properties: withUser({ messageId, ...labelMutation() }),
@@ -470,6 +649,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "untrash_message",
+    operationType: "write",
     description: "Restore a previously trashed Gmail message.",
     requiredScopes: gmailModifyScopes,
     properties: withUser({ messageId, ...labelMutation() }),
@@ -478,6 +658,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "modify_thread_labels",
+    operationType: "destructive",
     description: "Add and/or remove labels on every message in a Gmail thread.",
     requiredScopes: gmailModifyScopes,
     properties: withUser({ threadId, ...labelMutation() }),
@@ -486,6 +667,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "move_thread_to_trash",
+    operationType: "destructive",
     description: "Move an entire Gmail thread to trash.",
     requiredScopes: gmailModifyScopes,
     properties: withUser({ threadId, ...labelMutation() }),
@@ -494,6 +676,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "untrash_thread",
+    operationType: "write",
     description: "Restore a previously trashed Gmail thread.",
     requiredScopes: gmailModifyScopes,
     properties: withUser({ threadId, ...labelMutation() }),
@@ -502,6 +685,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "list_history",
+    operationType: "read",
     description: "List Gmail mailbox change history after a known startHistoryId.",
     requiredScopes: gmailReadScopes,
     properties: withUser({
@@ -523,6 +707,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "list_filters",
+    operationType: "read",
     description: "List Gmail filters for the mailbox.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser(),
@@ -530,6 +715,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "get_filter",
+    operationType: "read",
     description: "Get a Gmail filter by filter ID.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser({ filterId }),
@@ -538,6 +724,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "create_filter",
+    operationType: "write",
     description: "Create a Gmail filter with matching criteria and resulting actions.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser({ criteria: gmailObject, action: gmailObject }),
@@ -546,6 +733,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_filter",
+    operationType: "destructive",
     description: "Permanently delete a Gmail filter by filter ID.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser({ filterId }),
@@ -554,6 +742,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "get_language_settings",
+    operationType: "read",
     description: "Get the Gmail display language settings.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser(),
@@ -561,6 +750,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "update_language_settings",
+    operationType: "write",
     description: "Update the Gmail display language settings.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser({
@@ -571,6 +761,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "get_vacation_settings",
+    operationType: "read",
     description: "Get the Gmail vacation responder settings.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser(),
@@ -578,6 +769,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "update_vacation_settings",
+    operationType: "write",
     description: "Update the Gmail vacation responder settings.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser({
@@ -594,20 +786,23 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "get_auto_forwarding",
+    operationType: "read",
     description: "Get the current Gmail auto-forwarding configuration.",
-    requiredScopes: gmailSettingsSharingScopes,
+    requiredScopes: gmailSettingsBasicScopes,
     properties: withUser(),
     outputSchema: gmailObject,
   }),
   action({
     name: "list_forwarding_addresses",
+    operationType: "read",
     description: "List registered forwarding addresses.",
-    requiredScopes: gmailSettingsSharingScopes,
+    requiredScopes: gmailSettingsBasicScopes,
     properties: withUser(),
     outputSchema: gmailObject,
   }),
   action({
     name: "settings_get_imap",
+    operationType: "read",
     description: "Get the Gmail IMAP settings.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser(),
@@ -615,6 +810,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "settings_get_pop",
+    operationType: "read",
     description: "Get the Gmail POP settings.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser(),
@@ -622,6 +818,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "stop_watch",
+    operationType: "destructive",
     description: "Stop Gmail push watch notifications for the mailbox.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser(),
@@ -629,6 +826,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "update_imap_settings",
+    operationType: "write",
     description: "Update the Gmail IMAP settings.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser({
@@ -641,6 +839,7 @@ export const gmailActions: ActionDefinition[] = [
   }),
   action({
     name: "update_pop_settings",
+    operationType: "write",
     description: "Update the Gmail POP settings.",
     requiredScopes: gmailSettingsBasicScopes,
     properties: withUser({

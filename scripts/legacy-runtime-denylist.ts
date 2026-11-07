@@ -16,6 +16,19 @@ export const forbiddenRuntimePaths = [
   "scripts/runtime-data.ts",
   "scripts/copy-catalog-assets.ts",
   "scripts/copy-catalog-assets.test.ts",
+  "scripts/runtime-data.test.ts",
+  "scripts/d1-runtime-data.ts",
+  "scripts/d1-runtime-data.test.ts",
+  "scripts/build-binary.ts",
+  "scripts/build-runtime-package.ts",
+  "scripts/smoke-binary.ts",
+  "scripts/smoke-headless-build.ts",
+  "scripts/test-mcp-oauth.py",
+  "scripts/benchmark-runtime-execution.ts",
+  "scripts/benchmark-sqlite-token-statements.ts",
+  ".bun-version",
+  ".github/workflows/build-binary.yml",
+  ".github/workflows/publish-npm.yml",
   "wrangler.example.jsonc",
   "wrangler.local.jsonc",
   "docker/Dockerfile.saas",
@@ -52,6 +65,6 @@ export const forbiddenImageContentMarkers = [
   '"/mcp"',
 ] as const;
 
-export const expectedImageCommand = ["node", "src/saas/index.ts"] as const;
+export const expectedImageCommand = ["node", "--experimental-transform-types", "src/saas/index.ts"] as const;
 export const expectedImageWorkingDirectory = "/app";
 export const expectedImagePort = "3000/tcp";

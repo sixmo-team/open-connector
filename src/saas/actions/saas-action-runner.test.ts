@@ -1,4 +1,5 @@
-import type { IConnectionStore, StoredConnection } from "../../connection-service.ts";
+import type { ConnectionSummary } from "../../connection-service.ts";
+import type { StoredLocalConnection } from "../../connection-store.ts";
 import type { ActionDefinition, ActionExecutor, ProviderDefinition, ResolvedCredential } from "../../core/types.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
 import type { SaasRequestScope } from "../contracts.ts";
@@ -12,6 +13,7 @@ import type {
   SaasIdempotencyClaimInput,
   SaasIdempotencyClaimResult,
   SaasIdempotencyCompletionInput,
+  SaasActionRunnerOptions,
 } from "./saas-action-runner.ts";
 
 import { Buffer } from "node:buffer";
@@ -25,6 +27,7 @@ const action: ActionDefinition = {
   service: "example",
   name: "echo",
   description: "Echo input.",
+  operationType: "read",
   requiredScopes: [],
   providerPermissions: [],
   inputSchema: { type: "object" },
@@ -39,14 +42,14 @@ const provider: ProviderDefinition = {
   actions: [action],
 };
 const connectorConnectionId = "11111111-1111-4111-8111-111111111111";
-const credential: ResolvedCredential = {
+const credential: Extract<ResolvedCredential, { authType: "api_key" }> = {
   authType: "api_key",
   apiKey: "provider-secret",
   values: {},
   profile: { accountId: "account", displayName: "Account", grantedScopes: [] },
   metadata: {},
 };
-const storedConnection: StoredConnection = {
+const storedConnection: StoredLocalConnection = {
   id: connectorConnectionId,
   revision: "revision-1",
   service: "example",
@@ -62,6 +65,145 @@ interface RunnerFixture {
 }
 
 describe("SaasActionRunner", () => {
+  it("keeps cached output private to the actor when a workspace credential and request key are shared", async () => {
+    const records = new Map<string, MemoryIdempotencyRecord>();
+    const first = createRunner({ records, providerExecutor: async () => ({ ok: true, output: { actor: "first" } }) });
+    const second = createRunner({
+      records,
+      scope: { ...executionScope({ message: "hello" }), actorUserId: "actor-b" },
+      providerExecutor: async () => ({ ok: true, output: { actor: "second" } }),
+    });
+    const original = await first.runner.run(request({ message: "hello" }));
+    await expect(second.runner.run(request({ message: "hello" }))).resolves.toMatchObject({
+      ok: true,
+      output: { actor: "second" },
+    });
+    await expect(first.runner.run(request({ message: "hello" }))).resolves.toEqual(original);
+  });
+  it("denies a rule disabled while connection authorization is waiting", async () => {
+    let enabled = true;
+    const entered = Promise.withResolvers<void>(),
+      released = Promise.withResolvers<void>();
+    const store = new MemoryConnectionStore(storedConnection);
+    const fixture = createRunner({
+      permission: () => enabled,
+      connectionStore: {
+        async getSafeConnection(id) {
+          entered.resolve();
+          await released.promise;
+          return store.getSafeConnection(id);
+        },
+      },
+    });
+    const pending = fixture.runner.run(request({ message: "hello" }));
+    await entered.promise;
+    enabled = false;
+    released.resolve();
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: "action_not_granted" } });
+    expect(fixture.providerExecutor).not.toHaveBeenCalled();
+  });
+  it("denies a rule disabled while the executor is loading before provider dispatch", async () => {
+    let enabled = true;
+    const entered = Promise.withResolvers<void>(),
+      released = Promise.withResolvers<void>();
+    const providerExecutor = vi.fn<ActionExecutor>(async () => ({ ok: true, output: { effect: "sent" } }));
+    const fixture = createRunner({
+      permission: () => enabled,
+      providerExecutor,
+      loadActionExecutor: async () => {
+        entered.resolve();
+        await released.promise;
+        return providerExecutor;
+      },
+    });
+    const pending = fixture.runner.run(request({ message: "hello" }));
+    await entered.promise;
+    enabled = false;
+    released.resolve();
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: "action_not_granted" } });
+    expect(providerExecutor).not.toHaveBeenCalled();
+  });
+  it("denies a rule disabled while a persisted replay is being read", async () => {
+    let enabled = true,
+      holdReplay = false;
+    const entered = Promise.withResolvers<void>(),
+      released = Promise.withResolvers<void>();
+    const idempotency = new MemoryScopedIdempotency(new Map(), "tenant-a");
+    const claim = idempotency.claimAction.bind(idempotency);
+    vi.spyOn(idempotency, "claimAction").mockImplementation(async (input) => {
+      const result = await claim(input);
+      if (holdReplay) {
+        entered.resolve();
+        await released.promise;
+      }
+      return result;
+    });
+    const fixture = createRunner({ idempotency, permission: () => enabled });
+    await expect(fixture.runner.run(request({ message: "hello" }))).resolves.toMatchObject({ ok: true });
+    holdReplay = true;
+    const pending = fixture.runner.run(request({ message: "hello" }));
+    await entered.promise;
+    enabled = false;
+    released.resolve();
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: "action_not_granted" } });
+    expect(fixture.providerExecutor).toHaveBeenCalledTimes(1);
+  });
+  it("checks current permission before provider work and distinguishes an unavailable policy store", async () => {
+    const denied = createRunner({ permission: () => false });
+    const unavailable = createRunner({
+      permission: () => {
+        throw new Error("policy storage unavailable");
+      },
+    });
+    await expect(denied.runner.run(request({ message: "hello" }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "action_not_granted" },
+    });
+    await expect(unavailable.runner.run(request({ message: "hello" }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "action_policy_unavailable" },
+    });
+    expect(denied.providerExecutor).not.toHaveBeenCalled();
+    expect(unavailable.providerExecutor).not.toHaveBeenCalled();
+    expect(denied.idempotency.claimCalls).toBe(0);
+    expect(unavailable.idempotency.claimCalls).toBe(0);
+  });
+
+  it("rechecks permission before replaying a persisted success", async () => {
+    let enabled = true;
+    const fixture = createRunner({ permission: () => enabled });
+    await expect(fixture.runner.run(request({ message: "hello" }))).resolves.toMatchObject({ ok: true });
+    enabled = false;
+    await expect(fixture.runner.run(request({ message: "hello" }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "action_not_granted" },
+    });
+    expect(fixture.providerExecutor).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a saved result after the credential owner unshares the connection", async () => {
+    const connectionStore = new MemoryConnectionStore(storedConnection);
+    const fixture = createRunner({ connectionStore });
+    await expect(fixture.runner.run(request({ message: "hello" }))).resolves.toMatchObject({ ok: true });
+    connectionStore.visibility = "user";
+    await expect(fixture.runner.run(request({ message: "hello" }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "connection_provider_mismatch" },
+    });
+    expect(fixture.providerExecutor).toHaveBeenCalledTimes(1);
+  });
+  it("rejects a saved result after the connection is transferred to another owner", async () => {
+    const connectionStore = new MemoryConnectionStore(storedConnection);
+    const fixture = createRunner({ connectionStore });
+    await expect(fixture.runner.run(request({ message: "hello" }))).resolves.toMatchObject({ ok: true });
+    connectionStore.subjectUserId = "new-owner";
+    await expect(fixture.runner.run(request({ message: "hello" }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "connection_provider_mismatch" },
+    });
+    expect(fixture.providerExecutor).toHaveBeenCalledTimes(1);
+  });
+
   it("does not call the provider when durable run intent fails", async () => {
     const fixture = createRunner({ journal: new MemoryJournal({ failStart: true }) });
 
@@ -277,18 +419,18 @@ function createRunner(
     scope?: SaasRequestScope;
     journal?: MemoryJournal;
     idempotency?: MemoryScopedIdempotency;
-    connectionStore?: IConnectionStore;
+    connectionStore?: SaasActionRunnerOptions["connectionStore"];
     providerExecutor?: ActionExecutor;
+    loadActionExecutor?: IProviderLoader["loadActionExecutor"];
     input?: unknown;
     providerRequestCount?: number;
+    permission?: () => boolean;
   } = {},
 ): RunnerFixture {
   const providerExecutor =
     options.providerExecutor ?? vi.fn<ActionExecutor>(async (input) => ({ ok: true, output: input }));
   const providerLoader: IProviderLoader = {
-    async loadActionExecutor() {
-      return providerExecutor;
-    },
+    loadActionExecutor: options.loadActionExecutor ?? (async () => providerExecutor),
     async loadProxyExecutor() {
       return undefined;
     },
@@ -301,14 +443,39 @@ function createRunner(
   const journal = options.journal ?? new MemoryJournal();
   const idempotency = options.idempotency ?? new MemoryScopedIdempotency(options.records ?? new Map(), tenantId);
   const catalog = createCatalogStore([provider], { executableActionIds: [action.id] });
+  const summary: ConnectionSummary = {
+    id: storedConnection.id,
+    service: storedConnection.service,
+    connectionName: storedConnection.connectionName,
+    authType: "api_key",
+    configured: true,
+    virtual: false,
+    default: false,
+    profile: credential.profile,
+  };
   const runner = new SaasActionRunner({
     scope,
     catalog,
     providerLoader,
     connectionStore: options.connectionStore ?? new MemoryConnectionStore(storedConnection),
+    actionPolicy: {
+      async getEffectiveForActor(_scope, actionIds) {
+        const enabled = options.permission?.() ?? true;
+        return actionIds.map((actionId) => ({
+          actionId,
+          enabled,
+          source: "platform" as const,
+          individualEnabled: null,
+          defaultEnabled: enabled,
+        }));
+      },
+    },
     connections: {
-      async resolveForExecution() {
-        return { summary: undefined, getCredential: async () => credential };
+      async getConnectionSummary() {
+        return summary;
+      },
+      async resolveConnection() {
+        return { source: "local", summary, credential };
       },
     },
     idempotency,
@@ -325,8 +492,8 @@ function executionScope(input: unknown, tenantId = "tenant-a", maxOutputBytes = 
     actorUserId: "actor-a",
     subjectUserId: "user-a",
     workspaceRole: "member",
-    purpose: "action:execute",
-    permissions: ["action:execute"],
+    purpose: "action:execute:v2",
+    permissions: ["action:execute:v2"],
     localConnectionId: "local-connection",
     connectorConnectionId,
     actionId: action.id,
@@ -407,32 +574,29 @@ class MemoryScopedIdempotency implements SaasActionIdempotencyStore {
   }
 }
 
-class MemoryConnectionStore implements IConnectionStore {
-  private readonly connection: StoredConnection | undefined;
+class MemoryConnectionStore {
+  visibility: "user" | "workspace" = "workspace";
+  subjectUserId = "user-a";
+  private readonly connection: StoredLocalConnection | undefined;
 
-  constructor(connection: StoredConnection | undefined) {
+  constructor(connection: StoredLocalConnection | undefined) {
     this.connection = connection;
   }
 
-  async get(service: string, connectionName: string): Promise<StoredConnection | undefined> {
-    return this.connection?.service === service && this.connection.connectionName === connectionName
-      ? this.connection
-      : undefined;
-  }
-
-  async set(): Promise<StoredConnection> {
-    throw new Error("not used");
-  }
-
-  async updateCredential(): Promise<boolean> {
-    throw new Error("not used");
-  }
-
-  async delete(): Promise<void> {
-    throw new Error("not used");
-  }
-
-  async list(): Promise<StoredConnection[]> {
-    return this.connection ? [this.connection] : [];
+  async getSafeConnection(id: string) {
+    const connection = this.connection;
+    if (!connection || connection.id !== id) return undefined;
+    return {
+      id,
+      subjectUserId: this.subjectUserId,
+      localConnectionId: "local-connection",
+      service: connection.service,
+      connectionName: connection.connectionName,
+      visibility: this.visibility,
+      status: "active" as const,
+      profile: credential.profile,
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    };
   }
 }

@@ -1,5 +1,6 @@
+import { Validator } from "@cfworker/json-schema";
 import { describe, expect, it } from "vitest";
-import { jsonSchema } from "./json-schema.ts";
+import { describeSchemaType, jsonSchema, readSchemaProperties, readSchemaRequired } from "./json-schema.ts";
 
 describe("jsonSchema.looseObject", () => {
   it("keeps properties whose names overlap schema option names", () => {
@@ -56,6 +57,24 @@ describe("jsonSchema.nonWhitespaceString", () => {
   });
 });
 
+describe("jsonSchema.array", () => {
+  it("preserves array uniqueness constraints", () => {
+    expect(
+      jsonSchema.stringArray("Unique identifiers.", {
+        maxItems: 100,
+        uniqueItems: true,
+        itemDescription: "An identifier.",
+      }),
+    ).toEqual({
+      type: "array",
+      items: { type: "string", minLength: 1, description: "An identifier." },
+      maxItems: 100,
+      uniqueItems: true,
+      description: "Unique identifiers.",
+    });
+  });
+});
+
 describe("jsonSchema.looseRequiredObject", () => {
   it("requires every property except explicitly optional properties", () => {
     expect(
@@ -101,5 +120,148 @@ describe("jsonSchema.optional", () => {
     const defaulted = jsonSchema.withDefault(described, "default-id");
 
     expect(jsonSchema.requiredObject("Wrapped optional use.", { id: defaulted })).not.toHaveProperty("required");
+  });
+});
+
+describe("jsonSchema.requireAnyProperty", () => {
+  it("requires at least one of the named object properties", () => {
+    const schema = jsonSchema.object(
+      "A partial update.",
+      {
+        name: jsonSchema.string("A new name."),
+        color: jsonSchema.string("A new color."),
+      },
+      { optional: ["name", "color"] },
+    );
+
+    expect(jsonSchema.requireAnyProperty(schema, ["name", "color"])).toMatchObject({
+      anyOf: [{ required: ["name"] }, { required: ["color"] }],
+    });
+    expect(schema).not.toHaveProperty("anyOf");
+  });
+});
+
+describe("jsonSchema.requireExactlyOneProperty", () => {
+  it("emits mutually exclusive required branches without mutating the base schema", () => {
+    const schema = jsonSchema.object(
+      "A lookup.",
+      {
+        id: jsonSchema.string("An ID."),
+        name: jsonSchema.string("A name."),
+      },
+      { optional: ["id", "name"] },
+    );
+
+    expect(jsonSchema.requireExactlyOneProperty(schema, ["id", "name"])).toMatchObject({
+      oneOf: [{ required: ["id"] }, { required: ["name"] }],
+    });
+    expect(schema).not.toHaveProperty("oneOf");
+  });
+});
+
+describe("jsonSchema schema annotations", () => {
+  it("adds examples and enums without mutating the base schema", () => {
+    const schema = jsonSchema.string("A value.");
+
+    expect(jsonSchema.withExamples(schema, ["one"])).toMatchObject({ examples: ["one"] });
+    expect(jsonSchema.withEnum(schema, ["one", "two"])).toMatchObject({ enum: ["one", "two"] });
+    expect(schema).not.toHaveProperty("examples");
+    expect(schema).not.toHaveProperty("enum");
+  });
+});
+
+describe("readSchemaProperties", () => {
+  it("returns the properties map of an object schema", () => {
+    expect(readSchemaProperties({ type: "object", properties: { id: { type: "string" } } })).toEqual({
+      id: { type: "string" },
+    });
+  });
+
+  it("treats a missing, non-object, or array-valued properties as empty", () => {
+    expect(readSchemaProperties({ type: "object" })).toEqual({});
+    expect(readSchemaProperties({ type: "object", properties: "id" })).toEqual({});
+    expect(readSchemaProperties({ type: "object", properties: null })).toEqual({});
+    // An array is an object at runtime; exposing its indexes as parameter names would be wrong.
+    expect(readSchemaProperties({ type: "object", properties: [{ type: "string" }] })).toEqual({});
+  });
+});
+
+describe("readSchemaRequired", () => {
+  it("keeps only the string entries of required", () => {
+    expect(readSchemaRequired({ required: ["id", 1, null, "name"] })).toEqual(["id", "name"]);
+  });
+
+  it("treats a missing or non-array required as empty", () => {
+    expect(readSchemaRequired({})).toEqual([]);
+    expect(readSchemaRequired({ required: "id" })).toEqual([]);
+  });
+});
+
+describe("describeSchemaType", () => {
+  it("renders const, enum, anyOf, and plain types", () => {
+    expect(describeSchemaType({ const: "fixed" })).toBe('"fixed"');
+    expect(describeSchemaType({ const: null, type: "null" })).toBe("null");
+    expect(describeSchemaType({ enum: ["a", 1] })).toBe('"a" | 1');
+    expect(describeSchemaType({ anyOf: [{ type: "string" }, { enum: ["x"] }] })).toBe('string | "x"');
+    expect(describeSchemaType({ type: "integer" })).toBe("integer");
+  });
+
+  it("falls back to unknown without a describable shape", () => {
+    expect(describeSchemaType(undefined)).toBe("unknown");
+    expect(describeSchemaType({})).toBe("unknown");
+    expect(describeSchemaType({ type: ["string", "null"] })).toBe("unknown");
+  });
+});
+
+describe("schema constraints used by provider inputs", () => {
+  it("preserves object alternatives, property limits and enum defaults", () => {
+    const schema = jsonSchema.object(
+      "Choose one identifier.",
+      {
+        id: jsonSchema.string("Identifier."),
+        url: jsonSchema.string("URL."),
+      },
+      {
+        required: [],
+        minProperties: 1,
+        maxProperties: 1,
+        propertyNames: { enum: ["id", "url"] },
+        oneOf: [{ required: ["id"] }, { required: ["url"] }],
+      },
+    );
+    const validator = new Validator(schema);
+    expect(validator.validate({ id: "x" }).valid).toBe(true);
+    expect(validator.validate({}).valid).toBe(false);
+    expect(validator.validate({ id: "x", url: "y" }).valid).toBe(false);
+    expect(jsonSchema.stringEnum("Sort.", ["new", "old"], { default: "new" }).default).toBe("new");
+  });
+  it("validates null literals, excluded values and numeric increments", () => {
+    expect(new Validator(jsonSchema.literal(null)).validate(null).valid).toBe(true);
+    const value = new Validator(jsonSchema.string("Path.", { not: { enum: [".", ".."] } }));
+    expect(value.validate("..").valid).toBe(false);
+    expect(value.validate("entry").valid).toBe(true);
+    const amount = new Validator(jsonSchema.number("Amount.", { multipleOf: 0.5 }));
+    expect(amount.validate(1.5).valid).toBe(true);
+    expect(amount.validate(1.2).valid).toBe(false);
+  });
+});
+
+describe("conditional and strict numeric constraints", () => {
+  it("enforces dependent fields and exclusive upper bounds through the runtime validator", () => {
+    const schema = jsonSchema.object(
+      "Request.",
+      {
+        duration: jsonSchema.number("Duration.", { exclusiveMaximum: 10 }),
+        count: jsonSchema.integer("Count.", { exclusiveMaximum: 4 }),
+        key: jsonSchema.string("Key."),
+        signature: jsonSchema.string("Signature."),
+      },
+      { optional: ["duration", "count", "key", "signature"], dependentRequired: { key: ["signature"] } },
+    );
+    const validator = new Validator(schema, "2020-12");
+    expect(validator.validate({ duration: 9.9, count: 3, key: "k", signature: "s" }).valid).toBe(true);
+    for (const value of [{ duration: 10 }, { count: 4 }, { key: "k" }]) {
+      expect(validator.validate(value).valid).toBe(false);
+    }
   });
 });

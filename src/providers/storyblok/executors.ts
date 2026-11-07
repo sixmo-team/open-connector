@@ -1,15 +1,12 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
-import type { StoryblokActionName } from "./actions.ts";
 
 import { compactObject, optionalRecord, optionalString, optionalStringArray, requiredString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "storyblok";
 
@@ -44,7 +41,7 @@ const storyblokRegionLabels = {
   cn: "China",
 } satisfies Record<StoryblokRegion, string>;
 
-const storyblokActionHandlers: Record<StoryblokActionName, StoryblokActionHandler> = {
+const storyblokActionHandlers: ProviderActionHandlers<"storyblok", StoryblokActionHandler> = {
   get_space(_input, context) {
     return storyblokRequestJson({ path: "/spaces/me" }, context, "execute");
   },
@@ -403,8 +400,4 @@ function readInteger(value: unknown): number | undefined {
     }
   }
   return undefined;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

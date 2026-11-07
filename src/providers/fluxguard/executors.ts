@@ -1,13 +1,20 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FluxguardActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  isAbortLikeError,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 const service = "fluxguard";
 const fluxguardApiBaseUrl = "https://api.fluxguard.com";
-const fluxguardDefaultRequestTimeoutMs = 30_000;
 
 type FluxguardPhase = "validate" | "execute";
 type FluxguardActionContext = ApiKeyProviderContext;
@@ -20,7 +27,7 @@ interface FluxguardRequestInput {
   phase: FluxguardPhase;
 }
 
-export const fluxguardActionHandlers: Record<FluxguardActionName, FluxguardActionHandler> = {
+export const fluxguardActionHandlers: ProviderActionHandlers<"fluxguard", FluxguardActionHandler> = {
   async get_account(_input, context) {
     const payload = await requestFluxguardJson(context, {
       method: "GET",
@@ -37,7 +44,7 @@ export const fluxguardActionHandlers: Record<FluxguardActionName, FluxguardActio
       method: "POST",
       path: "/add-page",
       body: compactObject({
-        url: readRequiredInputString(input.url, "url"),
+        url: requiredInputString(input.url, "url"),
         siteId: optionalString(input.siteId),
         sessionId: optionalString(input.sessionId),
         nickname: optionalString(input.nickname),
@@ -53,7 +60,7 @@ export const fluxguardActionHandlers: Record<FluxguardActionName, FluxguardActio
   async initiate_crawl(input, context) {
     const payload = await requestFluxguardJson(context, {
       method: "POST",
-      path: `/site/${encodeURIComponent(readRequiredInputString(input.siteId, "siteId"))}/session/${encodeURIComponent(readRequiredInputString(input.sessionId, "sessionId"))}/crawl`,
+      path: `/site/${encodeURIComponent(requiredInputString(input.siteId, "siteId"))}/session/${encodeURIComponent(requiredInputString(input.sessionId, "sessionId"))}/crawl`,
       phase: "execute",
     });
 
@@ -64,7 +71,7 @@ export const fluxguardActionHandlers: Record<FluxguardActionName, FluxguardActio
   async get_page(input, context) {
     const payload = await requestFluxguardJson(context, {
       method: "GET",
-      path: `/site/${encodeURIComponent(readRequiredInputString(input.siteId, "siteId"))}/session/${encodeURIComponent(readRequiredInputString(input.sessionId, "sessionId"))}/page/${encodeURIComponent(readRequiredInputString(input.pageId, "pageId"))}`,
+      path: `/site/${encodeURIComponent(requiredInputString(input.siteId, "siteId"))}/session/${encodeURIComponent(requiredInputString(input.sessionId, "sessionId"))}/page/${encodeURIComponent(requiredInputString(input.pageId, "pageId"))}`,
       phase: "execute",
     });
 
@@ -99,7 +106,7 @@ export const fluxguardActionHandlers: Record<FluxguardActionName, FluxguardActio
       method: "PUT",
       path: "/account/webhook",
       body: compactObject({
-        url: readRequiredInputString(input.url, "url"),
+        url: requiredInputString(input.url, "url"),
         siteCategoryIds: readOptionalStringArray(input.siteCategoryIds),
       }),
       phase: "execute",
@@ -137,7 +144,7 @@ export const fluxguardActionHandlers: Record<FluxguardActionName, FluxguardActio
       method: "POST",
       path: "/account/category",
       body: {
-        name: readRequiredInputString(input.name, "name"),
+        name: requiredInputString(input.name, "name"),
       },
       phase: "execute",
     });
@@ -149,7 +156,7 @@ export const fluxguardActionHandlers: Record<FluxguardActionName, FluxguardActio
   async delete_site(input, context) {
     const payload = await requestFluxguardJson(context, {
       method: "DELETE",
-      path: `/site/${encodeURIComponent(readRequiredInputString(input.siteId, "siteId"))}`,
+      path: `/site/${encodeURIComponent(requiredInputString(input.siteId, "siteId"))}`,
       phase: "execute",
     });
 
@@ -160,7 +167,7 @@ export const fluxguardActionHandlers: Record<FluxguardActionName, FluxguardActio
   async delete_page(input, context) {
     const payload = await requestFluxguardJson(context, {
       method: "DELETE",
-      path: `/site/${encodeURIComponent(readRequiredInputString(input.siteId, "siteId"))}/session/${encodeURIComponent(readRequiredInputString(input.sessionId, "sessionId"))}/page/${encodeURIComponent(readRequiredInputString(input.pageId, "pageId"))}`,
+      path: `/site/${encodeURIComponent(requiredInputString(input.siteId, "siteId"))}/session/${encodeURIComponent(requiredInputString(input.sessionId, "sessionId"))}/page/${encodeURIComponent(requiredInputString(input.pageId, "pageId"))}`,
       phase: "execute",
     });
 
@@ -204,7 +211,7 @@ export const credentialValidators: CredentialValidators = {
 };
 
 async function requestFluxguardJson(context: FluxguardActionContext, input: FluxguardRequestInput): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(fluxguardDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = context.signal ? AbortSignal.any([context.signal, timeoutSignal]) : timeoutSignal;
 
   try {
@@ -234,7 +241,7 @@ async function requestFluxguardJson(context: FluxguardActionContext, input: Flux
     if (error instanceof ProviderRequestError) {
       throw error;
     }
-    if (timeoutSignal.aborted && isAbortError(error)) {
+    if (timeoutSignal.aborted && isAbortLikeError(error)) {
       throw new ProviderRequestError(504, "Fluxguard request timed out", error);
     }
 
@@ -405,10 +412,6 @@ function requireRecordPayload(payload: unknown): Record<string, unknown> {
   return record;
 }
 
-function readRequiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function readOptionalStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -431,6 +434,8 @@ function readFirstString(record: Record<string, unknown>, keys: string[]): strin
   return null;
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.fluxguard.com",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

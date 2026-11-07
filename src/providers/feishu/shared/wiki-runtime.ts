@@ -1,6 +1,10 @@
 import type { FeishuJsonRequest } from "./client.ts";
 
-import { ProviderRequestError } from "../../provider-runtime.ts";
+import { requiredRawString } from "../../../core/cast.ts";
+import { optionalRawString } from "../../../core/cast.ts";
+import { optionalBoolean, optionalNumber } from "../../../core/cast.ts";
+import { providerInputError } from "../../provider-runtime.ts";
+import { requireFeishuResponseString } from "./response.ts";
 
 interface WikiActionHandler {
   (input: Record<string, unknown>): Promise<unknown>;
@@ -25,6 +29,9 @@ export function createFeishuWikiActionHandlers(request: FeishuJsonRequest): Reco
     },
     create_wiki_node(input) {
       return createNode(input, request);
+    },
+    update_wiki_node_title(input) {
+      return updateNodeTitle(input, request);
     },
     copy_wiki_node(input) {
       return copyNode(input, request);
@@ -102,10 +109,9 @@ async function listNodes(input: Record<string, unknown>, request: FeishuJsonRequ
 
 async function getNode(input: Record<string, unknown>, request: FeishuJsonRequest) {
   const data = await request({
-    path: "/wiki/v2/spaces/get_node",
+    path: "/wiki/v2/spaces/node_by_token",
     query: {
       token: requiredString(input.token, "token"),
-      obj_type: optionalString(input.objectType),
     },
   });
   return { item: recordValue(data.node) };
@@ -116,7 +122,7 @@ async function createNode(input: Record<string, unknown>, request: FeishuJsonReq
   const nodeType = optionalString(input.nodeType) ?? "origin";
   const originNodeToken = optionalString(input.originNodeToken);
   if (nodeType === "shortcut" && !originNodeToken) {
-    throw invalidInput("originNodeToken is required for shortcut nodes");
+    throw providerInputError("originNodeToken is required for shortcut nodes");
   }
   const data = await request({
     method: "POST",
@@ -137,8 +143,8 @@ async function copyNode(input: Record<string, unknown>, request: FeishuJsonReque
   const nodeToken = requiredString(input.nodeToken, "nodeToken");
   const targetSpaceId = optionalString(input.targetSpaceId);
   const targetParentToken = optionalString(input.targetParentToken);
-  if (Boolean(targetSpaceId) === Boolean(targetParentToken)) {
-    throw invalidInput("provide exactly one of targetSpaceId or targetParentToken");
+  if (!targetSpaceId && !targetParentToken) {
+    throw providerInputError("provide at least one of targetSpaceId or targetParentToken");
   }
   const data = await request({
     method: "POST",
@@ -146,7 +152,7 @@ async function copyNode(input: Record<string, unknown>, request: FeishuJsonReque
     body: compact({
       target_space_id: targetSpaceId,
       target_parent_token: targetParentToken,
-      title: optionalString(input.title),
+      title: optionalRawString(input.title),
     }),
   });
   return { item: recordValue(data.node) };
@@ -155,12 +161,17 @@ async function copyNode(input: Record<string, unknown>, request: FeishuJsonReque
 async function moveNode(input: Record<string, unknown>, request: FeishuJsonRequest) {
   const spaceId = requiredString(input.spaceId, "spaceId");
   const nodeToken = requiredString(input.nodeToken, "nodeToken");
+  const targetSpaceId = optionalString(input.targetSpaceId);
+  const targetParentToken = optionalString(input.targetParentToken);
+  if (!targetSpaceId && !targetParentToken) {
+    throw providerInputError("provide at least one of targetSpaceId or targetParentToken");
+  }
   const data = await request({
     method: "POST",
     path: `/wiki/v2/spaces/${encode(spaceId)}/nodes/${encode(nodeToken)}/move`,
     body: compact({
-      target_space_id: requiredString(input.targetSpaceId, "targetSpaceId"),
-      target_parent_token: optionalString(input.targetParentToken),
+      target_space_id: targetSpaceId,
+      target_parent_token: targetParentToken,
     }),
   });
   return { item: recordValue(data.node ?? data.task ?? data) };
@@ -173,7 +184,7 @@ async function deleteNode(input: Record<string, unknown>, request: FeishuJsonReq
     method: "DELETE",
     path: `/wiki/v2/spaces/${encode(spaceId)}/nodes/${encode(nodeToken)}`,
     body: {
-      obj_type: optionalString(input.objectType),
+      obj_type: optionalString(input.objectType) ?? "wiki",
       include_children: input.includeChildren === true,
     },
   });
@@ -193,7 +204,7 @@ async function submitMoveToDrive(input: Record<string, unknown>, request: Feishu
     body: compact({ folder_token: folderToken }),
   });
   return {
-    taskId: requiredString(data.task_id, "task_id"),
+    taskId: requireFeishuResponseString(data.task_id, "task_id"),
     nodeToken,
     folderToken: folderToken ?? null,
   };
@@ -222,10 +233,23 @@ async function getWikiTask(input: Record<string, unknown>, request: FeishuJsonRe
     query: { task_type: taskType },
   });
   const task = recordValue(data.task);
-  const resultKey = taskType === "delete_space" ? "delete_space_result" : "move_wiki_to_docs_result";
+  const resultKey =
+    taskType === "delete_node"
+      ? "simple_task_result"
+      : taskType === "delete_space"
+        ? "delete_space_result"
+        : "move_wiki_to_docs_result";
   const result = recordValue(task[resultKey]);
-  const rawStatus = optionalNumber(result.status);
-  const status = rawStatus === 0 ? "succeeded" : rawStatus === -1 ? "failed" : "running";
+  const rawStatus =
+    taskType === "move_wiki_to_docs"
+      ? optionalNumber(result.status)
+      : optionalString(result.status)?.trim().toLowerCase();
+  const status =
+    rawStatus === 0 || rawStatus === "success"
+      ? "succeeded"
+      : rawStatus === -1 || rawStatus === "failure" || rawStatus === "failed"
+        ? "failed"
+        : "running";
   return {
     taskId: optionalString(task.task_id) ?? taskId,
     taskType,
@@ -304,19 +328,11 @@ function requiredString(value: unknown, field: string) {
   if (typeof value === "string" && value.length > 0) {
     return value;
   }
-  throw invalidInput(`${field} must be a non-empty string`);
+  throw providerInputError(`${field} must be a non-empty string`);
 }
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function optionalNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function optionalBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function compact(value: Record<string, unknown>) {
@@ -327,6 +343,13 @@ function encode(value: string) {
   return encodeURIComponent(value);
 }
 
-function invalidInput(message: string) {
-  return new ProviderRequestError(400, message);
+async function updateNodeTitle(input: Record<string, unknown>, request: FeishuJsonRequest) {
+  const spaceId = requiredString(input.spaceId, "spaceId");
+  const nodeToken = requiredString(input.nodeToken, "nodeToken");
+  await request({
+    method: "POST",
+    path: `/wiki/v2/spaces/${encode(spaceId)}/nodes/${encode(nodeToken)}/update_title`,
+    body: { title: requiredRawString(input.title, "title", providerInputError) },
+  });
+  return { updated: true };
 }

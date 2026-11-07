@@ -1,8 +1,14 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerUserAgent,
+  ProviderRequestError,
+  providerInputError,
+} from "../provider-runtime.ts";
 
 export const sheetDbApiBaseUrl = "https://sheetdb.io";
 
@@ -21,7 +27,7 @@ interface SheetDbRequestInput extends SheetDbContext {
   phase: "validate" | "execute";
 }
 
-export const sheetDbActionHandlers: Record<string, ProviderRuntimeHandler<SheetDbContext>> = {
+export const sheetDbActionHandlers: ProviderActionHandlers<"sheetdb", ProviderRuntimeHandler<SheetDbContext>> = {
   list_rows(input, context) {
     return listRows(input, context);
   },
@@ -188,7 +194,7 @@ async function deleteRows(input: Record<string, unknown>, context: SheetDbContex
 
 export async function requestSheetDb(input: SheetDbRequestInput): Promise<unknown> {
   const url = buildSheetDbUrl(input.apiId, input.path, input.query);
-  const timeout = createProviderTimeout(input.signal, 30_000);
+  const timeout = createProviderTimeout(input.signal);
   let response: Response;
   let payload: unknown;
   try {
@@ -298,7 +304,7 @@ function mapSheetDbError(status: number, payload: unknown, phase: "validate" | "
     return new ProviderRequestError(429, message);
   }
   if (status === 400 || status === 404 || status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status >= 500 ? status : 502, message);
 }

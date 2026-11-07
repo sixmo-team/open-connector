@@ -1,6 +1,7 @@
 import type { SaasRequestScope } from "../contracts.ts";
 import type { Pool } from "pg";
 
+import { captureRequestProcessing } from "../../core/cancellation.ts";
 import { withScopedClient } from "./scoped-query.ts";
 
 export type TransitFileStatus = "pending" | "available" | "deleting" | "reconcile";
@@ -8,6 +9,7 @@ export type TransitFileStatus = "pending" | "available" | "deleting" | "reconcil
 export interface TransitFileRecord {
   id: string;
   objectKey: string;
+  name?: string;
   contentType?: string;
   byteSize: number;
   contentSha256?: string;
@@ -32,6 +34,7 @@ export interface TransitFileMetadataStore {
 interface TransitFileRow {
   id: string;
   object_key: string;
+  file_name: string | null;
   content_type: string | null;
   byte_size: string | number;
   content_sha256: string | null;
@@ -39,32 +42,42 @@ interface TransitFileRow {
   expires_at: Date | string;
 }
 
-const selectColumns = `SELECT id, object_key, content_type, byte_size, content_sha256, status, expires_at
+const selectColumns = `SELECT id, object_key, file_name, content_type, byte_size, content_sha256, status, expires_at
   FROM integration_runtime.transit_files`;
 
 /** Safe transit-file metadata bound to one immutable SaaS request scope. */
 export class PostgresTransitFileStore implements TransitFileMetadataStore {
   private readonly pool: Pool;
   private readonly scope: Readonly<SaasRequestScope>;
+  private readonly dataUserId: string;
 
   constructor(pool: Pool, scope: Readonly<SaasRequestScope>) {
     this.pool = pool;
-    this.scope = scope;
+    this.scope = captureRequestProcessing(
+      Object.freeze({
+        ...scope,
+        permissions: Object.freeze([...scope.permissions]) as unknown as string[],
+      }),
+    );
+    this.dataUserId = ["lifecycle:read", "lifecycle:delete"].includes(scope.purpose)
+      ? scope.subjectUserId
+      : scope.actorUserId;
   }
 
   async create(record: TransitFileRecord): Promise<void> {
     await withScopedClient(this.pool, this.scope, async (client) => {
       await client.query(
         `INSERT INTO integration_runtime.transit_files (
-           id, tenant_id, workspace_id, subject_user_id, object_key, content_type,
+           id, tenant_id, workspace_id, subject_user_id, object_key, file_name, content_type,
            byte_size, content_sha256, status, expires_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           record.id,
           this.scope.tenantId,
           this.scope.workspaceId,
-          this.scope.subjectUserId,
+          this.dataUserId,
           record.objectKey,
+          record.name ?? null,
           record.contentType ?? null,
           record.byteSize,
           record.contentSha256 ?? null,
@@ -81,7 +94,7 @@ export class PostgresTransitFileStore implements TransitFileMetadataStore {
         await client.query<TransitFileRow>(
           `${selectColumns}
            WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3 AND id = $4`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, id],
+          [this.scope.tenantId, this.scope.workspaceId, this.dataUserId, id],
         )
       ).rows[0];
       return row ? fromRow(row) : undefined;
@@ -118,7 +131,7 @@ export class PostgresTransitFileStore implements TransitFileMetadataStore {
         `UPDATE integration_runtime.transit_files
          SET status = $5, updated_at = now()
          WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3 AND id = $4 AND status = $6`,
-        [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, id, status, expected],
+        [this.scope.tenantId, this.scope.workspaceId, this.dataUserId, id, status, expected],
       );
       return result.rowCount === 1;
     });
@@ -130,7 +143,7 @@ export class PostgresTransitFileStore implements TransitFileMetadataStore {
         `UPDATE integration_runtime.transit_files
          SET status = 'reconcile', updated_at = now()
          WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3 AND id = $4`,
-        [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, id],
+        [this.scope.tenantId, this.scope.workspaceId, this.dataUserId, id],
       );
       return result.rowCount === 1;
     });
@@ -141,7 +154,7 @@ export class PostgresTransitFileStore implements TransitFileMetadataStore {
       const result = await client.query(
         `DELETE FROM integration_runtime.transit_files
          WHERE tenant_id = $1 AND workspace_id = $2 AND subject_user_id = $3 AND id = $4`,
-        [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, id],
+        [this.scope.tenantId, this.scope.workspaceId, this.dataUserId, id],
       );
       return result.rowCount === 1;
     });
@@ -157,7 +170,7 @@ export class PostgresTransitFileStore implements TransitFileMetadataStore {
              AND expires_at <= clock_timestamp()
            ORDER BY expires_at ASC
            LIMIT $4`,
-          [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId, limit],
+          [this.scope.tenantId, this.scope.workspaceId, this.dataUserId, limit],
         )
       ).rows;
       return rows.map(fromRow);
@@ -169,6 +182,7 @@ function fromRow(row: TransitFileRow): TransitFileRecord {
   return {
     id: row.id,
     objectKey: row.object_key,
+    name: row.file_name ?? undefined,
     contentType: row.content_type ?? undefined,
     byteSize: Number(row.byte_size),
     contentSha256: row.content_sha256 ?? undefined,

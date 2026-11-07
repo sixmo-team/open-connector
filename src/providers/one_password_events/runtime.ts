@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 import type { OnePasswordEventsActionName } from "./actions.ts";
 
 import { createHash } from "node:crypto";
@@ -15,15 +17,14 @@ import {
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
 import {
-  createProviderTimeout,
-  isAbortLikeError,
+  providerInputError,
+  providerResponseError,
   providerUserAgent,
   ProviderRequestError,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 export const onePasswordEventsValidationPath = "/api/v2/auth/introspect";
-
-const onePasswordEventsRequestTimeoutMs = 30_000;
 
 type OnePasswordEventsPhase = "validate" | "execute";
 type OnePasswordEventsActionHandler = ProviderRuntimeHandler<OnePasswordEventsContext>;
@@ -41,7 +42,10 @@ const eventPathByActionName: Record<OnePasswordEventsActionName, string> = {
   list_sign_in_attempts: "/api/v2/signinattempts",
 };
 
-export const onePasswordEventsActionHandlers: Record<OnePasswordEventsActionName, OnePasswordEventsActionHandler> = {
+export const onePasswordEventsActionHandlers: ProviderActionHandlers<
+  "one_password_events",
+  OnePasswordEventsActionHandler
+> = {
   list_audit_events(input, context) {
     return listOnePasswordEvents("list_audit_events", input, context);
   },
@@ -83,7 +87,7 @@ export async function validateOnePasswordEventsCredential(
       phase: "validate",
     }),
     "1Password Events introspection response",
-    providerOutputError,
+    providerResponseError,
   );
   const integrationUuid = optionalString(introspection.uuid);
   const accountUuid = optionalString(introspection.account_uuid);
@@ -122,12 +126,12 @@ async function listOnePasswordEvents(
     phase: "execute",
     body: buildEventCursorBody(input),
   });
-  const record = requiredRecord(payload, "1Password Events stream response", providerOutputError);
+  const record = requiredRecord(payload, "1Password Events stream response", providerResponseError);
 
   return {
     cursor: optionalString(record.cursor) ?? "",
     hasMore: optionalBoolean(record.has_more) ?? false,
-    events: objectArray(record.items, "1Password Events stream items", providerOutputError),
+    events: objectArray(record.items, "1Password Events stream items", providerResponseError),
     raw: record,
   };
 }
@@ -150,7 +154,7 @@ function buildEventCursorBody(input: Record<string, unknown>): Record<string, un
   });
 }
 
-function resolveOnePasswordEventsBaseUrl(
+export function resolveOnePasswordEventsBaseUrl(
   values: Record<string, string>,
   metadata: Record<string, unknown> | undefined,
 ): string {
@@ -185,8 +189,7 @@ async function requestOnePasswordEventsJson(input: {
   phase: OnePasswordEventsPhase;
   body?: Record<string, unknown>;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, onePasswordEventsRequestTimeoutMs);
-  try {
+  return runProviderRequest({ signal: input.context.signal, label: "1Password Events" }, async (signal) => {
     const response = await input.context.fetcher(new URL(input.path, `${input.context.baseUrl}/`), {
       method: input.method,
       headers: {
@@ -196,7 +199,7 @@ async function requestOnePasswordEventsJson(input: {
         "user-agent": providerUserAgent,
       },
       ...(input.method === "POST" ? { body: JSON.stringify(input.body ?? {}) } : {}),
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readOnePasswordEventsPayload(response);
 
@@ -205,22 +208,7 @@ async function requestOnePasswordEventsJson(input: {
     }
 
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "1Password Events request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `1Password Events request failed: ${error.message}` : "1Password Events request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 async function readOnePasswordEventsPayload(response: Response): Promise<unknown> {
@@ -245,7 +233,7 @@ function createOnePasswordEventsError(
     extractOnePasswordEventsErrorMessage(payload) ?? `1Password Events request failed with status ${status}`;
 
   if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (phase === "execute" && (status === 401 || status === 403)) {
@@ -290,12 +278,4 @@ function trimTrailingSlash(value: string): string {
 
 function buildTokenFingerprint(apiKey: string): string {
   return createHash("sha256").update(apiKey).digest("hex").slice(0, 12);
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerOutputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

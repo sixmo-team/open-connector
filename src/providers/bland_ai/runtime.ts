@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { optionalBoolean, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
@@ -21,7 +23,7 @@ interface BlandAiRequestOptions {
   signal?: AbortSignal;
 }
 
-export const blandAiActionHandlers: Record<string, BlandAiActionHandler> = {
+export const blandAiActionHandlers: ProviderActionHandlers<"bland_ai", BlandAiActionHandler> = {
   async get_account(_input, context) {
     const payload = await requestBlandAiJson({
       ...context,

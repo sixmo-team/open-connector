@@ -5,22 +5,20 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { GuruActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { jsonObject } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "guru";
 const guruApiBaseUrl = "https://api.getguru.com";
@@ -43,7 +41,7 @@ interface GuruResponse {
 
 type GuruActionHandler = (input: Record<string, unknown>, context: GuruActionContext) => Promise<unknown>;
 
-export const guruActionHandlers: Record<GuruActionName, GuruActionHandler> = {
+export const guruActionHandlers: ProviderActionHandlers<"guru", GuruActionHandler> = {
   async get_current_identity(_input, context) {
     const response = await guruGetJson(guruValidationPath, context, "execute");
     return {

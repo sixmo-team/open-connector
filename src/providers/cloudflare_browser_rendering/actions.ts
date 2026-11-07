@@ -52,6 +52,9 @@ const waitForSelectorSchema = s.object(
 );
 
 const commonQuickActionFields: Record<string, JsonSchema> = {
+  accountId: s.nonEmptyString(
+    "The Cloudflare account ID. OAuth connections that can access multiple accounts must provide this value.",
+  ),
   url: s.string({
     format: "uri",
     minLength: 1,
@@ -72,6 +75,7 @@ const commonQuickActionFields: Record<string, JsonSchema> = {
 };
 
 const commonQuickActionOptionalFields = [
+  "accountId",
   "url",
   "html",
   "cacheTtl",
@@ -146,19 +150,21 @@ const scrapeResultSchema = s.requiredObject("One Cloudflare Browser Run scrape s
 export const cloudflareBrowserRenderingActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_accounts",
+    operationType: "read",
     description:
-      "List Cloudflare accounts accessible to the API token so callers can confirm account IDs used by Browser Run actions.",
+      "List Cloudflare accounts accessible to the current connection so callers can confirm account IDs used by Browser Run actions.",
     inputSchema: paginationInputSchema,
     outputSchema: s.actionOutput(
       {
-        accounts: s.array("Cloudflare accounts visible to the API token.", cloudflareAccountSchema),
+        accounts: s.array("Cloudflare accounts visible to the current connection.", cloudflareAccountSchema),
         resultInfo: cloudflareResultInfoSchema,
       },
-      "The Cloudflare accounts visible to the API token.",
+      "The Cloudflare accounts visible to the current connection.",
     ),
   }),
   defineProviderAction(service, {
     name: "get_html_content",
+    operationType: "read",
     description: "Render a URL or raw HTML with Cloudflare Browser Run and return the fully rendered HTML content.",
     inputSchema: quickActionInputSchema("Input parameters for the Browser Run content endpoint."),
     outputSchema: s.object(
@@ -172,6 +178,7 @@ export const cloudflareBrowserRenderingActions: ProviderActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "get_markdown",
+    operationType: "read",
     description: "Render a URL or raw HTML with Cloudflare Browser Run and return the page content as Markdown.",
     inputSchema: quickActionInputSchema("Input parameters for the Browser Run markdown endpoint."),
     outputSchema: s.actionOutput(
@@ -183,6 +190,7 @@ export const cloudflareBrowserRenderingActions: ProviderActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "get_links",
+    operationType: "read",
     description: "Render a URL or raw HTML with Cloudflare Browser Run and return links discovered on the page.",
     inputSchema: quickActionInputSchema(
       "Input parameters for the Browser Run links endpoint.",
@@ -201,6 +209,7 @@ export const cloudflareBrowserRenderingActions: ProviderActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "get_json",
+    operationType: "read",
     description: "Render a URL or raw HTML with Cloudflare Browser Run and extract structured JSON from the page.",
     inputSchema: jsonQuickActionInputSchema(),
     outputSchema: s.actionOutput(
@@ -212,6 +221,7 @@ export const cloudflareBrowserRenderingActions: ProviderActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "scrape_elements",
+    operationType: "read",
     description: "Render a URL or raw HTML with Cloudflare Browser Run and scrape selected HTML elements.",
     inputSchema: quickActionInputSchema(
       "Input parameters for the Browser Run scrape endpoint.",
@@ -228,14 +238,6 @@ export const cloudflareBrowserRenderingActions: ProviderActionDefinition[] = [
     ),
   }),
 ];
-
-export type CloudflareBrowserRenderingActionName =
-  | "list_accounts"
-  | "get_html_content"
-  | "get_markdown"
-  | "get_links"
-  | "get_json"
-  | "scrape_elements";
 
 function quickActionInputSchema(
   description: string,

@@ -1,14 +1,15 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FootballDataActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, defaultProviderRequestTimeoutMs } from "../provider-runtime.ts";
 
 const service = "football_data";
 const footballDataBaseUrl = "https://api.football-data.org/v4";
 const footballDataApiOrigin = "https://api.football-data.org";
-const defaultRequestTimeoutMs = 30_000;
 
 type FootballDataContext = ApiKeyProviderContext;
 type FootballDataPhase = "validate" | "execute";
@@ -20,7 +21,7 @@ interface FootballDataRequestInput {
   phase: FootballDataPhase;
 }
 
-export const footballDataActionHandlers: Record<FootballDataActionName, FootballDataActionHandler> = {
+export const footballDataActionHandlers: ProviderActionHandlers<"football_data", FootballDataActionHandler> = {
   async list_competitions(_input, context) {
     const payload = await footballDataRequestJson(context, {
       path: "/competitions",
@@ -39,9 +40,9 @@ export const footballDataActionHandlers: Record<FootballDataActionName, Football
     const payload = await footballDataRequestJson(context, {
       path: "/matches",
       query: compactObject({
-        dateFrom: stringParam(input.dateFrom),
-        dateTo: stringParam(input.dateTo),
-        status: stringParam(input.status),
+        dateFrom: optionalString(input.dateFrom),
+        dateTo: optionalString(input.dateTo),
+        status: optionalString(input.status),
         competitions: codeListParam(input.competitions),
       }),
       phase: "execute",
@@ -74,11 +75,11 @@ export const footballDataActionHandlers: Record<FootballDataActionName, Football
       path: `/competitions/${encodeURIComponent(competition)}/matches`,
       query: compactObject({
         season: numberParam(input.season),
-        dateFrom: stringParam(input.dateFrom),
-        dateTo: stringParam(input.dateTo),
-        status: stringParam(input.status),
-        stage: stringParam(input.stage),
-        group: stringParam(input.group),
+        dateFrom: optionalString(input.dateFrom),
+        dateTo: optionalString(input.dateTo),
+        status: optionalString(input.status),
+        stage: optionalString(input.stage),
+        group: optionalString(input.group),
       }),
       phase: "execute",
     });
@@ -133,6 +134,16 @@ export const footballDataActionHandlers: Record<FootballDataActionName, Football
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, footballDataActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: footballDataBaseUrl,
+  auth: { type: "api_key_header", name: "X-Auth-Token" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const payload = await footballDataRequestJson(
@@ -182,7 +193,7 @@ async function footballDataRequestJson(
     }
   }
 
-  const timeoutSignal = AbortSignal.timeout(defaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = context.signal ? AbortSignal.any([context.signal, timeoutSignal]) : timeoutSignal;
 
   try {
@@ -269,10 +280,6 @@ function extractMessage(payload: unknown): string | undefined {
 
 function numberParam(value: unknown): string | undefined {
   return optionalInteger(value)?.toString();
-}
-
-function stringParam(value: unknown): string | undefined {
-  return optionalString(value);
 }
 
 function codeParam(value: unknown): string | undefined {

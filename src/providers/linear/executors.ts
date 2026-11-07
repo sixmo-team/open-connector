@@ -4,20 +4,26 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { LinearActionName } from "./actions.ts";
+import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
+import type { PollDefinition } from "../../triggers/common/poll.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
-import { compactObject } from "../../core/cast.ts";
+import { compactObject, optionalBoolean } from "../../core/cast.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  ProviderRequestError,
+  providerUserAgent,
+  withRetryAfterSeconds,
 } from "../provider-runtime.ts";
+import { linearIssueChanged } from "./trigger-on-issue-changed.ts";
 
 const linearApiBaseUrl = "https://api.linear.app";
 const linearGraphqlUrl = "https://api.linear.app/graphql";
@@ -292,7 +298,7 @@ interface LinearConnection<T> {
 
 type LinearActionHandler = (input: Record<string, unknown>, context: LinearActionContext) => Promise<unknown>;
 
-export const linearActionHandlers: Record<LinearActionName, LinearActionHandler> = {
+export const linearActionHandlers: ProviderActionHandlers<"linear", LinearActionHandler> = {
   async create_attachment(input, context) {
     const payload = await linearGraphqlOperation<{
       attachmentCreate?: { success?: boolean; attachment?: { id?: string } };
@@ -624,7 +630,7 @@ export const linearActionHandlers: Record<LinearActionName, LinearActionHandler>
           body: getString(input.body),
           health: getOptionalString(input.health),
           projectId: getString(input.project_id),
-          isDiffHidden: getOptionalBoolean(input.is_diff_hidden),
+          isDiffHidden: optionalBoolean(input.is_diff_hidden),
         }),
       },
     );
@@ -834,7 +840,7 @@ export const linearActionHandlers: Record<LinearActionName, LinearActionHandler>
         id: getString(input.team_id),
         after: getOptionalString(input.after),
         first: getOptionalNumber(input.first),
-        includeArchived: getOptionalBoolean(input.include_archived),
+        includeArchived: optionalBoolean(input.include_archived),
       },
     );
 
@@ -931,8 +937,8 @@ export const linearActionHandlers: Record<LinearActionName, LinearActionHandler>
     }>(
       context,
       `
-        query ListLinearIssues($after: String, $first: Int, $filter: IssueFilter) {
-          issues(after: $after, first: $first, includeArchived: false, filter: $filter) {
+        query ListLinearIssues($after: String, $first: Int, $filter: IssueFilter, $includeArchived: Boolean, $orderBy: PaginationOrderBy) {
+          issues(after: $after, first: $first, includeArchived: $includeArchived, filter: $filter, orderBy: $orderBy) {
             nodes {
               ${issueFields}
             }
@@ -945,7 +951,13 @@ export const linearActionHandlers: Record<LinearActionName, LinearActionHandler>
       {
         after: getOptionalString(input.after),
         first: getOptionalNumber(input.first),
-        filter: buildIssuesFilter(getOptionalString(input.project_id), assigneeId),
+        filter: buildIssuesFilter(
+          getOptionalString(input.project_id),
+          assigneeId,
+          getOptionalString(input.updated_after),
+        ),
+        includeArchived: optionalBoolean(input.include_archived) ?? false,
+        orderBy: getOptionalString(input.order_by),
       },
     );
 
@@ -1179,7 +1191,7 @@ export const linearActionHandlers: Record<LinearActionName, LinearActionHandler>
       {
         after: getOptionalString(input.after),
         first: getOptionalNumber(input.first),
-        includeArchived: getOptionalBoolean(input.include_archived),
+        includeArchived: optionalBoolean(input.include_archived),
         term: getString(input.query),
       },
     );
@@ -1364,7 +1376,11 @@ export const proxy: ProviderProxyExecutor = async (input, context) => {
     const response = await linearFetch(url, init);
     if (!response.ok) {
       const text = await readProviderProxyErrorMessage(response, "");
-      throw new ProviderRequestError(response.status, text || `linear request failed with HTTP ${response.status}`);
+      throw new ProviderRequestError(
+        response.status,
+        text || `linear request failed with HTTP ${response.status}`,
+        withRetryAfterSeconds(response),
+      );
     }
 
     return { ok: true, response: await readProviderProxyResponse(response) };
@@ -1455,7 +1471,7 @@ async function linearGraphqlRequest<T>(
 
   const body = await readJson(response);
   if (!response.ok) {
-    throwLinearHttpError(response.status, body);
+    throwLinearHttpError(response.status, body, withRetryAfterSeconds(response));
   }
 
   return body as LinearGraphQLResponse<T>;
@@ -1931,10 +1947,15 @@ async function resolveAssigneeFilterId(context: LinearActionContext, assigneeId:
   return String(viewer.id);
 }
 
-function buildIssuesFilter(projectId: string | undefined, assigneeId: string | undefined) {
+function buildIssuesFilter(
+  projectId: string | undefined,
+  assigneeId: string | undefined,
+  updatedAfter: string | undefined,
+) {
   const filter = compactObject({
     project: projectId ? { id: { eq: projectId } } : undefined,
     assignee: assigneeId ? { id: { eq: assigneeId } } : undefined,
+    updatedAt: updatedAfter ? { gte: updatedAfter } : undefined,
   });
 
   return Object.keys(filter).length > 0 ? filter : undefined;
@@ -2088,9 +2109,9 @@ function mapCycle(cycle: any) {
     startsAt: asOptionalString(cycle.startsAt),
     endsAt: asOptionalString(cycle.endsAt),
     completedAt: asOptionalString(cycle.completedAt),
-    isActive: asOptionalBoolean(cycle.isActive),
-    isFuture: asOptionalBoolean(cycle.isFuture),
-    isPast: asOptionalBoolean(cycle.isPast),
+    isActive: optionalBoolean(cycle.isActive),
+    isFuture: optionalBoolean(cycle.isFuture),
+    isPast: optionalBoolean(cycle.isPast),
     team: mapTeam(cycle.team),
   });
 }
@@ -2318,7 +2339,7 @@ function mapDraft(draft: any) {
     bodyData: asOptionalString(draft.bodyData),
     createdAt: asOptionalString(draft.createdAt),
     updatedAt: asOptionalString(draft.updatedAt),
-    isAutogenerated: asOptionalBoolean(draft.isAutogenerated),
+    isAutogenerated: optionalBoolean(draft.isAutogenerated),
     team: mapTeam(draft.team),
     issue: draft.issue ? { id: asOptionalString(draft.issue.id) } : null,
     project: draft.project ? { id: asOptionalString(draft.project.id) } : null,
@@ -2342,7 +2363,7 @@ async function readJson(response: Response) {
   }
 }
 
-function throwLinearHttpError(status: number, body: Record<string, unknown>) {
+function throwLinearHttpError(status: number, body: Record<string, unknown>, details?: unknown) {
   const message = extractErrorMessage(body);
 
   if (status === 400) {
@@ -2352,7 +2373,7 @@ function throwLinearHttpError(status: number, body: Record<string, unknown>) {
     throw new ProviderRequestError(401, message);
   }
   if (status === 429) {
-    throw new ProviderRequestError(429, message);
+    throw new ProviderRequestError(429, message, details);
   }
 
   throw new ProviderRequestError(502, message, status >= 500 ? 500 : status);
@@ -2435,10 +2456,6 @@ function getOptionalNumber(value: unknown) {
   return typeof value === "number" ? value : undefined;
 }
 
-function getOptionalBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function getOptionalObject(value: unknown) {
   return asOptionalObject(value);
 }
@@ -2467,10 +2484,6 @@ function asOptionalNumber(value: unknown) {
   return typeof value === "number" ? value : undefined;
 }
 
-function asOptionalBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function asOptionalObject(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -2478,3 +2491,5 @@ function asOptionalObject(value: unknown) {
 
   return value as Record<string, unknown>;
 }
+
+export const triggers: readonly (IntegrationDefinition | PollDefinition)[] = [linearIssueChanged];

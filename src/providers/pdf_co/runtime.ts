@@ -1,15 +1,12 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { PdfCoActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  ProviderRequestError,
-  providerUserAgent,
-  uploadProviderUrlToTransitFile,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { uploadProviderUrlToTransitFile } from "../provider-files.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const pdfCoApiBaseUrl = "https://api.pdf.co";
 const pdfCoBalancePath = "/v1/account/credit/balance";
@@ -18,7 +15,7 @@ type PdfCoRequestPhase = "validate" | "execute";
 type PdfCoActionContext = ApiKeyProviderContext;
 type PdfCoActionHandler = (input: Record<string, unknown>, context: PdfCoActionContext) => Promise<unknown>;
 
-export const pdfCoActionHandlers: Record<PdfCoActionName, PdfCoActionHandler> = {
+export const pdfCoActionHandlers: ProviderActionHandlers<"pdf_co", PdfCoActionHandler> = {
   async get_account_balance(_input, context) {
     const payload = await pdfCoGetJson(pdfCoBalancePath, context.apiKey, context.fetcher, "execute");
     return normalizeBalancePayload(payload);

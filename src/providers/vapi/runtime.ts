@@ -1,5 +1,11 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type {
+  ApiKeyProviderContext,
+  ProviderActionHandlers,
+  ProviderActionName,
+  ProviderActionSources,
+} from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   base64Bytes,
@@ -10,10 +16,10 @@ import {
   optionalRecord,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
-import { vapiActionNames } from "./actions.ts";
+import { mapProviderActionSources } from "../provider-executors.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 
-const vapiApiBaseUrl = "https://api.vapi.ai";
+export const vapiApiBaseUrl = "https://api.vapi.ai";
 
 type VapiActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
@@ -112,7 +118,7 @@ const vapiEvalListAliasMap = {
   ...vapiTimestampAliasMap,
 };
 
-const vapiActionSpecs: Record<string, VapiActionSpec> = {
+const vapiActionSpecs: ProviderActionSources<"vapi", VapiActionSpec> = {
   list_assistants: { method: "GET", path: "/assistant", response: { type: "array", key: "assistants" } },
   create_assistant: { method: "POST", path: "/assistant", response: { type: "single", key: "assistant" } },
   get_assistant: {
@@ -225,13 +231,13 @@ const vapiActionSpecs: Record<string, VapiActionSpec> = {
   test_code_tool_execution: { method: "POST", path: "/tool/test", response: { type: "tool_test" } },
 };
 
-export const vapiActionHandlers: Record<string, VapiActionHandler> = Object.fromEntries(
-  vapiActionNames.map((actionName) => [
-    actionName,
-    (input: Record<string, unknown>, context: ApiKeyProviderContext) =>
+export const vapiActionHandlers: ProviderActionHandlers<"vapi", VapiActionHandler> = mapProviderActionSources(
+  "vapi",
+  vapiActionSpecs,
+  (actionName): VapiActionHandler =>
+    (input, context) =>
       executeVapiActionByName(actionName, input, context),
-  ]),
-) as Record<string, VapiActionHandler>;
+);
 
 export async function validateVapiCredential(
   apiKey: string,
@@ -265,7 +271,7 @@ export async function validateVapiCredential(
 }
 
 async function executeVapiActionByName(
-  actionName: string,
+  actionName: ProviderActionName<"vapi">,
   input: Record<string, unknown>,
   context: ApiKeyProviderContext,
 ): Promise<unknown> {
@@ -413,7 +419,7 @@ async function resolveVapiUploadSource(
   if (fileUrl) {
     const url = assertPublicHttpUrl(fileUrl, {
       fieldName: "file.url",
-      createError: (message) => new ProviderRequestError(400, message),
+      createError: providerInputError,
     });
     const response = await context.fetcher(url, { signal: context.signal });
     if (!response.ok) {
@@ -426,7 +432,7 @@ async function resolveVapiUploadSource(
     };
   }
   try {
-    const bytes = base64Bytes(contentBase64, "file.contentBase64", (message) => new ProviderRequestError(400, message));
+    const bytes = base64Bytes(contentBase64, "file.contentBase64", providerInputError);
     return {
       bytes: bytes.buffer,
       fileName,
@@ -492,7 +498,7 @@ async function normalizeVapiError(response: Response, mode: "validate" | "execut
     return new ProviderRequestError(mode === "validate" ? 400 : 401, message);
   }
   if (response.status === 400 || response.status === 404 || response.status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 429) {
     return new ProviderRequestError(429, message);

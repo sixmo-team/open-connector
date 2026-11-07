@@ -1,3 +1,5 @@
+import type { RequestProcessingContext } from "../core/cancellation.ts";
+
 import * as z from "zod/v4";
 
 export const saasPurposes = [
@@ -8,10 +10,11 @@ export const saasPurposes = [
   "oauth:complete",
   "file:read",
   "action:search",
-  "action:execute",
+  "action:execute:v2",
   "admin:read",
   "lifecycle:read",
   "lifecycle:delete",
+  "maintenance:run",
 ] as const;
 
 export type SaasPurpose = (typeof saasPurposes)[number];
@@ -97,11 +100,12 @@ export interface ConnectorCredentialInput {
   localConnectionId: string;
   service: string;
   connectionName: string;
-  authType: "api_key" | "custom_credential";
+  authType: "no_auth" | "api_key" | "custom_credential";
   credentials: Record<string, string>;
 }
-export interface ConnectorCredentialReplacementInput extends ConnectorCredentialInput {
+export interface ConnectorCredentialReplacementInput extends Omit<ConnectorCredentialInput, "authType"> {
   connectorConnectionId: string;
+  authType: "api_key" | "custom_credential";
 }
 
 export interface ConnectionTransferInput {
@@ -121,16 +125,21 @@ const connectorCredentialInputObjectSchema = z
     localConnectionId: z.uuid(),
     service: z.string().trim().min(1).max(128),
     connectionName: z.string().trim().min(1).max(255),
-    authType: z.enum(["api_key", "custom_credential"]),
+    authType: z.enum(["no_auth", "api_key", "custom_credential"]),
     credentials: z
       .record(z.string().min(1).max(255), z.string().max(65_536))
       .refine((values) => Object.keys(values).length <= 64, "too many credential fields"),
   })
   .strict();
-export const connectorCredentialInputSchema: z.ZodType<ConnectorCredentialInput> = connectorCredentialInputObjectSchema;
+export const connectorCredentialInputSchema: z.ZodType<ConnectorCredentialInput> =
+  connectorCredentialInputObjectSchema.refine(
+    (input) => input.authType !== "no_auth" || Object.keys(input.credentials).length === 0,
+    "public connections cannot contain credentials",
+  );
 export const connectorCredentialReplacementInputSchema: z.ZodType<ConnectorCredentialReplacementInput> =
   connectorCredentialInputObjectSchema
     .extend({
+      authType: z.enum(["api_key", "custom_credential"]),
       connectorConnectionId: z.string().trim().min(1).max(255),
     })
     .strict();
@@ -154,7 +163,7 @@ export const lifecyclePurgeInputSchema: z.ZodType<LifecyclePurgeInput> = z
   .strict();
 
 /** Tenant and authorization context captured once for a SaaS request. */
-export interface SaasRequestScope {
+export interface SaasRequestScope extends RequestProcessingContext {
   tenantId: string;
   workspaceId: string;
   actorUserId: string;
@@ -204,8 +213,16 @@ export interface CatalogServiceIdentityClaims {
   permissions: ["catalog:read"];
 }
 
-export type VerifiedConnectorIdentityClaims = ConnectorIdentityClaims | CatalogServiceIdentityClaims;
-export type SaasPrincipal = SaasRequestScope | CatalogServicePrincipal;
+export type VerifiedConnectorIdentityClaims =
+  | ConnectorIdentityClaims
+  | CatalogServiceIdentityClaims
+  | ActionPolicyServiceIdentityClaims
+  | NativeLifecycleServiceIdentityClaims;
+export type SaasPrincipal =
+  | SaasRequestScope
+  | CatalogServicePrincipal
+  | ActionPolicyServicePrincipal
+  | NativeLifecycleServicePrincipal;
 
 const nonEmptyWireString = z
   .string()
@@ -232,20 +249,18 @@ const catalogServiceIdentityClaimsSchema: z.ZodType<CatalogServiceIdentityClaims
       context.addIssue({ code: "custom", message: "catalog:read service claims have an invalid expiry" });
     }
   })
-  .transform(
-    (claims): CatalogServiceIdentityClaims => ({
-      iss: claims.iss,
-      aud: claims.aud,
-      sub: claims.sub,
-      jti: claims.jti,
-      iat: claims.iat,
-      nbf: claims.nbf,
-      exp: claims.exp,
-      subjectKind: claims.subject_kind,
-      purpose: claims.purpose,
-      permissions: claims.permissions,
-    }),
-  );
+  .transform((claims): CatalogServiceIdentityClaims => ({
+    iss: claims.iss,
+    aud: claims.aud,
+    sub: claims.sub,
+    jti: claims.jti,
+    iat: claims.iat,
+    nbf: claims.nbf,
+    exp: claims.exp,
+    subjectKind: claims.subject_kind,
+    purpose: claims.purpose,
+    permissions: claims.permissions,
+  }));
 
 const tenantIdentityClaimsSchema: z.ZodType<ConnectorIdentityClaims> = z
   .object({
@@ -283,6 +298,12 @@ const tenantIdentityClaimsSchema: z.ZodType<ConnectorIdentityClaims> = z
     if (claims.sub !== claims.subject_user_id) {
       context.addIssue({ code: "custom", message: "JWT subject does not match scoped subject", path: ["sub"] });
     }
+    if (
+      (claims.purpose === "action:search" || claims.purpose === "maintenance:run") &&
+      claims.actor_user_id !== claims.subject_user_id
+    ) {
+      context.addIssue({ code: "custom", message: `${claims.purpose} actor must equal subject` });
+    }
     if (claims.permissions.length !== 1 || claims.permissions[0] !== claims.purpose) {
       context.addIssue({
         code: "custom",
@@ -304,7 +325,7 @@ const tenantIdentityClaimsSchema: z.ZodType<ConnectorIdentityClaims> = z
     const hasFileBinding = claims.file_id !== undefined;
 
     if (
-      claims.purpose === "action:execute" &&
+      claims.purpose === "action:execute:v2" &&
       (!claims.local_connection_id ||
         !claims.connector_connection_id ||
         !claims.action_id ||
@@ -312,11 +333,11 @@ const tenantIdentityClaimsSchema: z.ZodType<ConnectorIdentityClaims> = z
         !claims.max_output_bytes ||
         hasOAuthBinding)
     ) {
-      context.addIssue({ code: "custom", message: "action:execute claims are incomplete" });
+      context.addIssue({ code: "custom", message: "action:execute:v2 claims are incomplete" });
     }
 
-    if (claims.purpose !== "action:execute" && hasOutputBinding) {
-      context.addIssue({ code: "custom", message: "max_output_bytes is only valid for action:execute claims" });
+    if (claims.purpose !== "action:execute:v2" && hasOutputBinding) {
+      context.addIssue({ code: "custom", message: "max_output_bytes is only valid for action:execute:v2 claims" });
     }
 
     if (
@@ -335,13 +356,7 @@ const tenantIdentityClaimsSchema: z.ZodType<ConnectorIdentityClaims> = z
       context.addIssue({ code: "custom", message: "file_id is only valid for file:read claims" });
     }
 
-    if (
-      claims.purpose === "connection:write" &&
-      (!claims.local_connection_id ||
-        (hasRequestBinding && !claims.connector_connection_id) ||
-        hasOAuthBinding ||
-        hasActionBinding)
-    ) {
+    if (claims.purpose === "connection:write" && (!claims.local_connection_id || hasOAuthBinding || hasActionBinding)) {
       context.addIssue({ code: "custom", message: "connection:write claims are incomplete" });
     }
 
@@ -368,46 +383,341 @@ const tenantIdentityClaimsSchema: z.ZodType<ConnectorIdentityClaims> = z
         claims.purpose === "connection:read" ||
         claims.purpose === "action:search" ||
         claims.purpose === "admin:read" ||
-        claims.purpose === "lifecycle:read") &&
+        claims.purpose === "lifecycle:read" ||
+        claims.purpose === "maintenance:run") &&
       (hasConnectionBinding || hasOAuthBinding || hasActionBinding || hasRequestBinding)
     ) {
       context.addIssue({ code: "custom", message: `${claims.purpose} claims must be unbound` });
     }
   })
-  .transform(
-    (claims): ConnectorIdentityClaims => ({
-      iss: claims.iss,
-      aud: claims.aud,
-      sub: claims.sub,
-      jti: claims.jti,
-      iat: claims.iat,
-      nbf: claims.nbf,
-      exp: claims.exp,
-      tenantId: claims.tenant_id,
-      workspaceId: claims.workspace_id,
-      actorUserId: claims.actor_user_id,
-      subjectUserId: claims.subject_user_id,
-      workspaceRole: claims.workspace_role,
-      purpose: claims.purpose,
-      permissions: claims.permissions,
-      localConnectionId: claims.local_connection_id,
-      connectorConnectionId: claims.connector_connection_id,
-      oauthSessionId: claims.oauth_session_id,
-      actionId: claims.action_id,
-      maxOutputBytes: claims.max_output_bytes,
-      requestHash: claims.request_hash,
-      fileId: claims.file_id,
-    }),
-  );
+  .transform((claims): ConnectorIdentityClaims => ({
+    iss: claims.iss,
+    aud: claims.aud,
+    sub: claims.sub,
+    jti: claims.jti,
+    iat: claims.iat,
+    nbf: claims.nbf,
+    exp: claims.exp,
+    tenantId: claims.tenant_id,
+    workspaceId: claims.workspace_id,
+    actorUserId: claims.actor_user_id,
+    subjectUserId: claims.subject_user_id,
+    workspaceRole: claims.workspace_role,
+    purpose: claims.purpose,
+    permissions: claims.permissions,
+    localConnectionId: claims.local_connection_id,
+    connectorConnectionId: claims.connector_connection_id,
+    oauthSessionId: claims.oauth_session_id,
+    actionId: claims.action_id,
+    maxOutputBytes: claims.max_output_bytes,
+    requestHash: claims.request_hash,
+    fileId: claims.file_id,
+  }));
+
+export interface ActionPermissionDecision {
+  actionId: string;
+  enabled: boolean;
+  source: "individual" | "platform" | "none";
+  individualEnabled: boolean | null;
+  defaultEnabled: boolean | null;
+}
+
+export type ActionPolicyTarget =
+  | { kind: "platform" }
+  | { kind: "user"; tenantId: string; workspaceId: string; userId: string }
+  | { kind: "workspace"; tenantId: string; workspaceId: string }
+  | { kind: "tenant"; tenantId: string };
+export type ActionPolicyUserTarget = Extract<ActionPolicyTarget, { kind: "user" }>;
+
+export interface ActionPolicyControlPrincipal extends RequestProcessingContext {
+  subjectKind: "policy_control";
+  subject: string;
+  purpose: "action-policy:read" | "action-policy:write";
+  permissions: string[];
+  target: Readonly<ActionPolicyTarget>;
+  requestId: string;
+  requestHash?: string;
+}
+export interface ActionPolicyServicePrincipal extends RequestProcessingContext {
+  subjectKind: "service";
+  subject: string;
+  purpose: "action-policy:subjects" | "action-policy:purge";
+  permissions: string[];
+  target: Readonly<ActionPolicyTarget>;
+  requestId: string;
+  requestHash?: string;
+}
+export interface NativeLifecycleServicePrincipal extends RequestProcessingContext {
+  subjectKind: "service";
+  subject: string;
+  purpose: "lifecycle:subjects" | "lifecycle:configuration:read" | "lifecycle:configuration:purge";
+  permissions: string[];
+  target: Readonly<Extract<ActionPolicyTarget, { kind: "tenant" | "workspace" }>>;
+  requestId: string;
+  requestHash?: string;
+}
+export interface NativeConfigurationMetadata {
+  kind: "managed_project" | "oauth_source";
+  tenantId: string;
+  workspaceId: string;
+  id: string;
+  service?: string;
+  source?: "local" | "saas";
+  managedProjectId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface ActionPolicyRecord {
+  actionId: string;
+  enabled: boolean;
+  createdBySubject: string;
+  updatedBySubject: string;
+  createdAt: string;
+  updatedAt: string;
+  tenantId?: string;
+  workspaceId?: string;
+  userId?: string;
+}
+export interface ActionPolicyAuditRecord {
+  id: string;
+  target: ActionPolicyTarget;
+  operatorSubject: string;
+  actionIds: string[];
+  enabled: boolean | null;
+  reason: string;
+  createdAt: string;
+  requestId: string;
+}
+export interface ActionPolicyPage {
+  cursor?: string;
+  limit?: number;
+}
+export interface ActionPolicyMutationInput {
+  actionIds: string[];
+  enabled: boolean | null;
+  reason: string;
+}
+export interface ActionPolicyWriteResult {
+  updatedCount: number;
+  removedCount: number;
+  auditId: string;
+}
+export interface ActionPolicyPurgeResult {
+  correlationId: string;
+  deletedGrants: number;
+  deletedAudit: number;
+}
+
+export const actionPolicyTargetSchema: z.ZodType<ActionPolicyTarget> = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("platform") }).strict(),
+  z.object({ kind: z.literal("user"), tenantId: z.uuid(), workspaceId: z.uuid(), userId: z.uuid() }).strict(),
+  z.object({ kind: z.literal("workspace"), tenantId: z.uuid(), workspaceId: z.uuid() }).strict(),
+  z.object({ kind: z.literal("tenant"), tenantId: z.uuid() }).strict(),
+]);
+const actionIdsSchema = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .max(255)
+      .regex(/^(?:trigger:)?[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+$/),
+  )
+  .min(1)
+  .max(5000)
+  .refine((ids) => new Set(ids).size === ids.length, "duplicate action IDs");
+// Keep raw wire strings intact until the signed request hash has been checked.
+const actionPolicyReasonSchema = z
+  .string()
+  .min(1)
+  .max(500)
+  .refine((reason) => reason.trim().length > 0, "reason is required");
+export const actionAccessInputSchema: z.ZodType<Pick<ActionPolicyMutationInput, "actionIds">> = z
+  .object({ actionIds: actionIdsSchema })
+  .strict();
+export const actionPolicyMutationInputSchema: z.ZodType<ActionPolicyMutationInput> = z
+  .object({
+    actionIds: actionIdsSchema,
+    enabled: z.boolean().nullable(),
+    reason: actionPolicyReasonSchema,
+  })
+  .strict();
+export const actionPolicySingleMutationInputSchema: z.ZodType<Pick<ActionPolicyMutationInput, "enabled" | "reason">> = z
+  .object({
+    enabled: z.boolean().nullable(),
+    reason: actionPolicyReasonSchema,
+  })
+  .strict();
+export const actionPolicyPageSchema: z.ZodType<ActionPolicyPage> = z
+  .object({
+    cursor: z.string().min(1).max(4096).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  })
+  .strict();
+
+const policyIdentityWire = {
+  iss: nonEmptyWireString,
+  aud: nonEmptyWireString,
+  sub: nonEmptyWireString,
+  jti: nonEmptyWireString,
+  iat: timestamp,
+  nbf: timestamp,
+  exp: timestamp,
+  permissions: z.array(nonEmptyWireString),
+  policy_target: actionPolicyTargetSchema,
+  request_hash: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{43}$/)
+    .optional(),
+};
+interface PolicyIdentityMetadata {
+  iss: string;
+  aud: string;
+  sub: string;
+  jti: string;
+  iat: number;
+  nbf: number;
+  exp: number;
+}
+export type ActionPolicyControlIdentityClaims = Omit<
+  ActionPolicyControlPrincipal,
+  "subject" | "requestId" | keyof RequestProcessingContext
+> &
+  PolicyIdentityMetadata;
+export type ActionPolicyServiceIdentityClaims = Omit<
+  ActionPolicyServicePrincipal,
+  "subject" | "requestId" | keyof RequestProcessingContext
+> &
+  PolicyIdentityMetadata;
+export type NativeLifecycleServiceIdentityClaims = Omit<
+  NativeLifecycleServicePrincipal,
+  "subject" | "requestId" | keyof RequestProcessingContext
+> &
+  PolicyIdentityMetadata;
+
+export const actionPolicyControlClaimsSchema: z.ZodType<ActionPolicyControlIdentityClaims> = z
+  .object({
+    ...policyIdentityWire,
+    subject_kind: z.literal("policy_control"),
+    purpose: z.enum(["action-policy:read", "action-policy:write"]),
+  })
+  .strict()
+  .superRefine((claims, context) => {
+    validatePolicyClaims(claims, context);
+    if (claims.policy_target.kind !== "platform" && claims.policy_target.kind !== "user") {
+      context.addIssue({ code: "custom", message: "control policy target must be platform or user" });
+    }
+  })
+  .transform((claims): ActionPolicyControlIdentityClaims => ({
+    iss: claims.iss,
+    aud: claims.aud,
+    sub: claims.sub,
+    jti: claims.jti,
+    iat: claims.iat,
+    nbf: claims.nbf,
+    exp: claims.exp,
+    subjectKind: claims.subject_kind,
+    purpose: claims.purpose,
+    permissions: claims.permissions,
+    target: claims.policy_target,
+    requestHash: claims.request_hash,
+  }));
+const actionPolicyServiceIdentityClaimsSchema = z
+  .object({
+    ...policyIdentityWire,
+    aud: z.literal("open-connector-saas"),
+    subject_kind: z.literal("service"),
+    purpose: z.enum(["action-policy:subjects", "action-policy:purge"]),
+  })
+  .strict()
+  .superRefine((claims, context) => {
+    validatePolicyClaims(claims, context);
+    if (
+      claims.policy_target.kind === "platform" ||
+      (claims.purpose === "action-policy:subjects" && claims.policy_target.kind === "user")
+    ) {
+      context.addIssue({ code: "custom", message: "invalid service policy target" });
+    }
+  })
+  .transform((claims): ActionPolicyServiceIdentityClaims => ({
+    iss: claims.iss,
+    aud: claims.aud,
+    sub: claims.sub,
+    jti: claims.jti,
+    iat: claims.iat,
+    nbf: claims.nbf,
+    exp: claims.exp,
+    subjectKind: claims.subject_kind,
+    purpose: claims.purpose,
+    permissions: claims.permissions,
+    target: claims.policy_target,
+    requestHash: claims.request_hash,
+  }));
+const nativeLifecycleServiceIdentityClaimsSchema = z
+  .object({
+    ...policyIdentityWire,
+    aud: z.literal("open-connector-saas"),
+    subject_kind: z.literal("service"),
+    purpose: z.enum(["lifecycle:subjects", "lifecycle:configuration:read", "lifecycle:configuration:purge"]),
+  })
+  .strict()
+  .superRefine((claims, context) => {
+    validatePolicyClaims(claims, context);
+    if (claims.policy_target.kind !== "tenant" && claims.policy_target.kind !== "workspace") {
+      context.addIssue({ code: "custom", message: "native maintenance requires a tenant/workspace target" });
+    }
+  })
+  .transform((claims): NativeLifecycleServiceIdentityClaims => ({
+    iss: claims.iss,
+    aud: claims.aud,
+    sub: claims.sub,
+    jti: claims.jti,
+    iat: claims.iat,
+    nbf: claims.nbf,
+    exp: claims.exp,
+    subjectKind: claims.subject_kind,
+    purpose: claims.purpose,
+    permissions: claims.permissions,
+    target: claims.policy_target as NativeLifecycleServicePrincipal["target"],
+    requestHash: claims.request_hash,
+  }));
+
+function validatePolicyClaims(
+  claims: { iat: number; nbf: number; exp: number; purpose: string; permissions: string[]; request_hash?: string },
+  context: z.RefinementCtx,
+): void {
+  if (claims.exp <= claims.iat || claims.exp - claims.iat > 60 || claims.nbf > claims.exp) {
+    context.addIssue({ code: "custom", message: "invalid policy token expiry" });
+  }
+  if (claims.permissions.length !== 1 || claims.permissions[0] !== claims.purpose) {
+    context.addIssue({ code: "custom", message: "permissions must exactly match purpose" });
+  }
+  const write =
+    claims.purpose === "action-policy:write" ||
+    claims.purpose === "action-policy:purge" ||
+    claims.purpose === "lifecycle:configuration:purge";
+  if (write !== (claims.request_hash !== undefined)) {
+    context.addIssue({ code: "custom", message: "only policy mutations require request_hash" });
+  }
+}
+
+export function parseActionPolicyControlClaims(value: unknown): ActionPolicyControlIdentityClaims {
+  return actionPolicyControlClaimsSchema.parse(value);
+}
 
 export const connectorIdentityClaimsSchema: z.ZodType<VerifiedConnectorIdentityClaims> = z.union([
   catalogServiceIdentityClaimsSchema,
   tenantIdentityClaimsSchema,
+  actionPolicyServiceIdentityClaimsSchema,
+  nativeLifecycleServiceIdentityClaimsSchema,
 ]);
 
 /** Strictly parse backend-issued wire claims into connector-native camelCase names. */
 export function parseConnectorIdentityClaims(value: unknown): VerifiedConnectorIdentityClaims {
-  return typeof value === "object" && value !== null && "subject_kind" in value
-    ? catalogServiceIdentityClaimsSchema.parse(value)
-    : tenantIdentityClaimsSchema.parse(value);
+  if (typeof value === "object" && value !== null && "subject_kind" in value) {
+    if ("purpose" in value && value.purpose === "catalog:read") return catalogServiceIdentityClaimsSchema.parse(value);
+    if ("purpose" in value && typeof value.purpose === "string" && value.purpose.startsWith("lifecycle:"))
+      return nativeLifecycleServiceIdentityClaimsSchema.parse(value);
+    return actionPolicyServiceIdentityClaimsSchema.parse(value);
+  }
+  return tenantIdentityClaimsSchema.parse(value);
 }

@@ -1,13 +1,16 @@
-import type { IConnectionStore, StoredConnection } from "../../connection-service.ts";
+import type { IConnectionStore, StoredConnection, StoredLocalConnection } from "../../connection-store.ts";
 import type { ProviderDefinition, ResolvedCredential } from "../../core/types.ts";
 import type { IOAuthClientConfigStore, OAuthClientConfig } from "../../oauth/oauth-client-config-service.ts";
 import type { IOAuthStateStore, OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
 import type { SaasRequestScope } from "../contracts.ts";
+import type { SafeStoredConnection } from "../storage/postgres-connection-store.ts";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../../catalog-store.ts";
 import { OAuthFlowError } from "../../oauth/oauth-flow-service.ts";
+import { SaasConnectServer } from "../server/saas-connect-server.ts";
+import { MemoryLocalConnectionRequests } from "../testing/native-store-fixtures.ts";
 import { SaasOAuthService, connectorAlias } from "./saas-oauth-service.ts";
 
 const provider: ProviderDefinition = {
@@ -21,6 +24,24 @@ const provider: ProviderDefinition = {
       authorizationUrl: "https://provider.example/authorize",
       tokenUrl: "https://provider.example/token",
       scopes: ["read"],
+      authorizationOptions: [
+        {
+          id: "read",
+          label: "Read",
+          description: "Read account data",
+          required: true,
+          defaultSelected: true,
+          risk: "standard",
+        },
+        {
+          id: "write",
+          label: "Write",
+          description: "Update account data",
+          required: false,
+          defaultSelected: false,
+          risk: "sensitive",
+        },
+      ],
       tokenEndpointAuthMethod: "client_secret_post",
     },
   ],
@@ -61,6 +82,100 @@ describe("SaasOAuthService", () => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
+  it("rejects forged callback provenance without consuming the authorization", async () => {
+    const scoped = stores();
+    const state = await startState(service("oauth:start", scoped));
+    await expect(
+      service("oauth:complete", scoped).complete({
+        state,
+        code: "trusted",
+        callbackQuery: `state=${state}&code=forged`,
+        callbackParameters: { state, code: "trusted" },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_oauth_state" });
+    expect(await scoped.states.take(state)).toMatchObject({ state });
+  });
+
+  it("honors selected provider scopes over HTTP and rejects a forged callback without consuming valid authorization", async () => {
+    const scoped = stores();
+    const app = new SaasConnectServer({
+      catalog,
+      providerLoader,
+      verifyJwt: async (authorization) => {
+        const purpose = authorization === "Bearer complete" ? "oauth:complete" : "oauth:start";
+        return {
+          tenantId: "tenant-a",
+          workspaceId: "workspace-a",
+          actorUserId: "user-a",
+          subjectUserId: "user-a",
+          workspaceRole: "member",
+          purpose,
+          permissions: [purpose],
+          localConnectionId: "11111111-1111-4111-8111-111111111111",
+          oauthSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        };
+      },
+      readiness: async () => ({
+        postgres: true,
+        openBao: true,
+        jwks: true,
+        seaweedFs: true,
+        providerRegistry: true,
+        catalogFingerprint: true,
+      }),
+      oauthServiceFactory: { forScope: (scope) => service(scope.purpose, scoped, scope) },
+    }).createApp();
+    const binding = {
+      localConnectionId: "11111111-1111-4111-8111-111111111111",
+      oauthSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    };
+    const start = await app.request("/internal/saas/oauth/start", {
+      method: "POST",
+      headers: { authorization: "Bearer start", "content-type": "application/json" },
+      body: JSON.stringify({ ...binding, service: "example", authorizationOptionIds: ["write"] }),
+    });
+    expect(start.status).toBe(200);
+    const authorize = new URL((await start.json()).authorizeUrl);
+    expect(new Set(authorize.searchParams.get("scope")!.split(" "))).toEqual(new Set(["read", "write"]));
+    const state = authorize.searchParams.get("state")!;
+    const complete = (callbackQuery: string) =>
+      app.request("/internal/saas/oauth/complete", {
+        method: "POST",
+        headers: { authorization: "Bearer complete", "content-type": "application/json" },
+        body: JSON.stringify({
+          ...binding,
+          state,
+          code: "trusted",
+          callbackQuery,
+          callbackParameters: { state, code: "trusted" },
+        }),
+      });
+    expect((await complete(new URLSearchParams({ state, code: "forged" }).toString())).status).toBe(400);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async () => Response.json({ access_token: "native-http-access", token_type: "Bearer" })),
+    );
+    expect((await complete(new URLSearchParams({ state, code: "trusted" }).toString())).status).toBe(200);
+    expect(await scoped.connections.get("example", connectorAlias(binding.localConnectionId))).toMatchObject({
+      credential: { accessToken: "native-http-access" },
+    });
+    expect(await scoped.states.take(state)).toBeUndefined();
+  });
+
+  it("does not let a different verified session consume a pending state", async () => {
+    const scoped = stores();
+    const state = await startState(service("oauth:start", scoped));
+    await expect(
+      service("oauth:complete", scoped, { oauthSessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }).complete({
+        state,
+        code: "trusted",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_oauth_state" });
+    expect(await scoped.states.take(state)).toMatchObject({
+      state,
+      oauthSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+  });
 
   it("keeps tenant and user state isolated", async () => {
     const tenantA = stores();
@@ -72,7 +187,10 @@ describe("SaasOAuthService", () => {
       service("oauth:complete", tenantB, { tenantId: "tenant-b" }).complete({ state, code: "code" }),
     ).rejects.toBeInstanceOf(OAuthFlowError);
     await expect(
-      service("oauth:complete", userB, { subjectUserId: "user-b" }).complete({ state, code: "code" }),
+      service("oauth:complete", userB, { actorUserId: "user-b", subjectUserId: "user-b" }).complete({
+        state,
+        code: "code",
+      }),
     ).rejects.toBeInstanceOf(OAuthFlowError);
   });
 
@@ -163,7 +281,7 @@ function stores(): Stores {
 }
 
 function service(
-  purpose: "oauth:start" | "oauth:complete",
+  purpose: SaasRequestScope["purpose"],
   scoped: Stores,
   overrides: Partial<SaasRequestScope> = {},
 ): SaasOAuthService {
@@ -185,6 +303,7 @@ function service(
     providerLoader,
     connectionStore: scoped.connections,
     oauthStateStore: scoped.states,
+    connectionRequests: new MemoryLocalConnectionRequests(scoped.connections),
     oauthClientConfigStore: clientConfigs,
     callbackOrigin: "https://api.example/integrations",
   });
@@ -201,13 +320,24 @@ async function startState(oauth: SaasOAuthService): Promise<string> {
 
 class MemoryOAuthStateStore implements IOAuthStateStore {
   private readonly values = new Map<string, OAuthAuthorizationState>();
+  async deleteCreatedBefore(cutoff: string): Promise<void> {
+    for (const [key, state] of this.values) if (state.createdAt < cutoff) this.values.delete(key);
+  }
 
   async set(state: OAuthAuthorizationState): Promise<void> {
     this.values.set(state.state, state);
   }
 
-  async take(state: string): Promise<OAuthAuthorizationState | undefined> {
+  async take(
+    state: string,
+    binding?: { connectionName: string; oauthSessionId: string },
+  ): Promise<OAuthAuthorizationState | undefined> {
     const pending = this.values.get(state);
+    if (
+      binding &&
+      (pending?.connectionName !== binding.connectionName || pending.oauthSessionId !== binding.oauthSessionId)
+    )
+      return undefined;
     this.values.delete(state);
     return pending;
   }
@@ -215,12 +345,50 @@ class MemoryOAuthStateStore implements IOAuthStateStore {
 
 class MemoryConnectionStore implements IConnectionStore {
   private readonly values = new Map<string, StoredConnection>();
+  private readonly generations = new Map<string, string>();
+  async getById(id: string): Promise<StoredConnection | undefined> {
+    return [...this.values.values()].find((connection) => connection.id === id);
+  }
+  async getSafeConnection(id: string): Promise<SafeStoredConnection | undefined> {
+    const connection = await this.getById(id);
+    return connection
+      ? {
+          id: connection.id,
+          service: connection.service,
+          connectionName: connection.connectionName,
+          localConnectionId: "11111111-1111-4111-8111-111111111111",
+          subjectUserId: "user-a",
+          visibility: "user",
+          status: "active",
+          createdAt: "2026-11-06T00:00:00.000Z",
+          updatedAt: "2026-11-06T00:00:00.000Z",
+        }
+      : undefined;
+  }
+  async getRetirementGeneration(service: string, name: string): Promise<string> {
+    const key = `${service}:${name}`;
+    let generation = this.generations.get(key);
+    if (!generation) {
+      generation = crypto.randomUUID();
+      this.generations.set(key, generation);
+    }
+    return generation;
+  }
+  async setIfCurrentGeneration(
+    service: string,
+    name: string,
+    credential: ResolvedCredential,
+    generation: string,
+  ): Promise<StoredLocalConnection | undefined> {
+    if ((await this.getRetirementGeneration(service, name)) !== generation) return undefined;
+    return this.set(service, name, credential);
+  }
 
   async get(service: string, connectionName: string): Promise<StoredConnection | undefined> {
     return this.values.get(`${service}:${connectionName}`);
   }
 
-  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredLocalConnection> {
     const key = `${service}:${connectionName}`;
     const connection = {
       id: this.values.get(key)?.id ?? crypto.randomUUID(),
@@ -233,12 +401,13 @@ class MemoryConnectionStore implements IConnectionStore {
     return connection;
   }
 
-  async updateCredential(input: StoredConnection): Promise<boolean> {
+  async updateCredential(input: StoredLocalConnection): Promise<boolean> {
     this.values.set(`${input.service}:${input.connectionName}`, input);
     return true;
   }
 
   async delete(service: string, connectionName: string): Promise<void> {
+    this.generations.set(`${service}:${connectionName}`, crypto.randomUUID());
     this.values.delete(`${service}:${connectionName}`);
   }
 

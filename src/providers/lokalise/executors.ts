@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { LokaliseActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "lokalise";
 const lokaliseApiBaseUrl = "https://api.lokalise.com/api2";
@@ -11,7 +13,7 @@ const lokaliseApiBaseUrl = "https://api.lokalise.com/api2";
 type LokaliseRequestMode = "validate" | "execute";
 type LokaliseActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const lokaliseActionHandlers: Record<LokaliseActionName, LokaliseActionHandler> = {
+export const lokaliseActionHandlers: ProviderActionHandlers<"lokalise", LokaliseActionHandler> = {
   list_projects(input, context) {
     return listProjects(input, context);
   },
@@ -70,7 +72,7 @@ export const credentialValidators: CredentialValidators = {
 
     return {
       profile: {
-        accountId: firstProjectId ?? "lokalise",
+        accountId: firstProjectId ?? service,
         displayName: firstProjectName ?? "Lokalise API Token",
       },
       grantedScopes: [],
@@ -502,3 +504,9 @@ function extractLokaliseErrorMessage(payload: unknown): string | undefined {
 
   return undefined;
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.lokalise.com/api2",
+  auth: { type: "api_key_header", name: "x-api-token" },
+});

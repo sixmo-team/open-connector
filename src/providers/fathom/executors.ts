@@ -1,8 +1,10 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { FathomActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "fathom";
 const fathomApiBaseUrl = "https://api.usefathom.com";
@@ -31,7 +33,7 @@ interface FathomRequestOptions {
 
 type FathomActionHandler = (input: Record<string, unknown>, context: FathomActionContext) => Promise<unknown>;
 
-export const fathomActionHandlers: Record<FathomActionName, FathomActionHandler> = {
+export const fathomActionHandlers: ProviderActionHandlers<"fathom", FathomActionHandler> = {
   get_account(_input, context) {
     return requestFathomJson({
       apiKey: context.apiKey,
@@ -194,6 +196,16 @@ export const fathomActionHandlers: Record<FathomActionName, FathomActionHandler>
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, fathomActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: fathomApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {

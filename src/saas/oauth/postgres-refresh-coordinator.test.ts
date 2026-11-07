@@ -1,4 +1,4 @@
-import type { IConnectionStore, StoredConnection } from "../../connection-service.ts";
+import type { IConnectionStore, StoredLocalConnection } from "../../connection-store.ts";
 import type { ProviderDefinition, ResolvedCredential } from "../../core/types.ts";
 import type { IOAuthCredentialRefresher } from "../../oauth/oauth-credential-refresh-service.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
@@ -88,12 +88,15 @@ describe("PostgresRefreshCoordinator", () => {
         }),
       });
 
-    const first = makeService().getCredential(provider.service, "account-a");
-    const second = makeService().getCredential(provider.service, "account-a");
+    const first = makeService().resolveConnection(provider.service, "account-a", connectionStore.current.id);
+    const second = makeService().resolveConnection(provider.service, "account-a", connectionStore.current.id);
     await refreshStarted.promise;
     await Promise.resolve();
     finishRefresh.resolve();
-    const credentials = await Promise.all([first, second]);
+    const resolved = await Promise.all([first, second]);
+    const credentials = resolved.map((connection) =>
+      connection.source === "local" ? connection.credential : undefined,
+    );
 
     expect(refreshCalls).toBe(1);
     expect(connectionStore.updateCalls).toBe(1);
@@ -129,7 +132,7 @@ describe("PostgresRefreshCoordinator", () => {
 
 class MemoryConnectionStore implements IConnectionStore {
   updateCalls = 0;
-  current: StoredConnection;
+  current: StoredLocalConnection;
 
   constructor(credential: ResolvedCredential) {
     this.current = {
@@ -141,27 +144,41 @@ class MemoryConnectionStore implements IConnectionStore {
     };
   }
 
-  async get(service: string, connectionName: string): Promise<StoredConnection | undefined> {
+  async get(service: string, connectionName: string): Promise<StoredLocalConnection | undefined> {
     return service === this.current.service && connectionName === this.current.connectionName
       ? { ...this.current }
       : undefined;
   }
 
-  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+  async getById(id: string): Promise<StoredLocalConnection | undefined> {
+    return id === this.current.id ? { ...this.current } : undefined;
+  }
+
+  async getRetirementGeneration(): Promise<string> {
+    throw new Error("This refresh fixture does not perform OAuth authorization.");
+  }
+
+  async setIfCurrentGeneration(): Promise<StoredLocalConnection | undefined> {
+    throw new Error("This refresh fixture does not perform OAuth authorization.");
+  }
+
+  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredLocalConnection> {
     this.current = { ...this.current, service, connectionName, credential };
     return this.current;
   }
 
-  async updateCredential(input: StoredConnection): Promise<boolean> {
+  async updateCredential(input: StoredLocalConnection): Promise<boolean> {
     if (input.id !== this.current.id || input.revision !== this.current.revision) return false;
     this.updateCalls += 1;
     this.current = { ...input, revision: `revision-${this.updateCalls + 1}` };
     return true;
   }
 
-  async delete(): Promise<void> {}
+  async delete(): Promise<void> {
+    throw new Error("This refresh fixture does not delete connections.");
+  }
 
-  async list(): Promise<StoredConnection[]> {
+  async list(): Promise<StoredLocalConnection[]> {
     return [{ ...this.current }];
   }
 }
@@ -201,8 +218,8 @@ const scope = {
   actorUserId: "user-a",
   subjectUserId: "user-a",
   workspaceRole: "member" as const,
-  purpose: "action:execute" as const,
-  permissions: ["action:execute"],
+  purpose: "action:execute:v2" as const,
+  permissions: ["action:execute:v2"],
 };
 let adminPool: Pool;
 let runtimePool: Pool;

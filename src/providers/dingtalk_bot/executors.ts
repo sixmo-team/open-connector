@@ -5,29 +5,31 @@ import type {
   ProviderProxyExecutor,
   ProxyExecutionResult,
 } from "../../core/types.ts";
-import type { DingtalkBotActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { createHash, createHmac } from "node:crypto";
 import { compactObject, objectArray, optionalNumber, optionalString, requiredString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  createProviderTimeout,
-  defineProviderExecutors,
-  isAbortLikeError,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  createProviderTimeout,
+  isAbortLikeError,
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
 } from "../provider-runtime.ts";
 
 const service = "dingtalk_bot";
 const apiBaseUrl = "https://oapi.dingtalk.com";
 const webhookPath = "/robot/send";
-const requestTimeoutMs = 30_000;
 const validationProbePayload = { msgtype: "__validation_probe__" };
 const validationSuccessCodes = new Set([40035, 400105]);
 
@@ -53,7 +55,7 @@ interface DingtalkBotRequestResult {
 
 type DingtalkBotActionHandler = (input: Record<string, unknown>, context: DingtalkBotContext) => Promise<unknown>;
 
-export const dingtalkBotActionHandlers: Record<DingtalkBotActionName, DingtalkBotActionHandler> = {
+export const dingtalkBotActionHandlers: ProviderActionHandlers<"dingtalk_bot", DingtalkBotActionHandler> = {
   send_text_message(input, context) {
     return sendDingtalkBotMessage(
       compactObject({
@@ -219,7 +221,7 @@ async function requestDingtalkBot(input: {
   fetcher: typeof fetch;
   signal?: AbortSignal;
 }): Promise<DingtalkBotRequestResult> {
-  const timeout = createProviderTimeout(input.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(buildWebhookUrl(input.accessToken, input.signingSecret), {
       method: "POST",
@@ -318,7 +320,7 @@ function normalizeDingtalkBotError(
     return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
   }
   if (errcode === 310000 || errcode === 40035 || errcode === 400105) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(result.status >= 400 ? result.status : 500, message);
 }
@@ -370,8 +372,4 @@ function applyWebhookAuthentication(url: URL, accessToken: string, signingSecret
 
 function buildProviderAccountId(accessToken: string): string {
   return `dingtalk_bot:${createHash("sha256").update(accessToken).digest("hex").slice(0, 24)}`;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

@@ -1,21 +1,19 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { IpqualityscoreActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { isIP } from "node:net";
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineApiKeyProviderExecutors,
   normalizeProviderProxyEndpoint,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "ipqualityscore";
 const ipqualityscoreApiBaseUrl = "https://www.ipqualityscore.com";
@@ -29,7 +27,7 @@ type IpqualityscoreActionHandler = (
   context: IpqualityscoreActionContext,
 ) => Promise<unknown>;
 
-export const ipqualityscoreActionHandlers: Record<IpqualityscoreActionName, IpqualityscoreActionHandler> = {
+export const ipqualityscoreActionHandlers: ProviderActionHandlers<"ipqualityscore", IpqualityscoreActionHandler> = {
   check_ip_reputation(input, context) {
     const ipAddress = readRequiredString(input.ipAddress, "ipAddress");
     if (isIP(ipAddress) === 0) {

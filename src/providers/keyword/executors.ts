@@ -1,8 +1,10 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { KeywordRequestContext } from "./runtime.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
-import { keywordActionHandlers, validateKeywordCredential } from "./runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { keywordActionHandlers, keywordApiBaseUrl, validateKeywordCredential } from "./runtime.ts";
 
 const service = "keyword";
 
@@ -17,6 +19,16 @@ export const executors: ProviderExecutors = defineProviderExecutors<KeywordReque
       phase: "execute",
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: keywordApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 

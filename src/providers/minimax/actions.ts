@@ -2,6 +2,7 @@ import type { ActionDefinition } from "../../core/types.ts";
 
 import { s } from "../../core/json-schema.ts";
 import { defineProviderAction } from "../../core/provider-definition.ts";
+import { minimaxTextModels } from "./text-models.ts";
 
 const service = "minimax";
 
@@ -74,9 +75,12 @@ const responseInputSchema = s.anyOf("MiniMax Responses API text or conversation 
 ]);
 
 const responseReasoningSchema = s.object(
-  "MiniMax reasoning control. MiniMax-M3 defaults to none when omitted.",
+  "MiniMax reasoning control. Flash defaults to max; MiniMax-M3 defaults to none when omitted.",
   {
-    effort: s.stringEnum("Reasoning effort value.", ["minimal", "low", "medium", "high", "none"]),
+    effort: s.stringEnum(
+      "Flash supports low, medium, high, xhigh, and max. minimal and none are retained for older models and rejected for Flash.",
+      ["minimal", "low", "medium", "high", "none", "xhigh", "max"],
+    ),
   },
   { optional: ["effort"] },
 );
@@ -109,7 +113,14 @@ const responseToolSchema = s.object(
 const createResponseInputSchema = s.object(
   "Request body for creating a non-streaming MiniMax response.",
   {
-    model: trimmedNonEmptyString("MiniMax model name to invoke, for example MiniMax-M3."),
+    model: s.string(
+      "MiniMax text model: MiniMax-M3.1-Flash (default) or MiniMax-M3. Explicit model IDs are preserved.",
+      {
+        minLength: 1,
+        pattern: "\\S",
+        default: minimaxTextModels[0],
+      },
+    ),
     input: responseInputSchema,
     instructions: optionalTrimmedString("System instructions for the response."),
     max_output_tokens: s.integer("Maximum output token count.", { minimum: 1 }),
@@ -121,7 +132,10 @@ const createResponseInputSchema = s.object(
       minimum: 0,
       maximum: 1,
     }),
-    service_tier: s.stringEnum("MiniMax service tier for request admission.", ["standard", "priority"]),
+    service_tier: s.stringEnum("MiniMax service tier for request admission. Not supported by Flash.", [
+      "standard",
+      "priority",
+    ]),
     tools: s.array("Function tools available to MiniMax.", responseToolSchema, { minItems: 1 }),
     tool_choice: s.stringEnum("Tool selection strategy.", ["none", "auto"]),
     metadata: s.record("String metadata to attach to the MiniMax request.", s.string("Metadata value.")),
@@ -132,6 +146,7 @@ const createResponseInputSchema = s.object(
   },
   {
     optional: [
+      "model",
       "instructions",
       "max_output_tokens",
       "temperature",
@@ -151,7 +166,14 @@ const createResponseInputSchema = s.object(
 const estimateInputTokensInputSchema = s.object(
   "Request body for estimating MiniMax response input tokens.",
   {
-    model: trimmedNonEmptyString("MiniMax model name to estimate against, for example MiniMax-M3."),
+    model: s.string(
+      "MiniMax text model to estimate against. Defaults to MiniMax-M3.1-Flash; explicit IDs are preserved.",
+      {
+        minLength: 1,
+        pattern: "\\S",
+        default: minimaxTextModels[0],
+      },
+    ),
     input: responseInputSchema,
     instructions: optionalTrimmedString("System instructions included in the estimate."),
     tools: s.array("Function tools included in the estimate.", responseToolSchema, { minItems: 1 }),
@@ -159,7 +181,7 @@ const estimateInputTokensInputSchema = s.object(
     text: responseTextSchema,
     reasoning: responseReasoningSchema,
   },
-  { optional: ["instructions", "tools", "tool_choice", "text", "reasoning"] },
+  { optional: ["model", "instructions", "tools", "tool_choice", "text", "reasoning"] },
 );
 
 const usageSchema = s.unknownObject("MiniMax usage object with token counts and details.");
@@ -217,6 +239,61 @@ const imageToVideoModels = [
   "I2V-01-Director",
   "I2V-01-live",
   "I2V-01",
+];
+
+const textToAudioModels = [
+  "speech-2.8-hd",
+  "speech-2.8-turbo",
+  "speech-2.6-hd",
+  "speech-2.6-turbo",
+  "speech-02-hd",
+  "speech-02-turbo",
+  "speech-01-hd",
+  "speech-01-turbo",
+];
+
+const textToAudioLanguageBoosts = [
+  "Chinese",
+  "Chinese,Yue",
+  "English",
+  "Arabic",
+  "Russian",
+  "Spanish",
+  "French",
+  "Portuguese",
+  "German",
+  "Turkish",
+  "Dutch",
+  "Ukrainian",
+  "Vietnamese",
+  "Indonesian",
+  "Japanese",
+  "Italian",
+  "Korean",
+  "Thai",
+  "Polish",
+  "Romanian",
+  "Greek",
+  "Czech",
+  "Finnish",
+  "Hindi",
+  "Bulgarian",
+  "Danish",
+  "Hebrew",
+  "Malay",
+  "Persian",
+  "Slovak",
+  "Swedish",
+  "Croatian",
+  "Filipino",
+  "Hungarian",
+  "Norwegian",
+  "Slovenian",
+  "Catalan",
+  "Nynorsk",
+  "Tamil",
+  "Afrikaans",
+  "auto",
 ];
 
 const textToVideoModelSchema = s.stringEnum(textToVideoModels, {
@@ -296,8 +373,9 @@ const videoGenerationV2InputSchema = s.object(
       default: "adaptive",
     }),
     callback_url: videoCallbackUrlSchema,
+    aigc_watermark: s.boolean("Whether to add an AIGC watermark to the generated video."),
   },
-  { optional: ["ratio", "callback_url"] },
+  { optional: ["ratio", "callback_url", "aigc_watermark"] },
 );
 
 const textToVideoInputSchema = s.object(
@@ -355,6 +433,137 @@ const listVideoGenerationV2InputSchema = s.object(
 const downloadVideoInputSchema = s.object("Input parameters for retrieving a generated MiniMax video file.", {
   file_id: trimmedNonEmptyString("Identifier of the generated video file to retrieve."),
 });
+
+const textToAudioVoiceSettingSchema = s.looseObject("MiniMax voice settings.", {
+  voice_id: s.string(
+    "Identifier of the system, cloned, or generated voice to speak with. Required unless timbre_weights mixes voices.",
+  ),
+  speed: s.number("Speech speed where higher values speak faster. MiniMax defaults to 1.", {
+    minimum: 0.5,
+    maximum: 2,
+  }),
+  vol: s.number("Speech volume where higher values are louder. MiniMax defaults to 1.", {
+    exclusiveMinimum: 0,
+    maximum: 10,
+  }),
+  pitch: s.integer("Speech pitch offset where 0 keeps the original pitch.", { minimum: -12, maximum: 12 }),
+  emotion: s.stringEnum("Emotion of the synthesized speech. MiniMax picks one from the text when omitted.", [
+    "happy",
+    "sad",
+    "angry",
+    "fearful",
+    "disgusted",
+    "surprised",
+    "calm",
+    "fluent",
+    "whisper",
+  ]),
+  text_normalization: s.boolean(
+    "Whether to normalize Chinese and English text, which reads digits better at the cost of latency.",
+  ),
+  latex_read: s.boolean(
+    "Whether to read LaTeX formulas wrapped in double dollar signs. Chinese only, and it forces language_boost to Chinese.",
+  ),
+});
+
+const textToAudioAudioSettingSchema = s.looseObject("MiniMax audio settings.", {
+  sample_rate: s.anyOf(
+    [s.literal(8000), s.literal(16000), s.literal(22050), s.literal(24000), s.literal(32000), s.literal(44100)],
+    {
+      description: "Sample rate of the generated audio in hertz. MiniMax defaults to 32000.",
+    },
+  ),
+  bitrate: s.anyOf([s.literal(32000), s.literal(64000), s.literal(128000), s.literal(256000)], {
+    description: "Bitrate of the generated audio, applied to mp3 output only. MiniMax defaults to 128000.",
+  }),
+  format: s.stringEnum(
+    "Format of the generated audio. MiniMax defaults to mp3, pcmu_raw and pcmu_wav are G.711 mu-law, and opus is Ogg/Opus.",
+    ["mp3", "pcm", "flac", "wav", "pcmu_raw", "pcmu_wav", "opus"],
+  ),
+  channel: s.anyOf([s.literal(1), s.literal(2)], {
+    description: "Number of audio channels where 1 is mono and 2 is stereo. MiniMax defaults to 1.",
+  }),
+});
+
+const textToAudioPronunciationDictSchema = s.looseObject("MiniMax pronunciation overrides.", {
+  tone: s.stringArray(
+    "Pronunciation rules written as original/replacement, for example omg/oh my god. Replacements accept plain text, parenthesized pinyin with tone digits, parenthesized IPA, or Japanese kana.",
+    { itemDescription: "One original/replacement pronunciation rule." },
+  ),
+});
+
+const textToAudioVoiceModifySchema = s.looseObject(
+  "MiniMax voice effect settings. Non-streaming synthesis supports mp3, wav, and flac output.",
+  {
+    pitch: s.integer("Voice depth where -100 is deepest and 100 is brightest.", { minimum: -100, maximum: 100 }),
+    intensity: s.integer("Voice intensity where -100 is strongest and 100 is softest.", {
+      minimum: -100,
+      maximum: 100,
+    }),
+    timbre: s.integer("Voice timbre where -100 is fullest and 100 is crispest.", { minimum: -100, maximum: 100 }),
+    sound_effects: s.stringEnum("Sound effect to apply. Only one effect can be active at a time.", [
+      "spacious_echo",
+      "auditorium_echo",
+      "lofi_telephone",
+      "robotic",
+    ]),
+  },
+);
+
+const textToAudioTimbreWeightSchema = s.object("One voice and its weight in the mixed timbre.", {
+  voice_id: trimmedNonEmptyString("Identifier of the voice to mix."),
+  weight: s.integer("Weight of this voice, where a higher value sounds more like it.", { minimum: 1, maximum: 100 }),
+});
+
+const textToAudioInputSchema = s.object(
+  "Request body for MiniMax text-to-audio synthesis.",
+  {
+    model: s.stringEnum("MiniMax speech model to invoke.", textToAudioModels),
+    text: s.string({
+      description: "Text to synthesize into audio. Must be shorter than 10,000 characters.",
+      minLength: 1,
+      maxLength: 9999,
+      pattern: "\\S",
+    }),
+    stream: s.literal(false, { description: "Set to false for the non-streaming connector action." }),
+    language_boost: s.stringEnum(
+      "Language or dialect hint that improves pronunciation. Set auto to let MiniMax detect it.",
+      textToAudioLanguageBoosts,
+    ),
+    output_format: s.stringEnum(
+      "How MiniMax delivers the audio. url returns a download link valid for 24 hours, while hex, the MiniMax default, inlines hex-encoded audio, so prefer url for long text.",
+      ["url", "hex"],
+    ),
+    voice_setting: textToAudioVoiceSettingSchema,
+    timbre_weights: s.array(
+      "Voices to blend into one mixed timbre. Leave voice_setting.voice_id empty when mixing voices.",
+      textToAudioTimbreWeightSchema,
+      { minItems: 1, maxItems: 4 },
+    ),
+    pronunciation_dict: textToAudioPronunciationDictSchema,
+    audio_setting: textToAudioAudioSettingSchema,
+    voice_modify: textToAudioVoiceModifySchema,
+    subtitle_enable: s.boolean("Whether MiniMax also generates a subtitle file and returns its download link."),
+    subtitle_type: s.stringEnum("Granularity of the generated subtitle timestamps. MiniMax defaults to sentence.", [
+      "sentence",
+      "word",
+    ]),
+  },
+  {
+    optional: [
+      "stream",
+      "language_boost",
+      "output_format",
+      "voice_setting",
+      "timbre_weights",
+      "pronunciation_dict",
+      "audio_setting",
+      "voice_modify",
+      "subtitle_enable",
+      "subtitle_type",
+    ],
+  },
+);
 
 const minimaxBaseRespSchema = s.looseRequiredObject(
   "MiniMax base response wrapper.",
@@ -460,11 +669,71 @@ const videoFileOutputSchema = s.looseRequiredObject(
   { optional: ["file", "base_resp"] },
 );
 
+const textToAudioOutputSchema = s.looseRequiredObject(
+  "MiniMax text-to-audio response.",
+  {
+    data: s.nullable(
+      s.looseRequiredObject(
+        "Synthesized audio payload. MiniMax may return null.",
+        {
+          audio: s.string("Hex-encoded audio, or a download URL when output_format is url."),
+          status: s.integer("Synthesis status where 1 means synthesizing and 2 means finished."),
+          subtitle_file: s.string("Download link for the generated subtitle file."),
+        },
+        { optional: ["audio", "status", "subtitle_file"] },
+      ),
+    ),
+    extra_info: s.looseRequiredObject(
+      "Additional information about the synthesized audio.",
+      {
+        audio_length: s.integer("Audio duration in milliseconds."),
+        audio_sample_rate: s.integer("Sample rate of the generated audio."),
+        audio_size: s.integer("Size of the generated audio in bytes."),
+        bitrate: s.integer("Bitrate of the generated audio."),
+        audio_format: s.string("Format of the generated audio, for example mp3, pcm, or flac."),
+        audio_channel: s.integer("Number of audio channels where 1 is mono and 2 is stereo."),
+        invisible_character_ratio: s.number("Share of invalid characters in the submitted text."),
+        usage_characters: s.integer("Number of billable characters used by this synthesis."),
+        word_count: s.integer(
+          "Spoken word count covering Chinese characters, digits, and letters, but not punctuation.",
+        ),
+      },
+      {
+        optional: [
+          "audio_length",
+          "audio_sample_rate",
+          "audio_size",
+          "bitrate",
+          "audio_format",
+          "audio_channel",
+          "invisible_character_ratio",
+          "usage_characters",
+          "word_count",
+        ],
+      },
+    ),
+    trace_id: s.string("MiniMax session identifier used when reporting an issue."),
+    base_resp: minimaxBaseRespSchema,
+  },
+  { optional: ["data", "extra_info", "trace_id", "base_resp"] },
+);
+
 export const minimaxActions: ActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_models",
-    description: "List OpenAI-compatible MiniMax models available to the API key.",
-    inputSchema: s.object("No input is required to list MiniMax models.", {}),
+    operationType: "read",
+    description:
+      "List MiniMax models available to the API key, preferring MiniMax-M3.1-Flash then MiniMax-M3 and hiding legacy text models by default.",
+    inputSchema: s.object(
+      "Options for listing MiniMax models. Non-text models are preserved.",
+      {
+        include_legacy: s.boolean({
+          description: "Return the complete upstream model list, including legacy text models.",
+          default: false,
+        }),
+      },
+      { optional: ["include_legacy"] },
+    ),
     outputSchema: s.looseRequiredObject("MiniMax model list response.", {
       object: s.string("Object type returned by MiniMax, usually list."),
       data: s.array("MiniMax models returned by the API.", modelSchema),
@@ -472,18 +741,21 @@ export const minimaxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "retrieve_model",
+    operationType: "read",
     description: "Retrieve OpenAI-compatible metadata for one MiniMax model.",
     inputSchema: modelIdInputSchema,
     outputSchema: modelSchema,
   }),
   defineProviderAction(service, {
     name: "create_response",
+    operationType: "write",
     description: "Create a non-streaming MiniMax response using the OpenAI Responses API shape.",
     inputSchema: createResponseInputSchema,
     outputSchema: createResponseOutputSchema,
   }),
   defineProviderAction(service, {
     name: "estimate_input_tokens",
+    operationType: "read",
     description: "Estimate MiniMax response input tokens without invoking the model.",
     inputSchema: estimateInputTokensInputSchema,
     outputSchema: s.looseRequiredObject("MiniMax input token estimate response.", {
@@ -493,50 +765,65 @@ export const minimaxActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "create_video_generation_v2",
+    operationType: "write",
     description: "Create a MiniMax H3 video generation task with text, image, video, or audio content.",
     inputSchema: videoGenerationV2InputSchema,
     outputSchema: videoGenerationV2CreatedOutputSchema,
   }),
   defineProviderAction(service, {
     name: "text_to_video",
+    operationType: "write",
     description: "Create a MiniMax asynchronous text-to-video generation task.",
     inputSchema: textToVideoInputSchema,
     outputSchema: videoTaskCreatedOutputSchema,
   }),
   defineProviderAction(service, {
     name: "image_to_video",
+    operationType: "write",
     description: "Create a MiniMax asynchronous image-to-video generation task from a first frame image.",
     inputSchema: imageToVideoInputSchema,
     outputSchema: videoTaskCreatedOutputSchema,
   }),
   defineProviderAction(service, {
     name: "query_video_generation",
+    operationType: "read",
     description: "Query the status of a MiniMax video generation task and read its file id when it completes.",
     inputSchema: queryVideoGenerationInputSchema,
     outputSchema: videoTaskStatusOutputSchema,
   }),
   defineProviderAction(service, {
     name: "query_video_generation_v2",
+    operationType: "read",
     description: "Query a MiniMax H3 video generation task.",
     inputSchema: queryVideoGenerationInputSchema,
     outputSchema: videoGenerationV2QueryOutputSchema,
   }),
   defineProviderAction(service, {
     name: "list_video_generation_v2",
+    operationType: "read",
     description: "List MiniMax H3 video generation tasks.",
     inputSchema: listVideoGenerationV2InputSchema,
     outputSchema: videoGenerationV2ListOutputSchema,
   }),
   defineProviderAction(service, {
     name: "delete_video_generation_v2",
+    operationType: "destructive",
     description: "Delete a MiniMax H3 video generation task.",
     inputSchema: queryVideoGenerationInputSchema,
     outputSchema: videoGenerationV2DeleteOutputSchema,
   }),
   defineProviderAction(service, {
     name: "download_video",
+    operationType: "read",
     description: "Retrieve the download URL and metadata for a generated MiniMax video file.",
     inputSchema: downloadVideoInputSchema,
     outputSchema: videoFileOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "text_to_audio",
+    operationType: "write",
+    description: "Synthesize text into audio with the MiniMax T2A v2 API.",
+    inputSchema: textToAudioInputSchema,
+    outputSchema: textToAudioOutputSchema,
   }),
 ];

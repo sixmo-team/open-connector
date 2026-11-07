@@ -1,7 +1,13 @@
 import type { FeishuJsonRequest } from "./client.ts";
 
-import { optionalRecord, optionalString, optionalStringArray } from "../../../core/cast.ts";
-import { ProviderRequestError } from "../../provider-runtime.ts";
+import {
+  optionalBoolean,
+  optionalNumber,
+  optionalRecord,
+  optionalString,
+  optionalStringArray,
+} from "../../../core/cast.ts";
+import { providerInputError, ProviderRequestError } from "../../provider-runtime.ts";
 
 interface FeishuSlidesActionHandler {
   (input: Record<string, unknown>): Promise<unknown>;
@@ -65,7 +71,7 @@ async function createSlidesPresentation(input: Record<string, unknown>, request:
   const slideIds: string[] = [];
   const issues: unknown[] = [];
   if (data.issues != null) {
-    issues.push(data.issues);
+    issues.push({ issues: data.issues });
   }
   let revisionId = optionalNumber(data.revision_id);
   for (const content of slides) {
@@ -119,7 +125,7 @@ async function getSlide(input: Record<string, unknown>, request: FeishuJsonReque
   const slideId = optionalString(input.slideId);
   const slideNumber = optionalNumber(input.slideNumber);
   if ((!slideId && slideNumber == null) || (slideId && slideNumber != null)) {
-    throw invalidInput("provide exactly one of slideId or slideNumber");
+    throw providerInputError("provide exactly one of slideId or slideNumber");
   }
   const data = await request({
     path: `/slides_ai/v1/xml_presentations/${encodeURIComponent(presentationId)}/slide`,
@@ -201,29 +207,45 @@ async function replaceSlides(input: Record<string, unknown>, request: FeishuJson
   const presentationId = await resolvePresentationId(input, request);
   const pages = readSlideReplacements(input.pages);
   let revisionId = optionalNumber(input.revisionId) ?? -1;
-  const results: Array<{ oldSlideId: string; newSlideId: string }> = [];
+  const results: Array<{
+    oldSlideId: string;
+    newSlideId: string;
+  }> = [];
   for (const page of pages) {
-    const createData = await request({
-      method: "POST",
-      path: `/slides_ai/v1/xml_presentations/${encodeURIComponent(presentationId)}/slide`,
-      query: { revision_id: revisionId },
-      body: {
-        slide: { content: page.content },
-        before_slide_id: page.slideId,
-      },
-    });
-    const newSlideId = requireResponseString(createData.slide_id, "slide_id");
-    revisionId = optionalNumber(createData.revision_id) ?? revisionId;
-    const deleteData = await request({
-      method: "DELETE",
-      path: `/slides_ai/v1/xml_presentations/${encodeURIComponent(presentationId)}/slide`,
-      query: {
-        slide_id: page.slideId,
-        revision_id: revisionId,
-      },
-    });
-    revisionId = optionalNumber(deleteData.revision_id) ?? revisionId;
-    results.push({ oldSlideId: page.slideId, newSlideId });
+    let newSlideId: string | undefined;
+    try {
+      const createData = await request({
+        method: "POST",
+        path: `/slides_ai/v1/xml_presentations/${encodeURIComponent(presentationId)}/slide`,
+        query: { revision_id: revisionId },
+        body: {
+          slide: { content: page.content },
+          before_slide_id: page.slideId,
+        },
+      });
+      newSlideId = requireResponseString(createData.slide_id, "slide_id");
+      revisionId = optionalNumber(createData.revision_id) ?? revisionId;
+      const deleteData = await request({
+        method: "DELETE",
+        path: `/slides_ai/v1/xml_presentations/${encodeURIComponent(presentationId)}/slide`,
+        query: {
+          slide_id: page.slideId,
+          revision_id: revisionId,
+        },
+      });
+      revisionId = optionalNumber(deleteData.revision_id) ?? revisionId;
+      results.push({ oldSlideId: page.slideId, newSlideId });
+    } catch (error) {
+      if (error instanceof Error) {
+        error.message += `; Slides replacement stopped: ${JSON.stringify({
+          presentationId,
+          completed: results,
+          pending: { oldSlideId: page.slideId, newSlideId },
+          revisionId,
+        })}. The operation is not atomic; inspect the pending page before retrying.`;
+      }
+      throw error;
+    }
   }
   return {
     presentationId,
@@ -277,21 +299,21 @@ async function resolvePresentationId(input: Record<string, unknown>, request: Fe
     return token;
   }
   const data = await request({
-    path: "/wiki/v2/spaces/get_node",
+    path: "/wiki/v2/spaces/node_by_token",
     query: { token },
   });
   const node = optionalRecord(data.node);
   const objectType = optionalString(node?.obj_type);
   const objectToken = optionalString(node?.obj_token);
   if (objectType !== "slides" || !objectToken) {
-    throw invalidInput(`Wiki node must resolve to slides, received ${objectType ?? "unknown"}`);
+    throw providerInputError(`Wiki node must resolve to slides, received ${objectType ?? "unknown"}`);
   }
   return objectToken;
 }
 
 function normalizeReplaceParts(value: unknown) {
   if (!Array.isArray(value) || value.length === 0 || value.length > 200) {
-    throw invalidInput("parts must contain between 1 and 200 items");
+    throw providerInputError("parts must contain between 1 and 200 items");
   }
   return value.map((item, index) => {
     const part = optionalRecord(item);
@@ -314,7 +336,7 @@ function normalizeReplaceParts(value: unknown) {
         insert_before_block_id: optionalString(part?.insertBeforeBlockId),
       };
     } else {
-      throw invalidInput(`parts[${index}].action must be block_replace or block_insert`);
+      throw providerInputError(`parts[${index}].action must be block_replace or block_insert`);
     }
   });
 }
@@ -323,7 +345,7 @@ function ensureBlockReplacement(fragment: string, blockId: string) {
   const withContent = ensureShapeContent(fragment);
   const openingEnd = withContent.indexOf(">");
   if (!withContent.startsWith("<") || openingEnd < 1) {
-    throw invalidInput("replacement must contain one XML root element");
+    throw providerInputError("replacement must contain one XML root element");
   }
   const opening = withContent.slice(0, openingEnd);
   if (opening.includes(" id=")) {
@@ -349,14 +371,14 @@ function ensureShapeContent(fragment: string) {
 
 function readSlideReplacements(value: unknown): SlideReplacement[] {
   if (!Array.isArray(value) || value.length === 0) {
-    throw invalidInput("pages must contain at least one replacement");
+    throw providerInputError("pages must contain at least one replacement");
   }
   const seen = new Set<string>();
   return value.map((item, index) => {
     const page = optionalRecord(item);
     const slideId = requireString(page?.slideId, `pages[${index}].slideId`);
     if (seen.has(slideId)) {
-      throw invalidInput(`pages contains duplicate slideId ${slideId}`);
+      throw providerInputError(`pages contains duplicate slideId ${slideId}`);
     }
     seen.add(slideId);
     return {
@@ -400,7 +422,7 @@ function escapeXml(value: string) {
 function requireString(value: unknown, fieldName: string) {
   const string = optionalString(value);
   if (!string) {
-    throw invalidInput(`${fieldName} is required`);
+    throw providerInputError(`${fieldName} is required`);
   }
   return string;
 }
@@ -411,16 +433,4 @@ function requireResponseString(value: unknown, fieldName: string) {
     throw new ProviderRequestError(502, `Feishu Slides response is missing ${fieldName}`);
   }
   return string;
-}
-
-function optionalNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function optionalBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function invalidInput(message: string) {
-  return new ProviderRequestError(400, message);
 }

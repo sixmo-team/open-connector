@@ -1,9 +1,16 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { RenderformActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "renderform";
 const renderformDocsBaseUrl = "https://renderform.io";
@@ -19,7 +26,7 @@ const screenshotPath = "/api/v1/screenshots";
 type RenderformPhase = "validate" | "execute";
 type RenderformActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const renderformActionHandlers: Record<RenderformActionName, RenderformActionHandler> = {
+export const renderformActionHandlers: ProviderActionHandlers<"renderform", RenderformActionHandler> = {
   get_usage(_input, context) {
     return executeGetUsage(context);
   },
@@ -126,7 +133,7 @@ async function executeListTemplates(input: Record<string, unknown>, context: Api
 }
 
 async function executeGetTemplate(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
-  const templateId = requiredString(input.templateId, "templateId", inputError);
+  const templateId = requiredString(input.templateId, "templateId", providerInputError);
   const payload = await requestRenderformJson({
     url: new URL(`${getTemplatePath}/${encodeURIComponent(templateId)}`, renderformApiBaseUrl),
     init: {
@@ -151,7 +158,7 @@ async function executeRenderImage(input: Record<string, unknown>, context: ApiKe
       headers: buildHeaders(context.apiKey),
       body: JSON.stringify(
         compactObject({
-          template: requiredString(input.template, "template", inputError),
+          template: requiredString(input.template, "template", providerInputError),
           data: optionalRecord(input.data),
           fileName: optionalString(input.fileName),
           webhookUrl: optionalString(input.webhookUrl),
@@ -200,7 +207,7 @@ async function executeTakeScreenshot(input: Record<string, unknown>, context: Ap
       headers: buildHeaders(context.apiKey),
       body: JSON.stringify(
         compactObject({
-          url: requiredString(input.url, "url", inputError),
+          url: requiredString(input.url, "url", providerInputError),
           width: readRequiredInteger(input.width, "width"),
           height: readRequiredInteger(input.height, "height"),
           waitTime: optionalInteger(input.waitTime),
@@ -539,6 +546,8 @@ function readBooleanWithDefault(value: unknown, defaultValue: boolean): boolean 
   return typeof value === "boolean" ? value : defaultValue;
 }
 
-function inputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://get.renderform.io",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

@@ -1,16 +1,23 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { LumaActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "luma";
 const lumaApiBaseUrl = "https://public-api.luma.com";
 
 type LumaActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const lumaActionHandlers: Record<LumaActionName, LumaActionHandler> = {
+export const lumaActionHandlers: ProviderActionHandlers<"luma", LumaActionHandler> = {
   async get_self(_input, context) {
     return {
       user: asRecord(await requestLuma(context, lumaUrl("/v1/users/get-self"), "execute"), "Luma user response"),
@@ -246,3 +253,9 @@ function asRecord(value: unknown, label: string): Record<string, unknown> {
   }
   return record;
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://public-api.luma.com",
+  auth: { type: "api_key_header", name: "x-luma-api-key" },
+});

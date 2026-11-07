@@ -1,8 +1,10 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 export const ahrefsApiBaseUrl = "https://api.ahrefs.com/v3";
 
@@ -12,7 +14,7 @@ type AhrefsPhase = "validate" | "execute";
 type QueryValue = string | number | boolean | undefined;
 type AhrefsActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const ahrefsActionHandlers: Record<string, AhrefsActionHandler> = {
+export const ahrefsActionHandlers: ProviderActionHandlers<"ahrefs", AhrefsActionHandler> = {
   get_limits_and_usage(_input, context) {
     return requestAhrefs(limitsAndUsagePath, {}, context.apiKey, context.fetcher, context.signal, "execute");
   },
@@ -200,7 +202,7 @@ function createAhrefsError(status: number, payload: unknown, phase: AhrefsPhase)
   }
 
   if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (phase === "execute" && (status === 401 || status === 403)) {
@@ -208,7 +210,7 @@ function createAhrefsError(status: number, payload: unknown, phase: AhrefsPhase)
   }
 
   if (phase === "execute" && [400, 404, 422].includes(status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(status || 500, message);

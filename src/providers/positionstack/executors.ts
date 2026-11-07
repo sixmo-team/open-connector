@@ -1,13 +1,10 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { PositionstackActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "positionstack";
 const positionstackApiBaseUrl = "https://api.positionstack.com/v1";
@@ -31,7 +28,7 @@ type PositionstackActionHandler = (
   context: PositionstackActionContext,
 ) => Promise<unknown>;
 
-export const positionstackActionHandlers: Record<PositionstackActionName, PositionstackActionHandler> = {
+export const positionstackActionHandlers: ProviderActionHandlers<"positionstack", PositionstackActionHandler> = {
   forward_geocode(input, context) {
     return positionstackRequest("/forward", buildQuery(input), context, "execute");
   },

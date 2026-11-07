@@ -1,8 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, requiredResponseRecord } from "../provider-runtime.ts";
 
 const service = "edenai";
 const edenaiApiBaseUrl = "https://api.edenai.run/v3";
@@ -16,7 +19,7 @@ interface EdenAiRequest {
   mode: "validate" | "execute";
 }
 
-export const edenaiActionHandlers: Record<string, EdenAiActionHandler> = {
+export const edenaiActionHandlers: ProviderActionHandlers<"edenai", EdenAiActionHandler> = {
   list_models(_input, context) {
     return edenaiRequest(context, { path: "/models", mode: "execute" });
   },
@@ -33,6 +36,16 @@ export const edenaiActionHandlers: Record<string, EdenAiActionHandler> = {
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, edenaiActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: edenaiApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const payload = await edenaiRequest(
@@ -46,7 +59,7 @@ export const credentialValidators: CredentialValidators = {
         mode: "validate",
       },
     );
-    const record = requireObject(payload, "Eden AI models response");
+    const record = requiredResponseRecord(payload, "Eden AI models response");
     const data = Array.isArray(record.data) ? record.data : [];
     return {
       profile: {
@@ -139,12 +152,4 @@ async function readEdenAiError(response: Response): Promise<{ type: string; code
       message: raw || `edenai request failed with ${response.status}`,
     };
   }
-}
-
-function requireObject(value: unknown, label: string): Record<string, unknown> {
-  const record = optionalRecord(value);
-  if (!record) {
-    throw new ProviderRequestError(502, `${label} must be an object`);
-  }
-  return record;
 }

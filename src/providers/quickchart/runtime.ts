@@ -1,14 +1,15 @@
 import type { ProviderExecutors } from "../../core/types.ts";
-import type { QuickchartActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject } from "../../core/cast.ts";
-import { defineProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 export const quickchartBaseUrl = "https://quickchart.io";
 
 type QuickchartActionHandler = (input: Record<string, unknown>, context: { fetcher: typeof fetch }) => Promise<unknown>;
 
-export const quickchartActionHandlers: Record<QuickchartActionName, QuickchartActionHandler> = {
+export const quickchartActionHandlers: ProviderActionHandlers<"quickchart", QuickchartActionHandler> = {
   async build_chart_url(input: Record<string, unknown>) {
     return buildChartUrl(input);
   },
@@ -173,7 +174,7 @@ function createQuickchartError(response: Response, payload: unknown) {
   }
 
   if ([400, 404, 422].includes(response.status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(response.status >= 500 ? 502 : response.status || 502, message);

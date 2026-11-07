@@ -1,6 +1,14 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
+import { isPrivateNetworkAccessAllowed } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { normalizeOutlineBaseUrl, outlineActionHandlers, validateOutlineCredential } from "./runtime.ts";
 
 const service = "outline";
@@ -16,6 +24,22 @@ export const executors: ProviderExecutors = defineProviderExecutors({
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context) {
+    const credential = await requireApiKeyCredential(context, service);
+    return normalizeOutlineBaseUrl(
+      credential.metadata.baseUrl ?? credential.values.baseUrl,
+      isPrivateNetworkAccessAllowed(),
+    );
+  },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  allowPrivateNetwork: isPrivateNetworkAccessAllowed,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
   },
 });
 

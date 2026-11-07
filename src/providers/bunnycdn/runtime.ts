@@ -1,11 +1,18 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { BunnycdnActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  isAbortLikeError,
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
-const bunnyApiBaseUrl = "https://api.bunny.net";
+export const bunnyApiBaseUrl = "https://api.bunny.net";
 const validationPath = "/pullzone";
 
 type BunnyRequestPhase = "validate" | "execute";
@@ -24,7 +31,7 @@ interface BunnyRequestInput {
   body?: unknown;
 }
 
-export const bunnycdnActionHandlers: Record<BunnycdnActionName, BunnyActionHandler> = {
+export const bunnycdnActionHandlers: ProviderActionHandlers<"bunnycdn", BunnyActionHandler> = {
   list_pull_zones(input, context) {
     return bunnyListPullZones(input, context);
   },
@@ -235,7 +242,7 @@ function normalizePullZoneListPayload(payload: unknown): {
 function sanitizePullZone(value: unknown, message: string): Record<string, unknown> {
   const record = optionalRecord(value);
   if (!record) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return removeBunnyCertificateKeys(record) as Record<string, unknown>;
 }
@@ -267,7 +274,7 @@ function createBunnyError(response: Response, payload: unknown, phase: BunnyRequ
     `bunnycdn request failed with status ${response.status}`;
 
   if (phase === "validate" && (response.status === 400 || response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(response.status, message);
@@ -279,8 +286,4 @@ function requiredPullZoneId(value: unknown): number {
     throw new ProviderRequestError(400, "pullZoneId must be a positive integer");
   }
   return pullZoneId;
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
 }

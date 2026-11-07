@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { EventzillaActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -8,11 +9,11 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
-const eventzillaApiBaseUrl = "https://www.eventzillaapi.net/api/v2";
+export const eventzillaApiBaseUrl = "https://www.eventzillaapi.net/api/v2";
 const eventzillaValidationPath = "/users";
-const eventzillaDefaultTimeoutMs = 30_000;
 
 type EventzillaPhase = "validate" | "execute";
 type EventzillaContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
@@ -24,7 +25,7 @@ interface EventzillaRequestInput {
   phase: EventzillaPhase;
 }
 
-export const eventzillaActionHandlers: Record<EventzillaActionName, EventzillaActionHandler> = {
+export const eventzillaActionHandlers: ProviderActionHandlers<"eventzilla", EventzillaActionHandler> = {
   async list_events(input, context) {
     const payload = await requestEventzillaJson(
       {
@@ -204,7 +205,7 @@ async function requestEventzillaJson(
   input: EventzillaRequestInput,
   context: EventzillaContext,
 ): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(context.signal, eventzillaDefaultTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(buildEventzillaUrl(input.path, input.query), {
       method: "GET",
@@ -233,7 +234,7 @@ async function requestEventzillaJson(
     if (timeout.didTimeout() || isAbortLikeError(error)) {
       throw new ProviderRequestError(
         504,
-        `Eventzilla request timed out after ${Math.ceil(eventzillaDefaultTimeoutMs / 1000)} seconds`,
+        `Eventzilla request timed out after ${Math.ceil(defaultProviderRequestTimeoutMs / 1000)} seconds`,
         error,
       );
     }

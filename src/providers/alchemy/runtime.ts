@@ -1,8 +1,10 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
-import { compactObject } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean } from "../../core/cast.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 type AlchemyPhase = "validate" | "execute";
 type QueryValue = string | number | boolean | undefined;
@@ -11,7 +13,7 @@ type AlchemyActionHandler = (input: Record<string, unknown>, context: ApiKeyProv
 export const alchemyRpcBaseUrl = "https://eth-mainnet.g.alchemy.com/v2";
 export const alchemyNftBaseUrl = "https://eth-mainnet.g.alchemy.com/nft/v3";
 
-export const alchemyActionHandlers: Record<string, AlchemyActionHandler> = {
+export const alchemyActionHandlers: ProviderActionHandlers<"alchemy", AlchemyActionHandler> = {
   get_token_balances(input, context) {
     return executeGetTokenBalances(input, context);
   },
@@ -142,11 +144,11 @@ async function executeGetAssetTransfers(
           toBlock: readOptionalTrimmedString(input.toBlock),
           fromAddress: readOptionalTrimmedString(input.fromAddress),
           toAddress: readOptionalTrimmedString(input.toAddress),
-          excludeZeroValue: readOptionalBoolean(input.excludeZeroValue),
+          excludeZeroValue: optionalBoolean(input.excludeZeroValue),
           category: readOptionalStringArray(input.category),
           contractAddresses: readOptionalStringArray(input.contractAddresses),
           order: readOptionalTrimmedString(input.order),
-          withMetadata: readOptionalBoolean(input.withMetadata),
+          withMetadata: optionalBoolean(input.withMetadata),
           maxCount: readOptionalTrimmedString(input.maxCount),
           pageKey: readOptionalTrimmedString(input.pageKey),
         }),
@@ -184,7 +186,7 @@ async function executeGetNftsForOwner(
     "/getNFTsForOwner",
     {
       owner: readRequiredTrimmedString(input.owner, "owner"),
-      withMetadata: readOptionalBoolean(input.withMetadata),
+      withMetadata: optionalBoolean(input.withMetadata),
       orderBy: readOptionalTrimmedString(input.orderBy),
       tokenUriTimeoutInMs: readOptionalInteger(input.tokenUriTimeoutInMs),
       pageKey: readOptionalTrimmedString(input.pageKey),
@@ -372,7 +374,7 @@ function createAlchemyHttpError(status: number, payload: unknown, phase: Alchemy
   }
 
   if (status === 400 || status === 404) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(status || 500, message);
@@ -463,10 +465,6 @@ function readNullableNumber(value: unknown): number | null {
     return null;
   }
   return typeof value === "number" ? value : null;
-}
-
-function readOptionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function readOptionalInteger(value: unknown): number | undefined {

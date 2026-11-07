@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { CloudflareCurrentUser } from "../cloudflare_dns/runtime-user.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,7 +12,8 @@ import {
   requiredString,
 } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { readCloudflareCurrentUser } from "../cloudflare_dns/runtime-user.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 
 export interface CloudflareWorkerContext {
   authType: "custom_credential" | "oauth2";
@@ -47,7 +50,10 @@ const cloudflareApiBaseUrl = "https://api.cloudflare.com/client/v4";
 const defaultModuleName = "main.js";
 const defaultModuleContentType = "application/javascript+module";
 
-export const cloudflareWorkerActionHandlers: Record<string, ProviderRuntimeHandler<CloudflareWorkerContext>> = {
+export const cloudflareWorkerActionHandlers: ProviderActionHandlers<
+  "cloudflare_worker",
+  ProviderRuntimeHandler<CloudflareWorkerContext>
+> = {
   list_accounts(input, context) {
     return listAccounts(input, context);
   },
@@ -130,8 +136,8 @@ export async function validateCloudflareWorkerCredential(
   fetcher: typeof fetch,
   signal?: AbortSignal,
 ): Promise<CredentialValidationResult> {
-  const apiToken = requiredString(values.apiKey, "apiKey", (message) => new ProviderRequestError(400, message));
-  const accountId = requiredString(values.accountId, "accountId", (message) => new ProviderRequestError(400, message));
+  const apiToken = requiredString(values.apiKey, "apiKey", providerInputError);
+  const accountId = requiredString(values.accountId, "accountId", providerInputError);
 
   let verificationResult: CloudflareTokenVerificationResult;
   try {
@@ -218,6 +224,15 @@ export async function requestCloudflareWorkerAccounts(
     accounts: envelope.result.map((item) => normalizeAccount(item)),
     resultInfo: normalizeResultInfo(envelope.result_info),
   };
+}
+
+export async function requestCloudflareWorkerCurrentUser(
+  accessToken: string,
+  fetcher: typeof fetch,
+  signal?: AbortSignal,
+): Promise<CloudflareCurrentUser> {
+  const envelope = await cloudflareRequestEnvelope(accessToken, { path: "/user" }, { fetcher, signal }, "validate");
+  return readCloudflareCurrentUser(envelope.result);
 }
 
 async function listAccounts(input: Record<string, unknown>, context: CloudflareWorkerContext): Promise<unknown> {
@@ -381,7 +396,7 @@ async function searchWorkerScripts(input: Record<string, unknown>, context: Clou
 
 async function listBuildTriggers(input: Record<string, unknown>, context: CloudflareWorkerContext): Promise<unknown> {
   const accountId = resolveAccountId(input, context);
-  const scriptTag = requiredString(input.scriptTag, "scriptTag", (message) => new ProviderRequestError(400, message));
+  const scriptTag = requiredString(input.scriptTag, "scriptTag", providerInputError);
   const envelope = await requestEnvelope(
     context,
     {
@@ -394,11 +409,7 @@ async function listBuildTriggers(input: Record<string, unknown>, context: Cloudf
 
 async function createManualBuild(input: Record<string, unknown>, context: CloudflareWorkerContext): Promise<unknown> {
   const accountId = resolveAccountId(input, context);
-  const triggerUuid = requiredString(
-    input.triggerUuid,
-    "triggerUuid",
-    (message) => new ProviderRequestError(400, message),
-  );
+  const triggerUuid = requiredString(input.triggerUuid, "triggerUuid", providerInputError);
   const branch = optionalString(input.branch);
   const commitHash = optionalString(input.commitHash);
   if (!branch && !commitHash) {
@@ -422,7 +433,7 @@ async function createManualBuild(input: Record<string, unknown>, context: Cloudf
 
 async function listBuilds(input: Record<string, unknown>, context: CloudflareWorkerContext): Promise<unknown> {
   const accountId = resolveAccountId(input, context);
-  const scriptTag = requiredString(input.scriptTag, "scriptTag", (message) => new ProviderRequestError(400, message));
+  const scriptTag = requiredString(input.scriptTag, "scriptTag", providerInputError);
   const envelope = await requestEnvelope(
     context,
     {
@@ -442,7 +453,7 @@ async function listBuilds(input: Record<string, unknown>, context: CloudflareWor
 
 async function getBuild(input: Record<string, unknown>, context: CloudflareWorkerContext): Promise<unknown> {
   const accountId = resolveAccountId(input, context);
-  const buildUuid = requiredString(input.buildUuid, "buildUuid", (message) => new ProviderRequestError(400, message));
+  const buildUuid = requiredString(input.buildUuid, "buildUuid", providerInputError);
   const envelope = await requestEnvelope(
     context,
     { path: `/accounts/${encodeURIComponent(accountId)}/builds/builds/${encodeURIComponent(buildUuid)}` },
@@ -453,7 +464,7 @@ async function getBuild(input: Record<string, unknown>, context: CloudflareWorke
 
 async function getBuildLogs(input: Record<string, unknown>, context: CloudflareWorkerContext): Promise<unknown> {
   const accountId = resolveAccountId(input, context);
-  const buildUuid = requiredString(input.buildUuid, "buildUuid", (message) => new ProviderRequestError(400, message));
+  const buildUuid = requiredString(input.buildUuid, "buildUuid", providerInputError);
   const envelope = await requestEnvelope(
     context,
     {
@@ -472,7 +483,7 @@ async function getBuildLogs(input: Record<string, unknown>, context: CloudflareW
 
 async function cancelBuild(input: Record<string, unknown>, context: CloudflareWorkerContext): Promise<unknown> {
   const accountId = resolveAccountId(input, context);
-  const buildUuid = requiredString(input.buildUuid, "buildUuid", (message) => new ProviderRequestError(400, message));
+  const buildUuid = requiredString(input.buildUuid, "buildUuid", providerInputError);
   const envelope = await requestEnvelope(
     context,
     {
@@ -708,8 +719,8 @@ function resolveAccountId(input: Record<string, unknown>, context: CloudflareWor
   if (!accountId) {
     throw new ProviderRequestError(
       400,
-      context.metadata.requiresAccountSelection === true || Array.isArray(context.metadata.availableAccounts)
-        ? "accountId is required for this Cloudflare Worker action because the OAuth credential can access multiple accounts"
+      context.authType === "oauth2"
+        ? "accountId is required for this Cloudflare Worker action. Use list_accounts to find an accessible Cloudflare account ID."
         : "accountId is required in the connected credential",
     );
   }
@@ -998,7 +1009,7 @@ function normalizeCloudflareError(
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && [400, 401, 403, 404].includes(response.status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (response.status === 400 || response.status === 404)) {
     return new ProviderRequestError(response.status, message);

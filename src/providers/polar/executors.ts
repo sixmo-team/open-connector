@@ -4,16 +4,13 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { PolarActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "polar";
 const polarApiBaseUrl = "https://api.polar.sh/v1";
@@ -22,7 +19,7 @@ const polarValidationPath = "/organizations/";
 type PolarRequestPhase = "validate" | "execute";
 type PolarActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-const polarActionHandlers: Record<PolarActionName, PolarActionHandler> = {
+const polarActionHandlers: ProviderActionHandlers<"polar", PolarActionHandler> = {
   list_organizations(input, context) {
     return polarGetJson(buildListPath("/organizations/", input), context, "execute");
   },

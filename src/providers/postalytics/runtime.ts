@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
@@ -15,7 +16,6 @@ import {
 export const postalyticsApiBaseUrl = "https://api.postalytics.com/api/v1";
 
 const postalyticsValidationPath = "/account/me";
-const postalyticsRequestTimeoutMs = 30_000;
 
 type PostalyticsRequestPhase = "validate" | "execute";
 
@@ -26,7 +26,10 @@ interface PostalyticsRequestInput {
   query?: Record<string, number | undefined>;
 }
 
-export const postalyticsActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const postalyticsActionHandlers: ProviderActionHandlers<
+  "postalytics",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   async list_campaigns(_input, context): Promise<unknown> {
     return requireArrayPayload(
       await requestPostalyticsJson({
@@ -167,7 +170,7 @@ async function requestPostalyticsJson(input: PostalyticsRequestInput): Promise<u
     }
   }
 
-  const timeout = createProviderTimeout(input.context.signal, postalyticsRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const response = await input.context.fetcher(url, {
       method: "GET",

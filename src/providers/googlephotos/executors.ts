@@ -1,6 +1,12 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors, TransitFileWriter } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+  TransitFileWriter,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
-import type { GooglePhotosActionName } from "./actions.ts";
 
 import {
   compactObject,
@@ -8,14 +14,14 @@ import {
   optionalInteger,
   optionalRecord,
   optionalString,
+  recordOrEmpty,
   stringArray,
 } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireOAuthCredential,
-} from "../provider-runtime.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
+import { requireOAuthCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 export const googlePhotosApiBaseUrl = "https://photoslibrary.googleapis.com/v1";
 export const googlePhotosPickerApiBaseUrl = "https://photospicker.googleapis.com/v1";
@@ -47,7 +53,7 @@ type GooglePhotosActionHandler = (
   context: GooglePhotosRuntimeContext,
 ) => Promise<unknown>;
 
-export const googlePhotosActionHandlers: Record<GooglePhotosActionName, GooglePhotosActionHandler> = {
+export const googlePhotosActionHandlers: ProviderActionHandlers<"googlephotos", GooglePhotosActionHandler> = {
   list_albums: listAlbums,
   get_album: getAlbum,
   create_album: createAlbum,
@@ -256,7 +262,7 @@ async function searchMediaItems(input: Record<string, unknown>, context: GoogleP
 
 async function batchGetMediaItems(input: Record<string, unknown>, context: GooglePhotosRuntimeContext) {
   const url = new URL(`${googlePhotosApiBaseUrl}/mediaItems:batchGet`);
-  for (const mediaItemId of stringArray(input.mediaItemIds, "mediaItemIds", providerRequestError)) {
+  for (const mediaItemId of stringArray(input.mediaItemIds, "mediaItemIds", providerInputError)) {
     url.searchParams.append("mediaItemIds", mediaItemId);
   }
 
@@ -269,7 +275,7 @@ async function batchGetMediaItems(input: Record<string, unknown>, context: Googl
 
 async function batchAddMediaItems(input: Record<string, unknown>, context: GooglePhotosRuntimeContext) {
   const albumId = requireInputString(input.albumId, "albumId is required");
-  const mediaItemIds = stringArray(input.mediaItemIds, "mediaItemIds", providerRequestError);
+  const mediaItemIds = stringArray(input.mediaItemIds, "mediaItemIds", providerInputError);
 
   await requestGooglePhotosJson(`${googlePhotosApiBaseUrl}/albums/${encodeURIComponent(albumId)}:batchAddMediaItems`, {
     ...context,
@@ -509,9 +515,13 @@ async function uploadDownloadResponseToTransitFile(
     throw new ProviderRequestError(500, "Transit file storage is required for Google Photos downloads.");
   }
 
-  const upload = await input.context.transitFiles.create(
-    new File([Buffer.from(await downloadResponse.arrayBuffer())], input.fileName, { type: input.mimeType }),
-  );
+  const upload = await storeResponseInTransit(downloadResponse, input.context.transitFiles, {
+    name: input.fileName,
+    mimeType: input.mimeType,
+    fieldName: "Google Photos download",
+    createError: (message) => new ProviderRequestError(413, message),
+    signal: input.context.signal,
+  });
 
   return {
     fileName: input.fileName,
@@ -671,7 +681,7 @@ async function parseGooglePhotosJson<T>(response: Response, label: string): Prom
 }
 
 function normalizeAlbum(value: unknown): Record<string, unknown> {
-  const record = asRecord(value);
+  const record = recordOrEmpty(value);
   return {
     id: requiredString(record.id, "album.id"),
     title: requiredString(record.title, "album.title"),
@@ -685,8 +695,8 @@ function normalizeAlbum(value: unknown): Record<string, unknown> {
 }
 
 function normalizeMediaItem(value: unknown): Record<string, unknown> {
-  const record = asRecord(value);
-  const mediaMetadata = asRecord(record.mediaMetadata);
+  const record = recordOrEmpty(value);
+  const mediaMetadata = recordOrEmpty(record.mediaMetadata);
 
   return {
     id: requiredString(record.id, "mediaItem.id"),
@@ -707,7 +717,7 @@ function normalizeMediaItem(value: unknown): Record<string, unknown> {
 }
 
 function normalizePickerSession(value: unknown, input: { pickerUriRequired: boolean }): Record<string, unknown> {
-  const record = asRecord(value);
+  const record = recordOrEmpty(value);
   const pollingConfig = optionalRecord(record.pollingConfig);
   const pickerUri = optionalString(record.pickerUri);
 
@@ -732,8 +742,8 @@ function normalizePickerSession(value: unknown, input: { pickerUriRequired: bool
 }
 
 function normalizePickedMediaItem(value: unknown): Record<string, unknown> {
-  const record = asRecord(value);
-  const mediaFile = asRecord(record.mediaFile);
+  const record = recordOrEmpty(value);
+  const mediaFile = recordOrEmpty(record.mediaFile);
 
   return {
     id: requiredString(record.id, "pickedMediaItem.id"),
@@ -742,7 +752,7 @@ function normalizePickedMediaItem(value: unknown): Record<string, unknown> {
     baseUrl: requiredString(mediaFile.baseUrl, "pickedMediaItem.mediaFile.baseUrl"),
     mimeType: requiredString(mediaFile.mimeType, "pickedMediaItem.mediaFile.mimeType"),
     filename: requiredString(mediaFile.filename, "pickedMediaItem.mediaFile.filename"),
-    mediaFileMetadata: asRecord(mediaFile.mediaFileMetadata),
+    mediaFileMetadata: recordOrEmpty(mediaFile.mediaFileMetadata),
   };
 }
 
@@ -762,7 +772,9 @@ function assertPickedVideoProcessingReady(
     return;
   }
 
-  const processingStatus = optionalString(asRecord(asRecord(input.mediaFileMetadata).videoMetadata).processingStatus);
+  const processingStatus = optionalString(
+    recordOrEmpty(recordOrEmpty(input.mediaFileMetadata).videoMetadata).processingStatus,
+  );
   if (processingStatus === "READY") {
     return;
   }
@@ -776,14 +788,14 @@ function assertPickedVideoProcessingReady(
 }
 
 function isPickerMediaItemsNotReadyError(value: unknown): boolean {
-  const error = asRecord(asRecord(value).error);
+  const error = recordOrEmpty(recordOrEmpty(value).error);
   if (error.status === "FAILED_PRECONDITION") {
     return true;
   }
 
   const details = Array.isArray(error.details) ? error.details : [];
   return details.some((detail) => {
-    const record = asRecord(detail);
+    const record = recordOrEmpty(detail);
     return (
       record.status === "FAILED_PRECONDITION" ||
       record.reason === "FAILED_PRECONDITION" ||
@@ -972,7 +984,7 @@ async function batchCreateWithUploadTokens(input: {
     },
   });
 
-  const record = asRecord(payload);
+  const record = recordOrEmpty(payload);
   return {
     newMediaItemResults: Array.isArray(record.newMediaItemResults) ? record.newMediaItemResults : [],
   };
@@ -985,7 +997,7 @@ function normalizeMediaFiles(input: Record<string, unknown>): Array<Record<strin
 }
 
 function assertAlbumPosition(value: unknown): void {
-  const position = asRecord(value);
+  const position = recordOrEmpty(value);
   if (position.position === "AFTER_MEDIA_ITEM" && !optionalString(position.relativeMediaItemId)) {
     throw new ProviderRequestError(400, "relativeMediaItemId is required when position is AFTER_MEDIA_ITEM");
   }
@@ -995,7 +1007,7 @@ function assertAlbumPosition(value: unknown): void {
 }
 
 function assertEnrichmentItem(value: unknown): void {
-  const item = asRecord(value);
+  const item = recordOrEmpty(value);
   const variants = [item.textEnrichment != null, item.locationEnrichment != null, item.mapEnrichment != null].filter(
     Boolean,
   ).length;
@@ -1070,10 +1082,6 @@ function decodeBase64Content(contentBase64: string | undefined): Uint8Array {
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return optionalRecord(value) ?? {};
-}
-
 function asNullableRecord(value: unknown): Record<string, unknown> | null {
   return optionalRecord(value) ?? null;
 }
@@ -1102,6 +1110,8 @@ function hasExplicitPort(url: string): boolean {
   return host.includes(":");
 }
 
-function providerRequestError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://photoslibrary.googleapis.com/v1",
+  auth: { type: "oauth_bearer" },
+});

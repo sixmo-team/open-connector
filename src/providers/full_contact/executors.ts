@@ -4,6 +4,7 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -13,20 +14,19 @@ import {
   optionalRecord,
   optionalString,
 } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  createProviderTimeout,
-  defineProviderExecutors,
-  defineProviderProxy,
-  isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
-  requireApiKeyCredential,
+  runProviderRequest,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 const fullContactApiBaseUrl = "https://api.fullcontact.com/v3";
 
-const fullContactDefaultRequestTimeoutMs = 30_000;
 const fullContactMaxResponseBytes = 10 * 1024 * 1024;
 
 type FullContactMode = "validate" | "execute";
@@ -41,7 +41,7 @@ interface FullContactRequestContext {
   signal?: AbortSignal;
 }
 
-export const fullContactActionHandlers: Record<string, FullContactActionHandler> = {
+export const fullContactActionHandlers: ProviderActionHandlers<"full_contact", FullContactActionHandler> = {
   async enrich_person(input, context) {
     const payload = await requestFullContactJson(
       {
@@ -184,14 +184,12 @@ async function requestFullContactJson(
   },
   context: FullContactRequestContext,
 ) {
-  const timeoutHandle = createProviderTimeout(context.signal, fullContactDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ signal: context.signal, label: "FullContact" }, async (signal) => {
     const response = await context.fetcher(new URL(input.endpoint, `${fullContactApiBaseUrl}/`), {
       method: "POST",
       headers: buildFullContactHeaders(context.apiKey),
       body: JSON.stringify(stripUndefined(input.body)),
-      signal: timeoutHandle.signal,
+      signal,
     });
     const payload = await readFullContactPayload(response);
 
@@ -205,22 +203,7 @@ async function requestFullContactJson(
     }
 
     return payloadObject;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeoutHandle.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "FullContact request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `FullContact request failed: ${error.message}` : "FullContact request failed",
-    );
-  } finally {
-    timeoutHandle.cleanup();
-  }
+  });
 }
 
 function buildFullContactHeaders(apiKey: string) {
@@ -256,7 +239,7 @@ function createFullContactError(status: number, payload: unknown, mode: FullCont
   }
 
   if (mode === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (mode === "execute" && (status === 401 || status === 403)) {
@@ -264,7 +247,7 @@ function createFullContactError(status: number, payload: unknown, mode: FullCont
   }
 
   if ([400, 404, 422].includes(status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(status >= 500 ? 502 : status || 502, message);

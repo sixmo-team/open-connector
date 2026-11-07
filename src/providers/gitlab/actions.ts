@@ -2,12 +2,15 @@ import type { ActionDefinition, JsonSchema } from "../../core/types.ts";
 
 import { s } from "../../core/json-schema.ts";
 import { defineProviderAction } from "../../core/provider-definition.ts";
+import { gitlabApiScope, gitlabReadApiScope } from "./scopes.ts";
 
 const service = "gitlab";
 
 interface GitlabActionSource {
   name: string;
+  operationType: ActionDefinition["operationType"];
   description: string;
+  requiredScopes: string[];
   inputSchema: JsonSchema;
   outputSchema: JsonSchema;
 }
@@ -115,6 +118,97 @@ const paginatedIssues = s.object(
   },
   { required: ["issues", "total", "nextPage"], description: "A paginated GitLab issues response." },
 );
+const mergeRequest = s.looseObject(
+  {
+    id: s.integer({ description: "The global merge request ID." }),
+    iid: s.integer({ description: "The internal merge request ID within the project." }),
+    project_id: s.integer({ description: "The target project ID." }),
+    title: s.string({ description: "The merge request title." }),
+    description: s.nullableString("The merge request description."),
+    state: s.string({ description: "The merge request state." }),
+    web_url: s.string({ description: "The merge request URL." }),
+    source_branch: s.string({ description: "The source branch name." }),
+    target_branch: s.string({ description: "The target branch name." }),
+    author: user,
+    assignees: s.array(user, { description: "Users assigned to the merge request." }),
+    reviewers: s.array(user, { description: "Users reviewing the merge request." }),
+    labels: s.array(s.string({ description: "A label name." }), {
+      description: "Labels attached to the merge request.",
+    }),
+    merged_at: s.nullableString("The merge timestamp, when merged."),
+    merge_status: s.string({ description: "The merge readiness status." }),
+    detailed_merge_status: s.string({ description: "The detailed merge readiness status." }),
+    sha: s.string({ description: "The source branch commit SHA." }),
+  },
+  { description: "A GitLab merge request record." },
+);
+const paginatedMergeRequests = s.object(
+  {
+    mergeRequests: s.array(mergeRequest, { description: "Merge requests returned by GitLab." }),
+    total: s.nullable(s.integer({ description: "The total number of merge requests when GitLab returns it." })),
+    nextPage: s.nullable(s.integer({ description: "The next page number when another page exists." })),
+  },
+  { required: ["mergeRequests", "total", "nextPage"], description: "A paginated GitLab merge requests response." },
+);
+const note = s.looseObject(
+  {
+    id: s.integer({ description: "The note ID." }),
+    type: s.nullableString("The note type, such as DiscussionNote or DiffNote, or null for a plain comment."),
+    body: s.string({ description: "The note content in Markdown." }),
+    author: user,
+    created_at: s.string({ description: "The note creation timestamp." }),
+    updated_at: s.string({ description: "The note update timestamp." }),
+    system: s.boolean({ description: "Whether GitLab generated the note for an activity, rather than a user." }),
+    noteable_id: s.integer({ description: "The global ID of the issue or merge request the note belongs to." }),
+    noteable_type: s.string({ description: "The kind of object the note belongs to, such as Issue or MergeRequest." }),
+    noteable_iid: s.nullable(s.integer({ description: "The internal ID of the issue or merge request." })),
+    project_id: s.integer({ description: "The project ID." }),
+    resolvable: s.boolean({ description: "Whether the note starts or belongs to a resolvable thread." }),
+    internal: s.boolean({ description: "Whether the note is internal, visible only to project members." }),
+  },
+  { description: "A GitLab note (comment) record." },
+);
+const paginatedNotes = s.object(
+  {
+    notes: s.array(note, { description: "Notes returned by GitLab." }),
+    total: s.nullable(s.integer({ description: "The total number of notes when GitLab returns it." })),
+    nextPage: s.nullable(s.integer({ description: "The next page number when another page exists." })),
+  },
+  { required: ["notes", "total", "nextPage"], description: "A paginated GitLab notes response." },
+);
+const createdNote = s.object(
+  {
+    note: s.nullable(note),
+    commandsChanges: s.unknownObject(
+      "Changes GitLab applied from quick actions in the body; empty when there were none.",
+    ),
+    commandSummary: s.array(s.string({ description: "A GitLab message describing an applied quick action." }), {
+      description: "GitLab's summary of applied quick actions when the body held only quick actions; otherwise empty.",
+    }),
+  },
+  {
+    required: ["note", "commandsChanges", "commandSummary"],
+    description:
+      "The result of posting a GitLab note. note is null when the body held only quick actions: GitLab then applies them without storing a comment.",
+  },
+);
+const noteSorting = {
+  sort: s.stringEnum(["asc", "desc"], { description: "Sort direction. GitLab defaults to desc, newest first." }),
+  orderBy: s.stringEnum(["created_at", "updated_at"], { description: "Order notes by creation or update time." }),
+};
+const noteBody = s.string({
+  minLength: 1,
+  maxLength: 1_000_000,
+  description:
+    "The comment in GitLab Markdown. GitLab runs quick actions such as /close or /assign found on their own line and removes them from the stored note.",
+});
+const internalNote = s.boolean({
+  description: "Post an internal note, which only project members with access to internal notes can see.",
+});
+const deletedOutput = s.object(
+  { deleted: s.boolean({ description: "Whether GitLab accepted the deletion request." }) },
+  { required: ["deleted"], description: "A normalized GitLab deletion response." },
+);
 const projectId = s.string({
   minLength: 1,
   description: "The GitLab project ID or URL-encoded path with namespace, such as 123 or group%2Fproject.",
@@ -127,14 +221,18 @@ function input(properties: Record<string, JsonSchema>, required: string[] = []):
 const actions: GitlabActionSource[] = [
   {
     name: "get_current_user",
+    operationType: "read",
     description: "Get the current authenticated GitLab user profile.",
+    requiredScopes: [gitlabReadApiScope],
     inputSchema: input({}),
     outputSchema: user,
   },
   {
     name: "list_projects",
+    operationType: "read",
     description:
       "List GitLab projects visible to the authenticated personal access token, with optional search and membership filters.",
+    requiredScopes: [gitlabReadApiScope],
     inputSchema: input({
       search: s.string({ minLength: 1, description: "Search projects by name or path." }),
       membership: s.boolean({ description: "Limit results to projects the authenticated user is a member of." }),
@@ -150,13 +248,17 @@ const actions: GitlabActionSource[] = [
   },
   {
     name: "get_project",
+    operationType: "read",
     description: "Get a GitLab project by numeric ID or URL-encoded path with namespace.",
+    requiredScopes: [gitlabReadApiScope],
     inputSchema: input({ projectId }, ["projectId"]),
     outputSchema: project,
   },
   {
     name: "list_project_issues",
+    operationType: "read",
     description: "List issues for a GitLab project with common state, label, assignee, and search filters.",
+    requiredScopes: [gitlabReadApiScope],
     inputSchema: input(
       {
         projectId,
@@ -187,7 +289,9 @@ const actions: GitlabActionSource[] = [
   },
   {
     name: "create_project_issue",
+    operationType: "write",
     description: "Create a new issue in a GitLab project.",
+    requiredScopes: [gitlabApiScope],
     inputSchema: input(
       {
         projectId,
@@ -204,12 +308,282 @@ const actions: GitlabActionSource[] = [
     ),
     outputSchema: issue,
   },
+  {
+    name: "get_project_issue",
+    operationType: "read",
+    description: "Get a single issue from a GitLab project by its internal issue ID.",
+    requiredScopes: [gitlabReadApiScope],
+    inputSchema: input({ projectId, issueIid: s.positiveInteger("The internal issue ID within the project.") }, [
+      "projectId",
+      "issueIid",
+    ]),
+    outputSchema: issue,
+  },
+  {
+    name: "update_project_issue",
+    operationType: "write",
+    description: "Update a GitLab project issue, including its title, labels, assignees, or open/closed state.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        issueIid: s.positiveInteger("The internal issue ID within the project."),
+        title: s.string({ minLength: 1, description: "The replacement issue title." }),
+        description: s.string({ description: "The replacement issue description." }),
+        labels: s.string({ description: "Comma-separated label names to set." }),
+        addLabels: s.string({ description: "Comma-separated label names to add." }),
+        removeLabels: s.string({ description: "Comma-separated label names to remove." }),
+        assigneeIds: s.array(s.integer({ description: "A GitLab user ID." }), { description: "Users to assign." }),
+        confidential: s.boolean({ description: "Whether the issue is confidential." }),
+        discussionLocked: s.boolean({ description: "Whether issue discussions are locked." }),
+        dueDate: s.string({ description: "The due date in YYYY-MM-DD format." }),
+        stateEvent: s.stringEnum(["close", "reopen"], { description: "Close or reopen the issue." }),
+      },
+      ["projectId", "issueIid"],
+    ),
+    outputSchema: issue,
+  },
+  {
+    name: "delete_project_issue",
+    operationType: "destructive",
+    description: "Delete a GitLab project issue.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input({ projectId, issueIid: s.positiveInteger("The internal issue ID within the project.") }, [
+      "projectId",
+      "issueIid",
+    ]),
+    outputSchema: deletedOutput,
+  },
+  {
+    name: "create_project",
+    operationType: "write",
+    description: "Create a new GitLab project owned by the authenticated user.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input(
+      {
+        name: s.string({ minLength: 1, description: "The project name." }),
+        path: s.string({ minLength: 1, description: "The repository path." }),
+        namespaceId: s.integer({ description: "The namespace ID for the project." }),
+        description: s.string({ description: "The project description." }),
+        visibility: s.stringEnum(["private", "internal", "public"], { description: "The project visibility." }),
+        initializeWithReadme: s.boolean({ description: "Whether to initialize the repository with a README." }),
+        defaultBranch: s.string({ description: "The initial default branch name." }),
+      },
+      ["name"],
+    ),
+    outputSchema: project,
+  },
+  {
+    name: "update_project",
+    operationType: "write",
+    description: "Update basic settings for an existing GitLab project.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        name: s.string({ minLength: 1, description: "The replacement project name." }),
+        path: s.string({ minLength: 1, description: "The replacement repository path." }),
+        description: s.string({ description: "The replacement project description." }),
+        visibility: s.stringEnum(["private", "internal", "public"], { description: "The project visibility." }),
+        defaultBranch: s.string({ description: "The default branch name." }),
+        archived: s.boolean({ description: "Whether the project is archived." }),
+        issuesAccessLevel: s.stringEnum(["disabled", "private", "enabled"], { description: "Issue visibility." }),
+        mergeRequestsAccessLevel: s.stringEnum(["disabled", "private", "enabled"], {
+          description: "Merge request visibility.",
+        }),
+      },
+      ["projectId"],
+    ),
+    outputSchema: project,
+  },
+  {
+    name: "delete_project",
+    operationType: "destructive",
+    description: "Mark a GitLab project for deletion.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input({ projectId }, ["projectId"]),
+    outputSchema: deletedOutput,
+  },
+  {
+    name: "list_project_merge_requests",
+    operationType: "read",
+    description: "List merge requests for a GitLab project with state, branch, search, and pagination filters.",
+    requiredScopes: [gitlabReadApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        state: s.stringEnum(["opened", "closed", "merged", "locked", "all"], { description: "Merge request state." }),
+        search: s.string({ minLength: 1, description: "Search merge requests by title or description." }),
+        sourceBranch: s.string({ minLength: 1, description: "Filter by source branch." }),
+        targetBranch: s.string({ minLength: 1, description: "Filter by target branch." }),
+        orderBy: s.stringEnum(["created_at", "updated_at", "priority", "title"], { description: "Sort field." }),
+        sort: s.stringEnum(["asc", "desc"], { description: "Sort direction." }),
+        ...pagination,
+      },
+      ["projectId"],
+    ),
+    outputSchema: paginatedMergeRequests,
+  },
+  {
+    name: "get_merge_request",
+    operationType: "read",
+    description: "Get a single merge request from a GitLab project by its internal merge request ID.",
+    requiredScopes: [gitlabReadApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        mergeRequestIid: s.positiveInteger("The internal merge request ID within the project."),
+        includeDivergedCommitsCount: s.boolean({
+          description: "Include how many commits the source branch is behind the target branch.",
+        }),
+        includeRebaseInProgress: s.boolean({ description: "Include whether a rebase is in progress." }),
+      },
+      ["projectId", "mergeRequestIid"],
+    ),
+    outputSchema: mergeRequest,
+  },
+  {
+    name: "create_merge_request",
+    operationType: "write",
+    description: "Create a GitLab merge request from a source branch into a target branch.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        sourceBranch: s.string({ minLength: 1, description: "The source branch name." }),
+        targetBranch: s.string({ minLength: 1, description: "The target branch name." }),
+        title: s.string({ minLength: 1, description: "The merge request title." }),
+        description: s.string({ description: "The merge request description." }),
+        targetProjectId: s.integer({ description: "The target project ID for a cross-project merge request." }),
+        assigneeIds: s.array(s.integer({ description: "A GitLab user ID." }), { description: "Users to assign." }),
+        reviewerIds: s.array(s.integer({ description: "A GitLab user ID." }), { description: "Users to review." }),
+        labels: s.string({ description: "Comma-separated label names." }),
+        removeSourceBranch: s.boolean({ description: "Whether to remove the source branch after merge." }),
+        squash: s.boolean({ description: "Whether to squash commits when merging." }),
+      },
+      ["projectId", "sourceBranch", "targetBranch", "title"],
+    ),
+    outputSchema: mergeRequest,
+  },
+  {
+    name: "update_merge_request",
+    operationType: "write",
+    description: "Update a GitLab merge request's title, description, branches, reviewers, labels, or state.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        mergeRequestIid: s.positiveInteger("The internal merge request ID within the project."),
+        title: s.string({ minLength: 1, description: "The replacement title." }),
+        description: s.string({ description: "The replacement description." }),
+        targetBranch: s.string({ minLength: 1, description: "The replacement target branch." }),
+        stateEvent: s.stringEnum(["close", "reopen"], { description: "Close or reopen the merge request." }),
+        labels: s.string({ description: "Comma-separated label names to set." }),
+        assigneeIds: s.array(s.integer({ description: "A GitLab user ID." }), { description: "Users to assign." }),
+        reviewerIds: s.array(s.integer({ description: "A GitLab user ID." }), { description: "Users to review." }),
+        milestoneId: s.integer({ description: "The milestone ID." }),
+        removeSourceBranch: s.boolean({ description: "Whether to remove the source branch after merge." }),
+        squash: s.boolean({ description: "Whether to squash commits when merging." }),
+        allowCollaboration: s.boolean({ description: "Allow commits from eligible project members." }),
+      },
+      ["projectId", "mergeRequestIid"],
+    ),
+    outputSchema: mergeRequest,
+  },
+  {
+    name: "merge_merge_request",
+    operationType: "write",
+    description: "Accept and merge a GitLab merge request, optionally waiting for pipelines or squashing commits.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        mergeRequestIid: s.positiveInteger("The internal merge request ID within the project."),
+        autoMerge: s.boolean({ description: "Merge automatically when checks pass. Requires GitLab 17.11 or later." }),
+        sha: s.string({ minLength: 1, description: "Require this source branch commit SHA before merging." }),
+        shouldRemoveSourceBranch: s.boolean({ description: "Remove the source branch after merging." }),
+        squash: s.boolean({ description: "Squash commits when merging." }),
+        mergeCommitMessage: s.string({ description: "Custom merge commit message." }),
+        squashCommitMessage: s.string({ description: "Custom squash commit message." }),
+      },
+      ["projectId", "mergeRequestIid"],
+    ),
+    outputSchema: mergeRequest,
+  },
+  {
+    name: "list_issue_notes",
+    operationType: "read",
+    description:
+      "List the notes (comments and system activity) on a GitLab issue, to read a thread before answering it.",
+    requiredScopes: [gitlabReadApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        issueIid: s.positiveInteger("The internal issue ID within the project."),
+        activityFilter: s.stringEnum(["all_notes", "only_comments", "only_activity"], {
+          description: "Return user comments, system activity notes, or both. GitLab defaults to all_notes.",
+        }),
+        ...noteSorting,
+        ...pagination,
+      },
+      ["projectId", "issueIid"],
+    ),
+    outputSchema: paginatedNotes,
+  },
+  {
+    name: "create_issue_note",
+    operationType: "write",
+    description: "Post a comment on a GitLab issue.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        issueIid: s.positiveInteger("The internal issue ID within the project."),
+        body: noteBody,
+        internal: internalNote,
+      },
+      ["projectId", "issueIid", "body"],
+    ),
+    outputSchema: createdNote,
+  },
+  {
+    name: "list_merge_request_notes",
+    operationType: "read",
+    description:
+      "List the notes (comments and system activity) on a GitLab merge request, to read a thread before answering it.",
+    requiredScopes: [gitlabReadApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        mergeRequestIid: s.positiveInteger("The internal merge request ID within the project."),
+        ...noteSorting,
+        ...pagination,
+      },
+      ["projectId", "mergeRequestIid"],
+    ),
+    outputSchema: paginatedNotes,
+  },
+  {
+    name: "create_merge_request_note",
+    operationType: "write",
+    description: "Post a comment on a GitLab merge request. The comment is not attached to a line of the diff.",
+    requiredScopes: [gitlabApiScope],
+    inputSchema: input(
+      {
+        projectId,
+        mergeRequestIid: s.positiveInteger("The internal merge request ID within the project."),
+        body: noteBody,
+        internal: internalNote,
+      },
+      ["projectId", "mergeRequestIid", "body"],
+    ),
+    outputSchema: createdNote,
+  },
 ];
 
 export const gitlabActions: ActionDefinition[] = actions.map((action) =>
   defineProviderAction(service, {
     ...action,
-    requiredScopes: [],
-    providerPermissions: [],
+    providerPermissions: action.requiredScopes,
   }),
 );

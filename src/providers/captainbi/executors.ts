@@ -4,18 +4,19 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
+import { requireCustomCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors, mapProviderActionHandlers } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireCustomCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError } from "../provider-runtime.ts";
+import { captainBiActions } from "./actions.ts";
 import { exchangeCaptainBiAccessToken, executeCaptainBiAction, validateCaptainBiCredential } from "./runtime.ts";
 
 const service = "captainbi";
@@ -41,20 +42,15 @@ interface Context {
   values: Record<string, unknown>;
   fetcher: typeof fetch;
 }
-const handlers: Record<string, (input: Record<string, unknown>, context: Context) => Promise<unknown>> = {};
-for (const name of [
-  "list_stores",
-  "list_products",
-  "list_product_details",
-  "list_inventory",
-  "get_business_report",
-  "get_store_profit_report",
-  "get_product_profit_report",
-  "list_returns",
-  "list_refunds",
-])
-  handlers[name] = (input, context) =>
-    executeCaptainBiAction({ actionName: name, input, values: context.values }, context.fetcher);
+const handlers: ProviderActionHandlers<
+  "captainbi",
+  (input: Record<string, unknown>, context: Context) => Promise<unknown>
+> = mapProviderActionHandlers(
+  service,
+  captainBiActions,
+  (_action, name) => (input, context) =>
+    executeCaptainBiAction({ actionName: name, input, values: context.values }, context.fetcher),
+);
 export const executors: ProviderExecutors = defineProviderExecutors<Context>({
   service,
   handlers,

@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { OAuthProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { VimeoActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -10,16 +11,17 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { assertPublicHttpUrl, queryParams, readBoundedResponseBytes } from "../../core/request.ts";
+import { assertPublicHttpUrl, queryParams, storeResponseInTransit } from "../../core/request.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
+  requiredResponseRecord,
 } from "../provider-runtime.ts";
 
-const vimeoApiBaseUrl = "https://api.vimeo.com";
-const vimeoDefaultRequestTimeoutMs = 30_000;
+export const vimeoApiBaseUrl = "https://api.vimeo.com";
 
 type VimeoActionContext = OAuthProviderContext;
 type VimeoActionHandler = ProviderRuntimeHandler<VimeoActionContext>;
@@ -34,7 +36,7 @@ interface VimeoRequestInput {
   signal?: AbortSignal;
 }
 
-export const vimeoActionHandlers: Record<VimeoActionName, VimeoActionHandler> = {
+export const vimeoActionHandlers: ProviderActionHandlers<"vimeo", VimeoActionHandler> = {
   get_current_user(_input, context) {
     return vimeoGetCurrentUser(context);
   },
@@ -229,7 +231,7 @@ async function vimeoGetVideoDownloadLinks(
   input: Record<string, unknown>,
   context: VimeoActionContext,
 ): Promise<{ downloadLinks: Array<Record<string, unknown> & { link: string }> }> {
-  const video = requireRecord(
+  const video = requiredResponseRecord(
     await vimeoRequestJson({
       path: `/videos/${input.videoId}`,
       accessToken: context.accessToken,
@@ -258,12 +260,13 @@ async function vimeoDownloadVideoFile(input: Record<string, unknown>, context: V
 
   const mimeType = response.headers.get("content-type") ?? optionalString(selected.type) ?? "application/octet-stream";
   const name = resolveDownloadFileName(input, selected, mimeType);
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const upload = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: "Vimeo video download",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const upload = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
 
   return {
     videoId: input.videoId,
@@ -509,7 +512,7 @@ async function fetchVimeoCurrentAccount(
   signal?: AbortSignal,
 ): Promise<{ accountId: string; displayName: string; metadata: Record<string, unknown> }> {
   const payload = await vimeoRequestJson({ path: "/me", accessToken, fetcher, signal });
-  const user = requireRecord(payload, "Vimeo user");
+  const user = requiredResponseRecord(payload, "Vimeo user");
   const uri = optionalString(user.uri) ?? "/me";
   const name = optionalString(user.name) ?? "Vimeo User";
 
@@ -531,7 +534,7 @@ async function vimeoRequestJson(input: VimeoRequestInput): Promise<unknown> {
   }
 
   const method = input.method ?? "GET";
-  const timeout = createProviderTimeout(input.signal, vimeoDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const headers: Record<string, string> = {
       authorization: `Bearer ${input.accessToken}`,
@@ -609,8 +612,8 @@ function buildVimeoPullUploadBody(input: Record<string, unknown>): Record<string
 }
 
 function requireHttpUrl(value: unknown, fieldName: string): string {
-  const raw = requiredString(value, fieldName, badInput);
-  return assertPublicHttpUrl(raw, { fieldName, createError: badInput }).toString();
+  const raw = requiredString(value, fieldName, providerInputError);
+  return assertPublicHttpUrl(raw, { fieldName, createError: providerInputError }).toString();
 }
 
 function normalizeDownloadLinks(value: unknown): Array<Record<string, unknown> & { link: string }> {
@@ -647,7 +650,7 @@ function selectDownloadLink(
 }
 
 async function fetchVimeoDownloadLink(link: string, fetcher: ProviderFetch, signal?: AbortSignal): Promise<Response> {
-  const timeout = createProviderTimeout(signal, vimeoDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(signal);
   try {
     return await fetcher(link, { signal: timeout.signal });
   } catch (error) {
@@ -730,16 +733,4 @@ function extractVimeoErrorMessage(payload: unknown): string | undefined {
 
 function userPath(value: unknown): string {
   return typeof value === "number" ? `/users/${value}` : "/me";
-}
-
-function requireRecord(value: unknown, fieldName: string): Record<string, unknown> {
-  const record = optionalRecord(value);
-  if (!record) {
-    throw new ProviderRequestError(502, `${fieldName} must be an object`);
-  }
-  return record;
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

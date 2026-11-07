@@ -1,14 +1,11 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { GetProspectActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { optionalBoolean, optionalNumber, optionalRecord, optionalString, recordOrEmpty } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "getprospect";
 const getprospectApiBaseUrl = "https://api.getprospect.com";
@@ -18,7 +15,7 @@ const validationEmail = "support@getprospect.com";
 type GetProspectActionContext = ApiKeyProviderContext;
 type GetProspectActionHandler = (input: Record<string, unknown>, context: GetProspectActionContext) => Promise<unknown>;
 
-export const getprospectActionHandlers: Record<GetProspectActionName, GetProspectActionHandler> = {
+export const getprospectActionHandlers: ProviderActionHandlers<"getprospect", GetProspectActionHandler> = {
   find_email(input, context) {
     return findEmail(input, context);
   },
@@ -161,7 +158,7 @@ async function searchLeads(input: Record<string, unknown>, context: GetProspectA
   });
 
   return {
-    data: readArray(payload, "data").map((item) => normalizeLeadItem(asRecord(item))),
+    data: readArray(payload, "data").map((item) => normalizeLeadItem(recordOrEmpty(item))),
     meta: readMeta(payload),
   };
 }
@@ -181,7 +178,7 @@ async function searchCompanies(input: Record<string, unknown>, context: GetProsp
   });
 
   return {
-    data: readArray(payload, "data").map((item) => normalizeCompanyItem(asRecord(item))),
+    data: readArray(payload, "data").map((item) => normalizeCompanyItem(recordOrEmpty(item))),
     meta: readMeta(payload),
   };
 }
@@ -421,11 +418,7 @@ function readArray(value: Record<string, unknown>, key: string): unknown[] {
 }
 
 function readObject(value: Record<string, unknown>, key: string): Record<string, unknown> {
-  return asRecord(value[key]);
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return optionalRecord(value) ?? {};
+  return recordOrEmpty(value[key]);
 }
 
 function requiredResponseRecord(value: unknown, fieldName: string): Record<string, unknown> {

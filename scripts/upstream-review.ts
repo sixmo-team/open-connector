@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 import { readUpstreamBase } from "./check-upstream-base.ts";
 
 const fullShaPattern = /^[0-9a-f]{40}$/;
@@ -28,8 +30,16 @@ export interface UpstreamReview {
   catalogAdditions: string[];
   catalogRemovals: string[];
   catalogSchemaFingerprints: CatalogSchemaFingerprint[];
+  catalogCapabilityFingerprints: CatalogSchemaFingerprint[];
+  sourceFingerprints: CatalogSchemaFingerprint[];
+  catalogInputs: UpstreamCatalogInputs | null;
   saasConflictRiskFiles: string[];
   requiredFocusedTestCommands: string[];
+}
+
+export interface UpstreamCatalogInputs {
+  baseCatalogDir: string;
+  candidateCatalogDir: string;
 }
 
 export function validateCandidateRevision(value: string): string {
@@ -43,41 +53,77 @@ export function analyzeUpstreamChanges(
   baseInput: string,
   candidateInput: string,
   rootDir = process.cwd(),
+  catalogInputs?: UpstreamCatalogInputs,
 ): UpstreamReview {
   const base = validateCandidateRevision(baseInput);
   const candidate = validateCandidateRevision(candidateInput);
   assertLocalCommit(base, "baseline", rootDir);
   assertLocalCommit(candidate, "candidate", rootDir);
   assertAncestor(base, candidate, rootDir);
-
-  const changedPaths = splitNull(
-    runGit(["diff", "--name-only", "--no-renames", "-z", base, candidate, "--"], rootDir),
-  ).map(validateRepoPath);
+  const sourceFingerprints = readSourceFingerprints(base, candidate, rootDir);
+  const changedPaths = sourceFingerprints.map(({ path }) => path);
   const providerOnlyChanges = changedPaths.filter(isProviderImplementationPath);
   const sensitiveChanges = changedPaths.flatMap((path) => {
     const kinds = classifySensitiveChange(path);
     return kinds.length === 0 ? [] : [{ path, kinds }];
   });
-
-  const baseCatalogPaths = listCatalogPaths(base, rootDir);
-  const candidateCatalogPaths = listCatalogPaths(candidate, rootDir);
+  const inputs = catalogInputs
+    ? {
+        baseCatalogDir: resolve(rootDir, catalogInputs.baseCatalogDir),
+        candidateCatalogDir: resolve(rootDir, catalogInputs.candidateCatalogDir),
+      }
+    : null;
+  const baseCatalogPaths = inputs ? listGeneratedCatalogPaths(inputs.baseCatalogDir) : listCatalogPaths(base, rootDir);
+  const candidateCatalogPaths = inputs
+    ? listGeneratedCatalogPaths(inputs.candidateCatalogDir)
+    : listCatalogPaths(candidate, rootDir);
+  if (
+    !inputs &&
+    (baseCatalogPaths.length === 0 || candidateCatalogPaths.length === 0) &&
+    changedPaths.some(isCatalogProducerPath)
+  ) {
+    throw new Error(
+      "Catalog-producing source changed without tracked catalogs; provide both actual generated catalog snapshots",
+    );
+  }
   const baseCatalogSet = new Set(baseCatalogPaths);
   const candidateCatalogSet = new Set(candidateCatalogPaths);
   const catalogAdditions = candidateCatalogPaths.filter((path) => !baseCatalogSet.has(path));
   const catalogRemovals = baseCatalogPaths.filter((path) => !candidateCatalogSet.has(path));
-  const changedCatalogPaths = changedPaths.filter(
-    (path) => path.startsWith(catalogPrefix) && (baseCatalogSet.has(path) || candidateCatalogSet.has(path)),
-  );
-  const catalogSchemaFingerprints = changedCatalogPaths.map((path) => ({
-    path,
-    base: baseCatalogSet.has(path) ? fingerprintCatalogSchemas(readRevisionFile(base, path, rootDir), path) : null,
-    candidate: candidateCatalogSet.has(path)
-      ? fingerprintCatalogSchemas(readRevisionFile(candidate, path, rootDir), path)
-      : null,
-  }));
+  const comparedPaths = inputs
+    ? [...new Set([...baseCatalogPaths, ...candidateCatalogPaths])].sort()
+    : changedPaths.filter(
+        (path) => path.startsWith(catalogPrefix) && (baseCatalogSet.has(path) || candidateCatalogSet.has(path)),
+      );
+  const catalogSchemaFingerprints: CatalogSchemaFingerprint[] = [];
+  const catalogCapabilityFingerprints: CatalogSchemaFingerprint[] = [];
+  for (const path of comparedPaths) {
+    const before = baseCatalogSet.has(path)
+      ? fingerprintCatalog(
+          inputs
+            ? readFileSync(resolve(inputs.baseCatalogDir, basename(path)), "utf8")
+            : readRevisionFile(base, path, rootDir),
+          path,
+        )
+      : null;
+    const after = candidateCatalogSet.has(path)
+      ? fingerprintCatalog(
+          inputs
+            ? readFileSync(resolve(inputs.candidateCatalogDir, basename(path)), "utf8")
+            : readRevisionFile(candidate, path, rootDir),
+          path,
+        )
+      : null;
+    if (before?.capabilities === after?.capabilities) continue;
+    catalogSchemaFingerprints.push({ path, base: before?.schemas ?? null, candidate: after?.schemas ?? null });
+    catalogCapabilityFingerprints.push({
+      path,
+      base: before?.capabilities ?? null,
+      candidate: after?.capabilities ?? null,
+    });
+  }
   const sensitivePaths = new Set(sensitiveChanges.map(({ path }) => path));
   const saasConflictRiskFiles = changedPaths.filter((path) => isSaasConflictRisk(path, sensitivePaths));
-
   return {
     base,
     candidate,
@@ -86,18 +132,26 @@ export function analyzeUpstreamChanges(
     catalogAdditions,
     catalogRemovals,
     catalogSchemaFingerprints,
+    catalogCapabilityFingerprints,
+    sourceFingerprints,
+    catalogInputs: inputs,
     saasConflictRiskFiles,
     requiredFocusedTestCommands: focusedTestCommands({
       providerOnlyChanges,
       sensitiveChanges,
       catalogSchemaFingerprints,
+      sourceFingerprints,
       saasConflictRiskFiles,
     }),
   };
 }
 
-export function createUpstreamReview(candidate: string, rootDir = process.cwd()): UpstreamReview {
-  return analyzeUpstreamChanges(readUpstreamBase(rootDir), candidate, rootDir);
+export function createUpstreamReview(
+  candidate: string,
+  rootDir = process.cwd(),
+  catalogInputs?: UpstreamCatalogInputs,
+): UpstreamReview {
+  return analyzeUpstreamChanges(readUpstreamBase(rootDir), candidate, rootDir, catalogInputs);
 }
 
 export function formatUpstreamReview(review: UpstreamReview): string {
@@ -105,6 +159,7 @@ export function formatUpstreamReview(review: UpstreamReview): string {
     "Upstream review",
     `Base: ${review.base}`,
     `Candidate: ${review.candidate}`,
+    `Catalog inputs: ${review.catalogInputs ? JSON.stringify(review.catalogInputs) : "tracked revision files"}`,
     "",
     formatList("Provider-only changes", review.providerOnlyChanges),
     "",
@@ -124,6 +179,20 @@ export function formatUpstreamReview(review: UpstreamReview): string {
       ),
     ),
     "",
+    formatList(
+      "Complete provider capabilities (authentication, scopes, permissions, triggers and action contracts)",
+      review.catalogCapabilityFingerprints.map(
+        ({ path, base, candidate }) => `${path}: base=${base ?? "absent"} candidate=${candidate ?? "absent"}`,
+      ),
+    ),
+    "",
+    formatList(
+      "Exact changed source modes and Git blobs (including generator/index/executor coverage)",
+      review.sourceFingerprints.map(
+        ({ path, base, candidate }) => `${path}: base=${base ?? "absent"} candidate=${candidate ?? "absent"}`,
+      ),
+    ),
+    "",
     formatList("SaaS conflict-risk files", review.saasConflictRiskFiles),
     "",
     formatList(
@@ -137,6 +206,8 @@ function classifySensitiveChange(path: string): SensitiveChangeKind[] {
   const kinds: SensitiveChangeKind[] = [];
   if (
     path.startsWith("src/server/") ||
+    path.startsWith("src/saas/") ||
+    path.startsWith("src/catalog-") ||
     path.startsWith("src/core/") ||
     path === "src/catalog-store.ts" ||
     path === "src/connection-service.ts" ||
@@ -159,6 +230,15 @@ function isProviderImplementationPath(path: string): boolean {
   return parts[0] === "src" && parts[1] === "providers" && parts.length > 3;
 }
 
+function isCatalogProducerPath(path: string): boolean {
+  return (
+    !path.endsWith(".test.ts") &&
+    (path.startsWith("src/providers/") ||
+      path.startsWith("src/catalog-") ||
+      /^scripts\/(?:generate-|provider-source|ensure-generated)/.test(path))
+  );
+}
+
 function isSaasConflictRisk(path: string, sensitivePaths: ReadonlySet<string>): boolean {
   return (
     sensitivePaths.has(path) ||
@@ -176,12 +256,20 @@ function isSaasConflictRisk(path: string, sensitivePaths: ReadonlySet<string>): 
 function focusedTestCommands(
   review: Pick<
     UpstreamReview,
-    "providerOnlyChanges" | "sensitiveChanges" | "catalogSchemaFingerprints" | "saasConflictRiskFiles"
+    | "providerOnlyChanges"
+    | "sensitiveChanges"
+    | "catalogSchemaFingerprints"
+    | "sourceFingerprints"
+    | "saasConflictRiskFiles"
   >,
 ): string[] {
   const commands = new Set<string>();
   const kinds = new Set(review.sensitiveChanges.flatMap(({ kinds }) => kinds));
-  if (review.providerOnlyChanges.length > 0 || review.catalogSchemaFingerprints.length > 0) {
+  if (
+    review.providerOnlyChanges.length > 0 ||
+    review.catalogSchemaFingerprints.length > 0 ||
+    review.sourceFingerprints.some(({ path }) => isCatalogProducerPath(path))
+  ) {
     commands.add("npm run generate:catalog");
     commands.add("npm run verify:generated");
     commands.add("npm test -- src/providers");
@@ -201,7 +289,7 @@ function listCatalogPaths(revision: string, cwd: string): string[] {
     .filter((path) => path.endsWith(".json"));
 }
 
-function fingerprintCatalogSchemas(contents: string, path: string): string {
+function fingerprintCatalog(contents: string, path: string): { schemas: string; capabilities: string } {
   let value: unknown;
   try {
     value = JSON.parse(contents);
@@ -210,18 +298,46 @@ function fingerprintCatalogSchemas(contents: string, path: string): string {
       `could not parse generated catalog ${path}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  if (!isRecord(value) || !Array.isArray(value.actions)) {
-    throw new Error(`generated catalog ${path} must contain an actions array`);
+  if (!isRecord(value) || !Array.isArray(value.actions) || value.service !== basename(path, ".json")) {
+    throw new Error(`generated catalog ${path} must identify its provider and contain an actions array`);
   }
   const schemas = value.actions.map((action, index) => {
-    if (!isRecord(action)) throw new Error(`generated catalog ${path} action ${index} must be an object`);
-    return {
-      id: typeof action.id === "string" ? action.id : `#${index}`,
-      inputSchema: action.inputSchema ?? null,
-      outputSchema: action.outputSchema ?? null,
-    };
+    if (!isRecord(action) || typeof action.id !== "string" || action.id.length === 0)
+      throw new Error(`generated catalog ${path} action ${index} must identify its action`);
+    return { id: action.id, inputSchema: action.inputSchema ?? null, outputSchema: action.outputSchema ?? null };
   });
-  return `sha256:${createHash("sha256").update(canonicalJson(schemas)).digest("hex")}`;
+  return {
+    schemas: `sha256:${createHash("sha256").update(canonicalJson(schemas)).digest("hex")}`,
+    capabilities: `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`,
+  };
+}
+
+function listGeneratedCatalogPaths(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true })
+    .map((entry) => {
+      if (!entry.isFile() || !entry.name.endsWith(".json"))
+        throw new Error(`Generated catalog snapshot contains a non-JSON file: ${entry.name}`);
+      return validateRepoPath(`${catalogPrefix}${entry.name}`);
+    })
+    .sort();
+}
+
+function readSourceFingerprints(base: string, candidate: string, rootDir: string): CatalogSchemaFingerprint[] {
+  const fields = splitNull(
+    runGit(["diff", "--raw", "--no-abbrev", "--no-renames", "-z", base, candidate, "--"], rootDir),
+  );
+  const zeroObject = "0".repeat(40);
+  const changes: CatalogSchemaFingerprint[] = [];
+  for (let index = 0; index < fields.length; index += 2) {
+    const header = /^:([0-7]{6}) ([0-7]{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) [A-Z](?:\d+)?$/.exec(fields[index]!);
+    if (!header || fields[index + 1] === undefined) throw new Error("Invalid raw source change record");
+    changes.push({
+      path: validateRepoPath(fields[index + 1]!),
+      base: header[3] === zeroObject ? null : `git:${header[1]}:${header[3]}`,
+      candidate: header[4] === zeroObject ? null : `git:${header[2]}:${header[4]}`,
+    });
+  }
+  return changes;
 }
 
 function canonicalJson(value: unknown): string {
@@ -295,7 +411,7 @@ function splitNull(value: string): string[] {
 }
 
 function runGit(args: string[], cwd: string): string {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   if (result.error) throw new Error(`could not run git ${args[0]}: ${result.error.message}`);
   if (result.status !== 0) {
     const detail = result.stderr.trim();
@@ -306,11 +422,32 @@ function runGit(args: string[], cwd: string): string {
 
 function main(): void {
   try {
-    const candidate = process.argv[2];
-    if (!candidate || process.argv.length !== 3) {
-      throw new Error("usage: npm run upstream:review -- <candidate-commit-sha>");
+    const { values, positionals } = parseArgs({
+      allowPositionals: true,
+      options: { "base-catalog": { type: "string" }, "candidate-catalog": { type: "string" } },
+    });
+    const [candidate] = positionals;
+    const before = values["base-catalog"];
+    const after = values["candidate-catalog"];
+    if (!candidate || positionals.length !== 1 || Boolean(before) !== Boolean(after)) {
+      throw new Error(
+        "usage: npm run upstream:review -- <candidate-sha> [--base-catalog <dir> --candidate-catalog <dir>]",
+      );
     }
-    console.log(formatUpstreamReview(createUpstreamReview(candidate)));
+    console.log(
+      formatUpstreamReview(
+        createUpstreamReview(
+          candidate,
+          process.cwd(),
+          before && after
+            ? {
+                baseCatalogDir: before,
+                candidateCatalogDir: after,
+              }
+            : undefined,
+        ),
+      ),
+    );
   } catch (error) {
     console.error(`Upstream review failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;

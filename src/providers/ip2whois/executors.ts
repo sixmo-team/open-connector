@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { Ip2whoisActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "ip2whois";
 const ip2whoisWhoisApiBaseUrl = "https://api.ip2whois.com";
@@ -23,7 +25,7 @@ interface Ip2whoisRequestInput {
   phase: Ip2whoisRequestPhase;
 }
 
-export const ip2whoisActionHandlers: Record<Ip2whoisActionName, Ip2whoisActionHandler> = {
+export const ip2whoisActionHandlers: ProviderActionHandlers<"ip2whois", Ip2whoisActionHandler> = {
   lookup_domain(input, context) {
     return requestIp2whoisJson(
       {
@@ -187,3 +189,9 @@ function mapIp2whoisError(
       return new ProviderRequestError(502, input.errorMessage, input);
   }
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.ip2whois.com",
+  auth: { type: "api_key_query", name: "key" },
+});

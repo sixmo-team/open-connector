@@ -1,9 +1,12 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalBoolean, optionalNumber, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerResponseError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "coinmarketcap";
 const coinmarketcapApiBaseUrl = "https://pro-api.coinmarketcap.com";
@@ -16,7 +19,7 @@ interface CoinmarketcapStatusPayload {
   error_message?: unknown;
 }
 
-export const coinmarketcapActionHandlers: Record<string, CoinmarketcapActionHandler> = {
+export const coinmarketcapActionHandlers: ProviderActionHandlers<"coinmarketcap", CoinmarketcapActionHandler> = {
   get_key_info(_input, context) {
     return coinmarketcapGet("/v1/key/info", {}, context, "execute");
   },
@@ -116,6 +119,16 @@ export const coinmarketcapActionHandlers: Record<string, CoinmarketcapActionHand
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, coinmarketcapActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: coinmarketcapApiBaseUrl,
+  auth: { type: "api_key_header", name: "X-CMC_PRO_API_KEY" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -243,8 +256,4 @@ function readRequiredNumber(value: unknown, fieldName: string): number {
     throw new ProviderRequestError(400, `${fieldName} must be a number`);
   }
   return value;
-}
-
-function providerResponseError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

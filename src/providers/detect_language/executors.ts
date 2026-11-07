@@ -4,16 +4,13 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { DetectLanguageActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "detect_language";
 const detectLanguageApiBaseUrl = "https://ws.detectlanguage.com/v3";
@@ -29,7 +26,7 @@ interface DetectLanguageRequestInput {
 
 type DetectLanguageActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const detectLanguageActionHandlers: Record<DetectLanguageActionName, DetectLanguageActionHandler> = {
+export const detectLanguageActionHandlers: ProviderActionHandlers<"detect_language", DetectLanguageActionHandler> = {
   async detect_text(input, context) {
     const payload = await requestDetectLanguage({
       path: "/detect",

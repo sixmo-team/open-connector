@@ -4,16 +4,13 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { GhostActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineProviderProxy,
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "ghost";
 const ghostContentPathPrefix = "/ghost/api/content";
@@ -32,7 +29,7 @@ interface GhostActionContext {
 
 type GhostActionHandler = (input: Record<string, unknown>, context: GhostActionContext) => Promise<unknown>;
 
-export const ghostActionHandlers: Record<GhostActionName, GhostActionHandler> = {
+export const ghostActionHandlers: ProviderActionHandlers<"ghost", GhostActionHandler> = {
   list_posts(input, context) {
     return browseGhostCollection(input, context, "posts");
   },

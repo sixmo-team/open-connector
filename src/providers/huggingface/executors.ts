@@ -3,13 +3,16 @@ import type {
   CredentialValidators,
   ExecutionContext,
   ProviderExecutors,
+  ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
-import type { HuggingfaceActionName } from "./actions.ts";
 import type { HuggingfaceActionContext, HuggingfaceCurrentUser } from "./runtime.shared.ts";
 
 import { compactObject } from "../../core/cast.ts";
-import { defineProviderExecutors, ProviderRequestError } from "../provider-runtime.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError } from "../provider-runtime.ts";
 import {
   getHuggingfaceDatasetFirstRows,
   getHuggingfaceDatasetInfo,
@@ -30,7 +33,7 @@ const service = "huggingface";
 
 type HuggingfaceActionHandler = (input: Record<string, unknown>, context: HuggingfaceActionContext) => Promise<unknown>;
 
-export const huggingfaceActionHandlers: Record<HuggingfaceActionName, HuggingfaceActionHandler> = {
+export const huggingfaceActionHandlers: ProviderActionHandlers<"huggingface", HuggingfaceActionHandler> = {
   get_current_user(_input, context) {
     return readHuggingfaceCurrentUser(context);
   },
@@ -152,3 +155,9 @@ function credentialValidationResult(user: HuggingfaceCurrentUser): CredentialVal
     },
   };
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://datasets-server.huggingface.co",
+  auth: { type: "bearer" },
+});

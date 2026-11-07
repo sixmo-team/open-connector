@@ -1,23 +1,24 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { SignwellActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const signwellApiBaseUrl = "https://www.signwell.com";
 const signwellValidationPath = "/api/v1/me";
-const signwellDefaultTimeoutMs = 30_000;
 
 type SignwellPhase = "validate" | "execute";
 type SignwellActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const signwellActionHandlers: Record<SignwellActionName, SignwellActionHandler> = {
+export const signwellActionHandlers: ProviderActionHandlers<"signwell", SignwellActionHandler> = {
   get_me(_input, context) {
     return getMe(context);
   },
@@ -184,7 +185,7 @@ async function sendDocumentReminder(input: Record<string, unknown>, context: Api
 
 function buildTemplateDocumentRequestBody(input: Record<string, unknown>): Record<string, unknown> {
   return compactObject({
-    test_mode: readOptionalBoolean(input.test_mode),
+    test_mode: optionalBoolean(input.test_mode),
     template_id: optionalString(input.template_id),
     template_ids: readOptionalTrimmedStringArray(input.template_ids),
     name: optionalString(input.name),
@@ -192,20 +193,20 @@ function buildTemplateDocumentRequestBody(input: Record<string, unknown>): Recor
     message: optionalString(input.message),
     recipients: readOptionalArray(input.recipients),
     exclude_placeholders: readOptionalTrimmedStringArray(input.exclude_placeholders),
-    draft: readOptionalBoolean(input.draft),
-    with_signature_page: readOptionalBoolean(input.with_signature_page),
+    draft: optionalBoolean(input.draft),
+    with_signature_page: optionalBoolean(input.with_signature_page),
     expires_in: readOptionalInteger(input.expires_in, "expires_in"),
-    reminders: readOptionalBoolean(input.reminders),
-    apply_signing_order: readOptionalBoolean(input.apply_signing_order),
+    reminders: optionalBoolean(input.reminders),
+    apply_signing_order: optionalBoolean(input.apply_signing_order),
     api_application_id: optionalString(input.api_application_id),
-    embedded_signing: readOptionalBoolean(input.embedded_signing),
-    embedded_signing_notifications: readOptionalBoolean(input.embedded_signing_notifications),
-    text_tags: readOptionalBoolean(input.text_tags),
+    embedded_signing: optionalBoolean(input.embedded_signing),
+    embedded_signing_notifications: optionalBoolean(input.embedded_signing_notifications),
+    text_tags: optionalBoolean(input.text_tags),
     custom_requester_name: optionalString(input.custom_requester_name),
     custom_requester_email: optionalString(input.custom_requester_email),
     redirect_url: optionalString(input.redirect_url),
-    allow_decline: readOptionalBoolean(input.allow_decline),
-    allow_reassign: readOptionalBoolean(input.allow_reassign),
+    allow_decline: optionalBoolean(input.allow_decline),
+    allow_reassign: optionalBoolean(input.allow_reassign),
     decline_redirect_url: optionalString(input.decline_redirect_url),
     language: optionalString(input.language),
     metadata: optionalRecord(input.metadata),
@@ -221,21 +222,21 @@ function buildTemplateDocumentRequestBody(input: Record<string, unknown>): Recor
 
 function buildSendDocumentRequestBody(input: Record<string, unknown>): Record<string, unknown> {
   return compactObject({
-    test_mode: readOptionalBoolean(input.test_mode),
+    test_mode: optionalBoolean(input.test_mode),
     name: optionalString(input.name),
     subject: optionalString(input.subject),
     message: optionalString(input.message),
     expires_in: readOptionalInteger(input.expires_in, "expires_in"),
-    reminders: readOptionalBoolean(input.reminders),
-    apply_signing_order: readOptionalBoolean(input.apply_signing_order),
+    reminders: optionalBoolean(input.reminders),
+    apply_signing_order: optionalBoolean(input.apply_signing_order),
     api_application_id: optionalString(input.api_application_id),
-    embedded_signing: readOptionalBoolean(input.embedded_signing),
-    embedded_signing_notifications: readOptionalBoolean(input.embedded_signing_notifications),
+    embedded_signing: optionalBoolean(input.embedded_signing),
+    embedded_signing_notifications: optionalBoolean(input.embedded_signing_notifications),
     custom_requester_name: optionalString(input.custom_requester_name),
     custom_requester_email: optionalString(input.custom_requester_email),
     redirect_url: optionalString(input.redirect_url),
-    allow_decline: readOptionalBoolean(input.allow_decline),
-    allow_reassign: readOptionalBoolean(input.allow_reassign),
+    allow_decline: optionalBoolean(input.allow_decline),
+    allow_reassign: optionalBoolean(input.allow_reassign),
     decline_redirect_url: optionalString(input.decline_redirect_url),
     metadata: optionalRecord(input.metadata),
     labels: readOptionalArray(input.labels),
@@ -258,7 +259,7 @@ async function requestSignwellJson<T>(input: {
   body?: Record<string, unknown>;
   signal?: AbortSignal;
 }): Promise<T> {
-  const timeoutHandle = createProviderTimeout(input.signal, signwellDefaultTimeoutMs);
+  const timeoutHandle = createProviderTimeout(input.signal);
 
   try {
     const response = await input.fetcher(new URL(input.path, signwellApiBaseUrl), {
@@ -291,7 +292,7 @@ async function requestSignwellJson<T>(input: {
     if (timeoutHandle.didTimeout() || isAbortLikeError(error)) {
       throw new ProviderRequestError(
         504,
-        `SignWell request timed out after ${Math.max(1, Math.ceil(signwellDefaultTimeoutMs / 1000))} seconds`,
+        `SignWell request timed out after ${Math.max(1, Math.ceil(defaultProviderRequestTimeoutMs / 1000))} seconds`,
       );
     }
 
@@ -333,13 +334,13 @@ function createSignwellError(status: number, payload: unknown, phase: SignwellPh
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (status === 401 || status === 403)) {
     return new ProviderRequestError(401, message);
   }
   if (status === 404 || status === 400 || status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status >= 400 && status < 500) {
     return new ProviderRequestError(status, message);
@@ -423,10 +424,6 @@ function readOptionalTrimmedStringArray(value: unknown): string[] | undefined {
   }
   const items = value.map((item) => optionalString(item)).filter((item): item is string => Boolean(item));
   return items.length > 0 ? items : undefined;
-}
-
-function readOptionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function readOptionalInteger(value: unknown, fieldName: string): number | undefined {

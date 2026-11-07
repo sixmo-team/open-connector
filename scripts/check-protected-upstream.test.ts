@@ -11,15 +11,15 @@ const requiredFiles: Record<string, string> = {
   "src/saas/index.ts": "export {};\n",
   "web/saas.html": "<!doctype html>\n",
   "web/vite.config.ts": "export default {};\n",
-  "docker/Dockerfile": 'CMD ["node", "src/saas/index.ts"]\n',
+  "docker/Dockerfile": 'CMD ["node", "--experimental-transform-types", "src/saas/index.ts"]\n',
   "scripts/saas-migrate.ts": "export {};\n",
   "src/providers/registry.generated.ts": "export {};\n",
   "catalog/apps/example.json": "{}\n",
   "package.json": JSON.stringify({
     scripts: {
-      start: "node src/saas/index.ts",
-      dev: "node --watch src/saas/index.ts",
-      migrate: "node scripts/saas-migrate.ts",
+      start: "node --experimental-transform-types src/saas/index.ts",
+      dev: "node --experimental-transform-types --watch src/saas/index.ts",
+      migrate: "node --experimental-transform-types scripts/saas-migrate.ts",
     },
   }),
 };
@@ -42,6 +42,12 @@ describe("single-runtime cutover guard", () => {
     await writePath(directory, "package.json", JSON.stringify(packageJson));
 
     expect(findCutoverViolations(directory).join("\n")).toMatch(/src\/server|package start/);
+  });
+
+  it("rejects a native provider that imports the removed global runtime", async () => {
+    const directory = await fixture();
+    await writePath(directory, "src/providers/example/executors.ts", 'import "../../server/storage/runtime-store.ts";\n');
+    expect(findCutoverViolations(directory).join("\n")).toContain("src/providers/example/executors.ts");
   });
 
   it("protects reusable core/provider code but permits cutover files", async () => {

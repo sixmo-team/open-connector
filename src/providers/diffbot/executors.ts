@@ -1,14 +1,11 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { DiffbotActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 const service = "diffbot";
 const diffbotApiOrigin = "https://api.diffbot.com";
@@ -23,7 +20,7 @@ interface DiffbotContext {
 
 type DiffbotActionHandler = (input: Record<string, unknown>, context: DiffbotContext) => Promise<unknown>;
 
-export const diffbotActionHandlers: Record<DiffbotActionName, DiffbotActionHandler> = {
+export const diffbotActionHandlers: ProviderActionHandlers<"diffbot", DiffbotActionHandler> = {
   extract_article(input, context) {
     return requestDiffbotArticle(input, context, "execute");
   },
@@ -97,7 +94,7 @@ function buildDiffbotArticleUrl(input: Record<string, unknown>, apiKey: string):
   }
   const publicUrl = assertPublicHttpUrl(target, {
     fieldName: "url",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
   });
   if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password) {
     throw new ProviderRequestError(400, "url must use https and must not include credentials");
@@ -168,10 +165,10 @@ function createDiffbotHttpError(status: number, raw: string, json: unknown, phas
     return new ProviderRequestError(429, message);
   }
   if ((status === 401 || status === 403) && phase === "validate") {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 400) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status, message);
 }

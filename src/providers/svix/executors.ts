@@ -1,6 +1,10 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
+import { isPrivateNetworkAccessAllowed } from "../../core/request.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { createProviderFetch } from "../provider-runtime.ts";
 import { getSvixBaseUrl, svixActionHandlers, validateSvixCredential } from "./runtime.ts";
 
 const service = "svix";
@@ -18,16 +22,34 @@ export const executors: ProviderExecutors = defineProviderExecutors({
       signal: context.signal,
     };
   },
+  allowPrivateNetwork: isPrivateNetworkAccessAllowed,
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context) {
+    const credential = await requireApiKeyCredential(context, service);
+    return getSvixBaseUrl({
+      apiKey: credential.apiKey,
+      serverUrl: readString(credential.metadata.serverUrl),
+    });
+  },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  allowPrivateNetwork: isPrivateNetworkAccessAllowed,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
 });
 
 export const credentialValidators: CredentialValidators = {
   apiKey(input, { fetcher, signal }) {
+    const guardedFetcher = createProviderFetch({ fetch: fetcher, allowPrivateNetwork: isPrivateNetworkAccessAllowed });
     return validateSvixCredential(
       {
         apiKey: input.apiKey,
         serverUrl: input.values.serverUrl,
       },
-      fetcher,
+      guardedFetcher,
       signal,
     );
   },

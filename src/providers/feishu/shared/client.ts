@@ -58,11 +58,10 @@ interface FeishuEnvelope {
 }
 
 const feishuOpenBaseUrl = "https://open.feishu.cn/open-apis";
-const feishuRequestTimeoutMs = 30_000;
 const feishuRateLimitedErrorCodes = new Set([11232, 11233, 11247, 230020, 230047, 99991400, 1000004, 1000005]);
 const feishuCredentialExpiredErrorCodes = new Set([
   4001, 10005, 10012, 10013, 10014, 10015, 20002, 20005, 20013, 20014, 99991543, 99991661, 99991663, 99991664, 99991665,
-  99991671, 99991673,
+  99991668, 99991671, 99991677,
 ]);
 const feishuScopeMissingErrorCodes = new Set([10023, 11223, 11229, 11241, 99991672, 99991676, 99991679]);
 
@@ -71,7 +70,7 @@ export function createFeishuJsonRequest(input: CreateFeishuJsonRequestInput): Fe
     const url = new URL(`${feishuOpenBaseUrl}${request.path}`);
     appendQuery(url, request.query);
 
-    const timeout = createProviderTimeout(input.signal, feishuRequestTimeoutMs);
+    const timeout = createProviderTimeout(input.signal);
     try {
       const response = await input.fetcher(url, {
         method: request.method ?? "GET",
@@ -85,7 +84,7 @@ export function createFeishuJsonRequest(input: CreateFeishuJsonRequestInput): Fe
         signal: timeout.signal,
       });
       const rawText = await response.text();
-      const envelope = readFeishuEnvelope(rawText);
+      const envelope = readFeishuEnvelope(rawText, request.path.startsWith("/okr/v2/"));
       const code = typeof envelope.code === "number" ? envelope.code : 0;
       if (!response.ok || code !== 0) {
         throw normalizeFeishuError({
@@ -111,7 +110,7 @@ export function createFeishuJsonRequest(input: CreateFeishuJsonRequestInput): Fe
 }
 
 export async function requestFeishuMultipart(input: FeishuMultipartRequestInput): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(input.signal, feishuRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(`${feishuOpenBaseUrl}${input.path}`, {
       method: "POST",
@@ -154,7 +153,7 @@ export async function withFeishuRawResponse<T>(
 ): Promise<T> {
   const url = new URL(`${feishuOpenBaseUrl}${input.path}`);
   appendQuery(url, input.query);
-  const timeout = createProviderTimeout(input.signal, feishuRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(url, {
       headers: {
@@ -220,12 +219,12 @@ function normalizeFeishuData(data: unknown): Record<string, unknown> {
   return optionalRecord(data) ?? {};
 }
 
-function readFeishuEnvelope(rawText: string): FeishuEnvelope {
+function readFeishuEnvelope(rawText: string, preserveNumericIds = false): FeishuEnvelope {
   if (!rawText) {
     return {};
   }
   try {
-    const envelope = optionalRecord(JSON.parse(rawText) as unknown);
+    const envelope = optionalRecord(JSON.parse(rawText, preserveNumericIds ? preserveOkrId : undefined) as unknown);
     if (envelope) {
       return envelope;
     }
@@ -233,6 +232,13 @@ function readFeishuEnvelope(rawText: string): FeishuEnvelope {
     // Map malformed JSON to a Feishu response error below.
   }
   throw new ProviderRequestError(502, "invalid Feishu JSON response");
+}
+
+function preserveOkrId(key: string, value: unknown, context?: { source?: string }): unknown {
+  if (typeof value !== "number" || !Number.isInteger(value) || (key !== "id" && !key.endsWith("_id"))) return value;
+  if (Number.isSafeInteger(value)) return String(value);
+  if (!context?.source) throw new Error("Feishu OKR ID source is unavailable");
+  return BigInt(context.source).toString();
 }
 
 function normalizeFeishuError(input: {
@@ -260,8 +266,8 @@ function normalizeFeishuError(input: {
       return new ProviderRequestError(400, detailedMessage, errorData);
     }
   }
-  if (input.status === 401 || (code != null && feishuCredentialExpiredErrorCodes.has(code))) {
-    return new ProviderRequestError(401, detailedMessage, errorData);
+  if (code != null && feishuCredentialExpiredErrorCodes.has(code)) {
+    return new ProviderRequestError(401, detailedMessage, errorData, "authorization_failed");
   }
   if (code != null && feishuScopeMissingErrorCodes.has(code)) {
     return new ProviderRequestError(403, detailedMessage, errorData);
@@ -269,5 +275,10 @@ function normalizeFeishuError(input: {
   if (input.status === 400 || input.status === 404 || input.status === 422 || code === 230001) {
     return new ProviderRequestError(input.status || 400, detailedMessage, errorData);
   }
-  return new ProviderRequestError(502, detailedMessage, errorData);
+  return new ProviderRequestError(
+    input.status >= 400 ? input.status : 502,
+    detailedMessage,
+    errorData,
+    "provider_error",
+  );
 }

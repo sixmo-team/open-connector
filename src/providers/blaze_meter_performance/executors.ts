@@ -7,13 +7,14 @@ import type {
 import type { BlazeMeterPerformanceContext } from "./runtime.ts";
 
 import { optionalString } from "../../core/cast.ts";
-import { createBlazeMeterProxyExecutor } from "../blaze-meter-runtime.ts";
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
   blazeMeterPerformanceActionHandlers,
   requireBlazeMeterPerformanceApiKeyId,
   validateBlazeMeterPerformanceCredential,
 } from "./runtime.ts";
+import { createBlazeMeterProxyExecutor } from "./shared-runtime.ts";
 
 const service = "blaze_meter_performance";
 

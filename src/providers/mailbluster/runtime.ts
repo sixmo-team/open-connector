@@ -1,23 +1,21 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { MailblusterActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
+import { compactObject, optionalBoolean, optionalRecord, optionalString, stringArray } from "../../core/cast.ts";
 import {
-  compactObject,
-  optionalBoolean,
-  optionalRecord,
-  optionalString,
-  requiredString,
-  stringArray,
-} from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+  createProviderTimeout,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
-const mailblusterApiBaseUrl = "https://api.mailbluster.com";
-const mailblusterDefaultRequestTimeoutMs = 30_000;
+export const mailblusterApiBaseUrl = "https://api.mailbluster.com";
 
 type MailblusterActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const mailblusterActionHandlers: Record<MailblusterActionName, MailblusterActionHandler> = {
+export const mailblusterActionHandlers: ProviderActionHandlers<"mailbluster", MailblusterActionHandler> = {
   list_fields(_input, context) {
     return requestMailblusterJson({
       context,
@@ -37,14 +35,14 @@ export const mailblusterActionHandlers: Record<MailblusterActionName, Mailbluste
     return requestMailblusterJson({
       context,
       method: "GET",
-      path: `/api/leads/${encodeURIComponent(readMailblusterString(input.lead_hash, "lead_hash"))}`,
+      path: `/api/leads/${encodeURIComponent(requiredInputString(input.lead_hash, "lead_hash"))}`,
     });
   },
   update_lead(input, context) {
     return requestMailblusterJson({
       context,
       method: "PUT",
-      path: `/api/leads/${encodeURIComponent(readMailblusterString(input.lead_hash, "lead_hash"))}`,
+      path: `/api/leads/${encodeURIComponent(requiredInputString(input.lead_hash, "lead_hash"))}`,
       body: updateLeadBody(input),
     });
   },
@@ -52,7 +50,7 @@ export const mailblusterActionHandlers: Record<MailblusterActionName, Mailbluste
     return requestMailblusterJson({
       context,
       method: "DELETE",
-      path: `/api/leads/${encodeURIComponent(readMailblusterString(input.lead_hash, "lead_hash"))}`,
+      path: `/api/leads/${encodeURIComponent(requiredInputString(input.lead_hash, "lead_hash"))}`,
     });
   },
 };
@@ -133,7 +131,7 @@ async function requestMailblusterJson(input: {
   if (input.body) {
     headers["content-type"] = "application/json";
   }
-  const timeout = createProviderTimeout(input.context.signal, mailblusterDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
 
   let response: Response;
   try {
@@ -147,7 +145,7 @@ async function requestMailblusterJson(input: {
     throw new ProviderRequestError(
       timeout.didTimeout() ? 504 : 502,
       timeout.didTimeout()
-        ? `MailBluster request timed out after ${mailblusterDefaultRequestTimeoutMs}ms`
+        ? `MailBluster request timed out after ${defaultProviderRequestTimeoutMs}ms`
         : error instanceof Error
           ? `MailBluster request failed: ${error.message}`
           : "MailBluster request failed",
@@ -226,10 +224,6 @@ function readMailblusterFields(payload: Record<string, unknown>): unknown[] {
   }
 
   throw new ProviderRequestError(502, "MailBluster /api/fields returned invalid fields");
-}
-
-function readMailblusterString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function readOptionalStringArray(value: unknown): string[] | undefined {

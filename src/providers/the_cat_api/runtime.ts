@@ -1,5 +1,5 @@
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { TheCatApiActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -14,17 +14,18 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
-const theCatApiBaseUrl = "https://api.thecatapi.com/v1/";
+export const theCatApiBaseUrl = "https://api.thecatapi.com/v1/";
 const theCatApiValidationPath = "/breeds";
-const theCatApiDefaultTimeoutMs = 30_000;
 
 type TheCatApiRequestPhase = "validate" | "execute";
 type TheCatApiContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 
-export const theCatApiActionHandlers: Record<
-  TheCatApiActionName,
+export const theCatApiActionHandlers: ProviderActionHandlers<
+  "the_cat_api",
   (input: Record<string, unknown>, context: TheCatApiContext) => Promise<unknown>
 > = {
   search_images(input, context) {
@@ -66,7 +67,7 @@ export async function validateTheCatApiCredential(context: TheCatApiContext): Pr
     },
     grantedScopes: [],
     metadata: compactObject({
-      apiBaseUrl: "https://api.thecatapi.com/v1",
+      apiBaseUrl: theCatApiBaseUrl,
       validationEndpoint: theCatApiValidationPath,
       sampleBreedId: sampleBreed?.id,
       sampleBreedName: sampleBreed?.name,
@@ -164,7 +165,7 @@ async function requestTheCatApiJson(input: {
   context: Pick<ApiKeyProviderContext, "fetcher" | "signal">;
   phase: TheCatApiRequestPhase;
 }) {
-  const timeout = createProviderTimeout(input.context.signal, theCatApiDefaultTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   const url = buildTheCatApiUrl(input.path, input.query);
 
   try {
@@ -224,7 +225,7 @@ async function readTheCatApiPayload(response: Response) {
 function createTheCatApiError(response: Response, payload: unknown, phase: TheCatApiRequestPhase) {
   const message = extractTheCatApiErrorMessage(payload) ?? response.statusText ?? "The Cat API request failed";
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status || 502, message);
 }
@@ -239,7 +240,7 @@ function extractTheCatApiErrorMessage(payload: unknown) {
 
 function parseArrayPayload(payload: unknown, message: string) {
   if (!Array.isArray(payload)) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return payload;
 }

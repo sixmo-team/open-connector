@@ -1,6 +1,12 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { actionInputMaxDepth } from "./action-idempotency.ts";
-import { CanonicalActionRequestError, canonicalActionRequestHash, canonicalRequestHash } from "./canonical-request.ts";
+import {
+  CanonicalActionRequestError,
+  canonicalActionPolicyRequestHash,
+  canonicalActionRequestHash,
+  canonicalRequestHash,
+} from "./canonical-request.ts";
 
 describe("canonicalActionRequestHash", () => {
   it("sorts object keys recursively", () => {
@@ -79,6 +85,43 @@ describe("canonicalRequestHash", () => {
         correlationId: "00000000-0000-4000-8000-000000000002",
         options: { b: 2, a: 1 },
       }),
+    );
+  });
+});
+
+describe("canonicalActionPolicyRequestHash", () => {
+  it("uses the exact wire tuple without an operation wrapper or reason normalization", () => {
+    const target = { kind: "platform" } as const;
+    const body = { enabled: true, reason: "  reviewed  ", actionIds: ["gmail.messages_list"] };
+    const path = "/internal/saas/action-policy/defaults";
+    const hash = canonicalActionPolicyRequestHash("put", path, target, body);
+    const expectedJson =
+      '{"body":{"actionIds":["gmail.messages_list"],"enabled":true,"reason":"  reviewed  "},"method":"PUT","path":"/internal/saas/action-policy/defaults","target":{"kind":"platform"}}';
+    expect(hash).toBe(createHash("sha256").update(expectedJson).digest("base64url"));
+    expect(hash).toBe(
+      canonicalActionPolicyRequestHash("PUT", path, target, {
+        reason: body.reason,
+        actionIds: body.actionIds,
+        enabled: true,
+      }),
+    );
+    expect(hash).not.toBe(
+      canonicalActionPolicyRequestHash("PUT", path, target, { ...body, reason: body.reason.trim() }),
+    );
+    expect(hash).not.toBe(canonicalActionPolicyRequestHash("POST", path, target, body));
+    expect(hash).not.toBe(
+      canonicalActionPolicyRequestHash("PUT", `${path}/gmail.messages_list`, target, {
+        enabled: true,
+        reason: body.reason,
+      }),
+    );
+    expect(hash).not.toBe(
+      canonicalActionPolicyRequestHash(
+        "PUT",
+        path,
+        { kind: "tenant", tenantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+        body,
+      ),
     );
   });
 });

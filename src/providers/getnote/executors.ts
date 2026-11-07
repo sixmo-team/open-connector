@@ -1,7 +1,14 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
-import { getnoteActionHandlers, readGetnoteClientId, validateGetnoteCredential } from "./runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { getnoteActionHandlers, getnoteBaseUrl, readGetnoteClientId, validateGetnoteCredential } from "./runtime.ts";
 
 const service = "getnote";
 
@@ -35,3 +42,22 @@ export const credentialValidators: CredentialValidators = {
     return validateGetnoteCredential(input, fetcher, signal);
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: getnoteBaseUrl,
+  auth: {
+    type: "credential_headers",
+    headers: [
+      { name: "authorization", source: { type: "api_key" } },
+      { name: "x-client-id", source: { type: "credential_value", name: "clientId" }, optional: true },
+    ],
+  },
+  customizeRequest({ credential, headers }) {
+    if (!credential || credential.authType !== "api_key") return;
+    headers.set("x-client-id", readGetnoteClientId({ values: credential.values, metadata: credential.metadata }));
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  },
+  skipDnsValidation: true,
+});

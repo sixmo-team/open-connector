@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { GenderizeActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString, stringArray } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "genderize";
 const genderizeApiBaseUrl = "https://api.genderize.io";
@@ -13,7 +15,7 @@ type GenderizeRequestPhase = "validate" | "execute";
 type GenderizeActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type GenderizeActionHandler = (input: Record<string, unknown>, context: GenderizeActionContext) => Promise<unknown>;
 
-export const genderizeActionHandlers: Record<GenderizeActionName, GenderizeActionHandler> = {
+export const genderizeActionHandlers: ProviderActionHandlers<"genderize", GenderizeActionHandler> = {
   async predict_gender(input, context) {
     const { payload } = await requestGenderize({
       context,
@@ -49,6 +51,16 @@ export const genderizeActionHandlers: Record<GenderizeActionName, GenderizeActio
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, genderizeActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: genderizeApiBaseUrl,
+  auth: { type: "api_key_query", name: "apikey" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {

@@ -2,6 +2,7 @@ import type { ResolvedCredential } from "../../core/types.ts";
 import type { SaasRequestScope } from "../contracts.ts";
 import type { OpenBaoReadResult } from "./openbao-client.ts";
 
+import { assertProcessingActive } from "../../core/cancellation.ts";
 import { OpenBaoClient, OpenBaoError } from "./openbao-client.ts";
 
 interface ConnectionSecretBase {
@@ -51,7 +52,8 @@ export class OpenBaoConnectionSecretStore {
     const path = connectionSecretPath(scope, connectionId);
     const now = new Date().toISOString();
     const record = toRecord(provider, credential, now, now, 1);
-    const secretRevision = await this.client.write(path, { ...record }, 0);
+    assertProcessingActive(scope);
+    const secretRevision = await this.client.write(path, { ...record }, 0, scope.requestSignal);
     assertExpectedRevision(secretRevision, 1, path);
     return { secretRef: path, secretRevision };
   }
@@ -63,7 +65,8 @@ export class OpenBaoConnectionSecretStore {
   ): Promise<OpenBaoConnectionSecret | undefined> {
     const path = connectionSecretPath(scope, connectionId);
     try {
-      const result = await this.client.read<Record<string, unknown>>(path, revision);
+      assertProcessingActive(scope);
+      const result = await this.client.read<Record<string, unknown>>(path, revision, scope.requestSignal);
       assertExpectedRevision(result.revision, revision, path);
       return parseRecord(result.data, result.revision, path);
     } catch (error) {
@@ -82,7 +85,8 @@ export class OpenBaoConnectionSecretStore {
     const path = connectionSecretPath(scope, connectionId);
     let result: OpenBaoReadResult<Record<string, unknown>>;
     try {
-      result = await this.client.read<Record<string, unknown>>(path);
+      assertProcessingActive(scope);
+      result = await this.client.read<Record<string, unknown>>(path, undefined, scope.requestSignal);
     } catch (error) {
       if (error instanceof OpenBaoError && error.code === "OPENBAO_NOT_FOUND") return false;
       throw error;
@@ -92,7 +96,8 @@ export class OpenBaoConnectionSecretStore {
     const revision = expectedRevision + 1;
     const record = toRecord(provider, credential, current.createdAt, new Date().toISOString(), revision);
     try {
-      const writtenRevision = await this.client.write(path, { ...record }, expectedRevision);
+      assertProcessingActive(scope);
+      const writtenRevision = await this.client.write(path, { ...record }, expectedRevision, scope.requestSignal);
       assertExpectedRevision(writtenRevision, revision, path);
       return writtenRevision;
     } catch (error) {
@@ -102,6 +107,7 @@ export class OpenBaoConnectionSecretStore {
   }
 
   async delete(scope: Readonly<SaasRequestScope>, connectionId: string): Promise<void> {
+    assertProcessingActive(scope);
     try {
       await this.client.delete(connectionSecretPath(scope, connectionId));
     } catch (error) {

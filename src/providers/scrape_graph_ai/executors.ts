@@ -1,9 +1,16 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ScrapeGraphAiActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "scrape_graph_ai";
 const scrapeGraphAiApiBaseUrl = "https://v2-api.scrapegraphai.com";
@@ -23,7 +30,7 @@ interface ScrapeGraphAiRequestInput {
   phase: ScrapeGraphAiRequestPhase;
 }
 
-export const scrapeGraphAiActionHandlers: Record<ScrapeGraphAiActionName, ScrapeGraphAiActionHandler> = {
+export const scrapeGraphAiActionHandlers: ProviderActionHandlers<"scrape_graph_ai", ScrapeGraphAiActionHandler> = {
   scrape(input, context) {
     return requestScrapeGraphAiJson({
       apiKey: context.apiKey,
@@ -251,3 +258,9 @@ function mergeAbortSignals(timeoutSignal: AbortSignal, contextSignal: AbortSigna
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://v2-api.scrapegraphai.com",
+  auth: { type: "api_key_header", name: "sgai-apikey" },
+});

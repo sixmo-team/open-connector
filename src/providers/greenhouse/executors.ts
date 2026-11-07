@@ -1,15 +1,12 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { GreenhouseActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  providerUserAgent,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 
 const service = "greenhouse";
 const greenhouseBaseUrl = "https://harvest.greenhouse.io/v1";
@@ -36,7 +33,7 @@ const queryParamByInputKey: Record<string, string> = {
   candidateId: "candidate_id",
 };
 
-export const greenhouseActionHandlers: Record<GreenhouseActionName, GreenhouseActionHandler> = {
+export const greenhouseActionHandlers: ProviderActionHandlers<"greenhouse", GreenhouseActionHandler> = {
   list_jobs(input, context) {
     return listCollection({ context, path: "/jobs", input, outputKey: "jobs" });
   },
@@ -255,13 +252,13 @@ async function mapGreenhouseError(response: Response, phase: GreenhouseRequestPh
     ? `Greenhouse API request failed: ${detail}`
     : `Greenhouse API request failed with HTTP ${response.status}`;
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 401 || response.status === 403) {
     return new ProviderRequestError(401, message);
   }
   if (response.status === 404 || response.status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 429) {
     return new ProviderRequestError(429, message);

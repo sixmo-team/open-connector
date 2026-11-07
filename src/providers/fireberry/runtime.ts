@@ -1,19 +1,24 @@
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FireberryActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
-import { compactObject, optionalNumber, optionalRecord, requiredRecord, requiredString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalNumber, optionalRecord, requiredRecord } from "../../core/cast.ts";
+import {
+  isAbortLikeError,
+  providerUserAgent,
+  ProviderRequestError,
+  requiredInputString,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 export const fireberryApiBaseUrl = "https://api.fireberry.com";
-export const fireberryDefaultRequestTimeoutMs = 30_000;
 
 type FireberryRequestPhase = "validate" | "execute";
 type FireberryObjectName = "account" | "contact";
 type FireberryActionContext = ApiKeyProviderContext;
 type FireberryActionHandler = (input: Record<string, unknown>, context: FireberryActionContext) => Promise<unknown>;
 
-export const fireberryActionHandlers: Record<FireberryActionName, FireberryActionHandler> = {
+export const fireberryActionHandlers: ProviderActionHandlers<"fireberry", FireberryActionHandler> = {
   async query_records(input, context) {
     const payload = await requestFireberryJson({
       path: "/api/v3/query",
@@ -221,8 +226,8 @@ async function requestFireberryJson(input: {
   signal?: AbortSignal;
 }) {
   const signal = input.signal
-    ? AbortSignal.any([input.signal, AbortSignal.timeout(fireberryDefaultRequestTimeoutMs)])
-    : AbortSignal.timeout(fireberryDefaultRequestTimeoutMs);
+    ? AbortSignal.any([input.signal, AbortSignal.timeout(defaultProviderRequestTimeoutMs)])
+    : AbortSignal.timeout(defaultProviderRequestTimeoutMs);
 
   try {
     const response = await input.fetcher(buildFireberryUrl(input.path, input.query), {
@@ -297,12 +302,8 @@ function readQueryRecords(payload: Record<string, unknown>) {
   return [];
 }
 
-function readRequiredString(value: unknown, field: string) {
-  return requiredString(value, field, (message) => new ProviderRequestError(400, message));
-}
-
 function readRecordIdPathSegment(value: unknown) {
-  return encodeURIComponent(readRequiredString(value, "id"));
+  return encodeURIComponent(requiredInputString(value, "id"));
 }
 
 function readSuccess(payload: Record<string, unknown>) {
@@ -410,8 +411,4 @@ function hashToken(apiKey: string) {
 
 function isRecordObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function isAbortLikeError(error: unknown) {
-  return error instanceof Error && error.name === "AbortError";
 }

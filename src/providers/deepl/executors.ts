@@ -1,12 +1,17 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { defineApiKeyProviderExecutors } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { executeDeeplAction, validateDeeplCredential } from "./runtime.ts";
 
 const service = "deepl";
 
-const handlers: Record<string, (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>> = {
+const handlers: ProviderActionHandlers<
+  "deepl",
+  (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>
+> = {
   list_supported_languages(input, context) {
     return executeDeeplAction(
       { actionName: "list_supported_languages", input, apiKey: context.apiKey },
@@ -28,3 +33,9 @@ export const credentialValidators: CredentialValidators = {
     return validateDeeplCredential({ apiKey: input.apiKey }, fetcher);
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.deepl.com",
+  auth: { type: "api_key_authorization", prefix: "DeepL-Auth-Key " },
+});

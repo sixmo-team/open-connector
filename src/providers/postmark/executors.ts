@@ -1,8 +1,11 @@
-import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent, requiredInputString } from "../provider-runtime.ts";
 
 const service = "postmark";
 const postmarkApiBaseUrl = "https://api.postmarkapp.com";
@@ -12,7 +15,7 @@ const providerSide422Codes = new Set([405, 412, 413]);
 
 type PostmarkActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const postmarkActionHandlers: Record<string, PostmarkActionHandler> = {
+export const postmarkActionHandlers: ProviderActionHandlers<"postmark", PostmarkActionHandler> = {
   get_server: (_input: Record<string, unknown>, context: ApiKeyProviderContext) =>
     requestPostmarkJson({ path: validationPath, context, mode: "execute" }),
   send_email: (input: Record<string, unknown>, context: ApiKeyProviderContext) =>
@@ -84,35 +87,6 @@ export const postmarkActionHandlers: Record<string, PostmarkActionHandler> = {
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, postmarkActionHandlers);
-
-export async function validatePostmarkCredential(
-  input: Record<string, string>,
-  fetcher: typeof fetch,
-): Promise<CredentialValidationResult> {
-  const apiKey = requiredString(input.apiKey, "apiKey", (message) => new ProviderRequestError(401, message));
-  const server = await requestPostmarkJson<Record<string, unknown>>({
-    path: validationPath,
-    context: { apiKey, fetcher },
-    mode: "validate",
-  });
-  const serverId = optionalInteger(server.ID);
-  const serverName = optionalString(server.Name);
-  return {
-    profile: {
-      accountId: serverId !== undefined ? `postmark:server:${serverId}` : "postmark-server-token",
-      displayName: serverName || "Postmark Server Token",
-      grantedScopes: [],
-    },
-    grantedScopes: [],
-    metadata: {
-      validationEndpoint: validationPath,
-      serverId,
-      serverName,
-      serverLink: optionalString(server.ServerLink),
-      deliveryType: optionalString(server.DeliveryType),
-    },
-  };
-}
 
 async function editTemplate(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
   const body = { ...input };
@@ -255,11 +229,13 @@ function buildTemplatesQuery(input: Record<string, unknown>): Record<string, str
   });
 }
 
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function stringifyPathValue(value: unknown, fieldName: string): string {
   if (typeof value === "number" && Number.isInteger(value) && value > 0) return String(value);
   return requiredInputString(value, fieldName);
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.postmarkapp.com",
+  auth: { type: "api_key_header", name: "x-postmark-server-token" },
+});

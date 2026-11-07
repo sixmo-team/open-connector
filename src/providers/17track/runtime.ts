@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -7,13 +8,17 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 export const seventeenTrackApiBaseUrl = "https://api.17track.net/track/v2.4";
-const seventeenTrackRequestTimeoutMs = 30_000;
 const seventeenTrackMaxResponseBytes = 1_048_576;
 
-export const seventeenTrackActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const seventeenTrackActionHandlers: ProviderActionHandlers<
+  "17track",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   register_trackings: async (input, context) =>
     normalizeBatchResponse(
       await requestSeventeenTrack("register", input.trackings, context.apiKey, context, "execute"),
@@ -62,7 +67,7 @@ async function requestSeventeenTrack(
   context: Pick<ApiKeyProviderContext, "fetcher" | "signal">,
   phase: "validate" | "execute",
 ) {
-  const timeout = createProviderTimeout(context.signal, seventeenTrackRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(`${seventeenTrackApiBaseUrl}/${path}`, {
       method: "POST",
@@ -73,7 +78,7 @@ async function requestSeventeenTrack(
         "user-agent": providerUserAgent,
       },
       body: JSON.stringify(body),
-      redirect: "error",
+      redirect: "manual",
       signal: timeout.signal,
     });
     const payload = await readPayload(response);
@@ -88,18 +93,13 @@ async function requestSeventeenTrack(
       throw error;
     }
     const timedOut = timeout.didTimeout() || isAbortLikeError(error);
-    throw providerError(
-      "provider_error",
-      timedOut ? "17TRACK request timed out" : error instanceof Error ? error.message : "17TRACK request failed",
+    throw new ProviderRequestError(
       timedOut ? 504 : 502,
+      timedOut ? "17TRACK request timed out" : error instanceof Error ? error.message : "17TRACK request failed",
     );
   } finally {
     timeout.cleanup();
   }
-}
-
-function providerError(_code: string, message: string, status: number): ProviderRequestError {
-  return new ProviderRequestError(status, message);
 }
 
 async function readPayload(response: Response) {
@@ -108,14 +108,14 @@ async function readPayload(response: Response) {
     if (!response.ok) {
       return undefined;
     }
-    throw providerError("provider_error", "17TRACK returned an empty response", 502);
+    throw providerResponseError("17TRACK returned an empty response");
   }
 
   try {
     return JSON.parse(text) as unknown;
   } catch {
     if (response.ok) {
-      throw providerError("provider_error", `17TRACK returned non-JSON response (${response.status})`, 502);
+      throw providerResponseError(`17TRACK returned non-JSON response (${response.status})`);
     }
     return text;
   }
@@ -153,14 +153,14 @@ async function readResponseText(response: Response) {
 }
 
 function responseTooLargeError() {
-  return providerError("provider_error", `17TRACK response exceeds ${seventeenTrackMaxResponseBytes} bytes`, 502);
+  return providerResponseError(`17TRACK response exceeds ${seventeenTrackMaxResponseBytes} bytes`);
 }
 
 function assertSuccessfulEnvelope(payload: unknown, phase: "validate" | "execute") {
   const raw = readObject(payload, "body");
   const code = optionalNumber(raw.code);
   if (code === undefined) {
-    throw providerError("provider_error", "17TRACK response is missing code", 502);
+    throw providerResponseError("17TRACK response is missing code");
   }
 
   const data = optionalRecord(raw.data);
@@ -179,37 +179,29 @@ function createHttpError(response: Response, payload: unknown, phase: "validate"
   const message = readErrorMessage(payload) ?? `17TRACK API request failed with status ${response.status}`;
 
   if (response.status === 429) {
-    return providerError("rate_limited", message, 429);
+    return new ProviderRequestError(429, message);
   }
   if (response.status === 401 || response.status === 403) {
-    return providerError(
-      phase === "validate" ? "invalid_input" : "credential_expired",
-      message,
-      phase === "validate" ? 400 : response.status,
-    );
+    return new ProviderRequestError(phase === "validate" ? 400 : response.status, message);
   }
   if (response.status === 400 || response.status === 422) {
-    return providerError("invalid_input", message, response.status);
+    return new ProviderRequestError(response.status, message);
   }
-  return providerError("provider_error", message, response.status || 502);
+  return new ProviderRequestError(response.status || 502, message);
 }
 
 function createEmbeddedError(code: number, message: string | undefined, phase: "validate" | "execute") {
   const detail = message ?? `17TRACK API returned error ${code}`;
   if ([-18010001, -18010002, -18010004, -18010005].includes(code)) {
-    return providerError(
-      phase === "validate" ? "invalid_input" : "credential_expired",
-      detail,
-      phase === "validate" ? 400 : 401,
-    );
+    return new ProviderRequestError(phase === "validate" ? 400 : 401, detail);
   }
   if (code === -18019907 || code === -18019908) {
-    return providerError("rate_limited", detail, 429);
+    return new ProviderRequestError(429, detail);
   }
   if (code === -18010003 || [-18019815, -18019816, -18019817].includes(code)) {
-    return providerError("provider_error", detail, 502);
+    return providerResponseError(detail);
   }
-  return providerError("invalid_input", detail, 400);
+  return providerInputError(detail);
 }
 
 function readErrorMessage(payload: unknown) {
@@ -266,7 +258,7 @@ function normalizeQuotaResponse(payload: unknown) {
 
 function readObjectArray(value: unknown, fieldName: string) {
   if (!Array.isArray(value)) {
-    throw providerError("provider_error", `17TRACK response field ${fieldName} is not an array`, 502);
+    throw providerResponseError(`17TRACK response field ${fieldName} is not an array`);
   }
   return value.map((item) => readObject(item, `${fieldName} item`));
 }
@@ -274,7 +266,7 @@ function readObjectArray(value: unknown, fieldName: string) {
 function readObject(value: unknown, fieldName: string) {
   const object = optionalRecord(value);
   if (!object) {
-    throw providerError("provider_error", `17TRACK response field ${fieldName} is not an object`, 502);
+    throw providerResponseError(`17TRACK response field ${fieldName} is not an object`);
   }
   return object;
 }
@@ -282,7 +274,7 @@ function readObject(value: unknown, fieldName: string) {
 function readNumber(value: unknown, fieldName: string) {
   const number = optionalNumber(value);
   if (number === undefined) {
-    throw providerError("provider_error", `17TRACK response field ${fieldName} is not a number`, 502);
+    throw providerResponseError(`17TRACK response field ${fieldName} is not a number`);
   }
   return number;
 }

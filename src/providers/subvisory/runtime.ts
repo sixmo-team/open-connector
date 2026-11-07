@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -28,7 +30,7 @@ interface SubvisoryRequestInput {
   mode: SubvisoryRequestMode;
 }
 
-export const subvisoryActionHandlers: Record<string, SubvisoryActionHandler> = {
+export const subvisoryActionHandlers: ProviderActionHandlers<"subvisory", SubvisoryActionHandler> = {
   list_subscriptions(_input, context) {
     return requestSubvisoryJson({ ...context, path: "/api/v1/subscriptions", mode: "execute" });
   },

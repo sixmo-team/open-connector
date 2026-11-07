@@ -6,17 +6,15 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
-import {
-  defineProviderProxy,
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "chargebee";
 const apiVersionSegment = "api/v2";
@@ -30,7 +28,7 @@ interface ChargebeeContext {
 
 type Handler = (input: Record<string, unknown>, context: ChargebeeContext) => Promise<unknown>;
 
-export const chargebeeActionHandlers: Record<string, Handler> = {
+export const chargebeeActionHandlers: ProviderActionHandlers<"chargebee", Handler> = {
   list_customers(input, context) {
     return listWrapped("customers", "customer", input, context);
   },

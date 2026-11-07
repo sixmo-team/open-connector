@@ -1,21 +1,14 @@
+import type { ApiKeyActionRequest, ProviderActionHandlers } from "../provider-executors.ts";
 import type { SupermemoryActionName } from "./actions.ts";
 
 import { compactObject, requiredString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 
 export interface SupermemoryCredentialCheck {
   providerAccountId?: string;
   accountLabel: string;
   providerScopes: string[];
   providerMetadata: Record<string, unknown>;
-}
-
-interface ApiKeyProviderActionInput {
-  apiKey: string;
-  actionName: string;
-  input: Record<string, unknown>;
-  providerMetadata?: Record<string, unknown>;
-  values?: Record<string, string>;
 }
 
 type SupermemoryActionHandler = (
@@ -32,7 +25,7 @@ type SupermemoryRequestInput = {
 export const supermemoryApiBaseUrl = "https://api.supermemory.ai";
 export const supermemoryUserAgent: string = providerUserAgent;
 
-export const supermemoryActionHandlers: Record<SupermemoryActionName, SupermemoryActionHandler> = {
+export const supermemoryActionHandlers: ProviderActionHandlers<"supermemory", SupermemoryActionHandler> = {
   create_memories(input, context) {
     return supermemoryRequest("/v4/memories", { method: "POST", body: input }, context.apiKey, context.fetcher);
   },
@@ -92,7 +85,7 @@ export const supermemoryActionHandlers: Record<SupermemoryActionName, Supermemor
 
     return { id, deleted: true };
   },
-} satisfies Record<SupermemoryActionName, SupermemoryActionHandler>;
+};
 
 export async function validateSupermemoryApiKey(
   apiKey: string,
@@ -111,14 +104,14 @@ export async function validateSupermemoryApiKey(
 }
 
 export function executeSupermemoryAction(
-  input: ApiKeyProviderActionInput & {
+  input: ApiKeyActionRequest & {
     actionName: SupermemoryActionName;
     input: Record<string, unknown>;
   },
   fetcher: typeof fetch,
 ): Promise<unknown> {
   return supermemoryActionHandlers[input.actionName](input.input, {
-    apiKey: requiredString(input.apiKey, "apiKey", (message) => new ProviderRequestError(400, message)),
+    apiKey: requiredString(input.apiKey, "apiKey", providerInputError),
     fetcher,
   });
 }
@@ -174,7 +167,7 @@ async function buildSupermemoryError(response: Response, phase: "validate" | "ex
   }
   if (response.status === 401 || response.status === 403) {
     if (phase === "validate") {
-      return new ProviderRequestError(400, message);
+      return providerInputError(message);
     }
     return new ProviderRequestError(response.status, message);
   }

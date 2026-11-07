@@ -1,20 +1,27 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { L2sActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "l2s";
 const l2sApiBaseUrl = "https://api.l2s.is";
 const l2sValidationPath = "/user/setting";
-const l2sDefaultRequestTimeoutMs = 30_000;
 
 type L2sRequestMode = "validate" | "execute";
 type L2sActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
@@ -34,7 +41,7 @@ interface L2sEnvelope {
   };
 }
 
-export const l2sActionHandlers: Record<L2sActionName, L2sActionHandler> = {
+export const l2sActionHandlers: ProviderActionHandlers<"l2s", L2sActionHandler> = {
   shorten_url(input, context) {
     return l2sRequest(context, {
       method: "POST",
@@ -46,14 +53,14 @@ export const l2sActionHandlers: Record<L2sActionName, L2sActionHandler> = {
   get_url_details(input, context) {
     return l2sRequest(context, {
       method: "GET",
-      path: `/url/${encodeURIComponent(requiredString(input.id, "id", inputError))}`,
+      path: `/url/${encodeURIComponent(requiredString(input.id, "id", providerInputError))}`,
       mode: "execute",
     });
   },
   update_url_details(input, context) {
     return l2sRequest(context, {
       method: "PUT",
-      path: `/url/${encodeURIComponent(requiredString(input.id, "id", inputError))}`,
+      path: `/url/${encodeURIComponent(requiredString(input.id, "id", providerInputError))}`,
       body: buildL2sUrlBody(input),
       mode: "execute",
     });
@@ -61,6 +68,16 @@ export const l2sActionHandlers: Record<L2sActionName, L2sActionHandler> = {
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, l2sActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: l2sApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -105,7 +122,7 @@ async function l2sRequest(
   context: Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">,
   input: L2sRequestInput,
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, l2sDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
 
   try {
     const response = await context.fetcher(new URL(input.path, l2sApiBaseUrl), {
@@ -136,7 +153,7 @@ async function l2sRequest(
         504,
         `L2S ${input.path} request timed out after ${Math.max(
           1,
-          Math.ceil(l2sDefaultRequestTimeoutMs / 1000),
+          Math.ceil(defaultProviderRequestTimeoutMs / 1000),
         )} seconds`,
       );
     }
@@ -241,8 +258,4 @@ function normalizeTagArray(value: unknown): string[] | undefined {
 
   const tags = value.map((item) => optionalString(item)).filter((item): item is string => Boolean(item));
   return tags.length > 0 ? tags : undefined;
-}
-
-function inputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

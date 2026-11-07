@@ -1,4 +1,5 @@
-import type { BearerProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { BearerProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -21,8 +22,6 @@ export const huggingfaceHubModelsUrl = "https://huggingface.co/api/models";
 export const huggingfaceChatCompletionsUrl = "https://router.huggingface.co/v1/chat/completions";
 export const huggingfaceInferenceBaseUrl = "https://router.huggingface.co/hf-inference/models";
 export const huggingfaceDefaultEmbeddingModel = "sentence-transformers/all-MiniLM-L6-v2";
-
-const huggingfaceDefaultRequestTimeoutMs = 30_000;
 
 export interface HuggingfaceActionContext extends BearerProviderContext {
   authType: "oauth2" | "api_key";
@@ -138,7 +137,7 @@ export async function huggingfaceRequestJson<T>(input: HuggingfaceRequestJsonInp
     ),
   );
 
-  const timeout = createProviderTimeout(input.signal, huggingfaceDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   let response: Response;
   try {
     response = await input.fetcher(url.toString(), {

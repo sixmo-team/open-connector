@@ -1,9 +1,15 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ParallelActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 export const parallelApiBaseUrl = "https://api.parallel.ai";
 
@@ -11,7 +17,7 @@ type ParallelActionContext = ApiKeyProviderContext;
 
 type ParallelActionHandler = (input: Record<string, unknown>, context: ParallelActionContext) => Promise<unknown>;
 
-export const parallelActionHandlers: Record<ParallelActionName, ParallelActionHandler> = {
+export const parallelActionHandlers: ProviderActionHandlers<"parallel", ParallelActionHandler> = {
   async search(input, context) {
     const payload = await requestParallel({
       path: "/v1/search",
@@ -209,7 +215,7 @@ function mapParallelHttpError(status: number, payload: unknown, phase: "validate
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 408) {
     return new ProviderRequestError(504, message);
@@ -217,7 +223,7 @@ function mapParallelHttpError(status: number, payload: unknown, phase: "validate
   if (status === 401 || status === 403 || status === 404 || status === 422) {
     return new ProviderRequestError(status === 404 ? 404 : 400, message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function readParallelErrorMessage(payload: unknown) {

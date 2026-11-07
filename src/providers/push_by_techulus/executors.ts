@@ -1,19 +1,25 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
-import type { PushByTechulusActionName } from "./actions.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineProviderExecutors,
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
-  requireApiKeyCredential,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "push_by_techulus";
 const pushByTechulusApiBaseUrl = "https://push.techulus.com/api/v1";
-const pushByTechulusDefaultRequestTimeoutMs = 30_000;
 
 type PushByTechulusRequestPhase = "validate" | "execute";
 
@@ -28,7 +34,7 @@ type PushByTechulusActionHandler = (
   context: PushByTechulusActionContext,
 ) => Promise<unknown>;
 
-export const pushByTechulusActionHandlers: Record<PushByTechulusActionName, PushByTechulusActionHandler> = {
+export const pushByTechulusActionHandlers: ProviderActionHandlers<"push_by_techulus", PushByTechulusActionHandler> = {
   send_notification(input, context) {
     return sendPushByTechulusNotification("notify", input, context);
   },
@@ -48,6 +54,16 @@ export const executors: ProviderExecutors = defineProviderExecutors<PushByTechul
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: pushByTechulusApiBaseUrl,
+  auth: { type: "api_key_header", name: "x-api-key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 
@@ -104,7 +120,7 @@ async function requestPushByTechulusJson(input: {
   context: PushByTechulusActionContext;
   phase: PushByTechulusRequestPhase;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, pushByTechulusDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   let response: Response;
   try {
     response = await input.context.fetcher(new URL(input.path, `${pushByTechulusApiBaseUrl}/`), {
@@ -122,7 +138,7 @@ async function requestPushByTechulusJson(input: {
     if (timeout.didTimeout()) {
       throw new ProviderRequestError(
         504,
-        `push_by_techulus request timed out after ${pushByTechulusDefaultRequestTimeoutMs}ms`,
+        `push_by_techulus request timed out after ${defaultProviderRequestTimeoutMs}ms`,
       );
     }
     if (isAbortLikeError(error)) {

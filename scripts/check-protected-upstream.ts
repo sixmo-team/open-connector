@@ -42,9 +42,9 @@ export function findCutoverViolations(rootDir = process.cwd()): string[] {
   if (existsSync(packagePath)) {
     const scripts =
       (JSON.parse(readFileSync(packagePath, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {};
-    if (scripts.start !== "node src/saas/index.ts") violations.push("package start is not the SaaS runtime");
-    if (scripts.dev !== "node --watch src/saas/index.ts") violations.push("package dev is not the SaaS runtime");
-    if (scripts.migrate !== "node scripts/saas-migrate.ts") violations.push("package migrate is not the SaaS migrator");
+    if (scripts.start !== "node --experimental-transform-types src/saas/index.ts") violations.push("package start is not the SaaS runtime");
+    if (scripts.dev !== "node --experimental-transform-types --watch src/saas/index.ts") violations.push("package dev is not the SaaS runtime");
+    if (scripts.migrate !== "node --experimental-transform-types scripts/saas-migrate.ts") violations.push("package migrate is not the SaaS migrator");
     const scriptText = JSON.stringify(scripts);
     for (const marker of forbiddenRuntimeMarkers) {
       if (scriptText.includes(marker)) violations.push(`legacy package script marker: ${marker}`);
@@ -54,7 +54,7 @@ export function findCutoverViolations(rootDir = process.cwd()): string[] {
   const dockerPath = resolve(rootDir, "docker/Dockerfile");
   if (existsSync(dockerPath)) {
     const dockerfile = readFileSync(dockerPath, "utf8");
-    if (!dockerfile.includes('CMD ["node", "src/saas/index.ts"]'))
+    if (!dockerfile.includes('CMD ["node", "--experimental-transform-types", "src/saas/index.ts"]'))
       violations.push("Dockerfile does not start the SaaS runtime");
     for (const marker of [
       "src/server/",
@@ -69,14 +69,14 @@ export function findCutoverViolations(rootDir = process.cwd()): string[] {
   }
 
   const legacyRoot = resolve(rootDir, "src/server");
-  for (const file of sourceFiles(resolve(rootDir, "src/saas"))) {
+  for (const file of sourceFiles(resolve(rootDir, "src"))) {
     const source = readFileSync(file, "utf8");
-    for (const match of source.matchAll(/(?:from\s+|import\()\s*["']([^"']+)["']/g)) {
+    for (const match of source.matchAll(/(?:from\s+|import\s*(?:\(\s*)?)["']([^"']+)["']/g)) {
       const specifier = match[1];
       if (!specifier?.startsWith(".")) continue;
       const target = resolve(file, "..", specifier);
       if (target === legacyRoot || target.startsWith(`${legacyRoot}/`)) {
-        violations.push(`SaaS import resolves into legacy runtime: ${relative(rootDir, file)} -> ${specifier}`);
+        violations.push(`Native import resolves into legacy runtime: ${relative(rootDir, file)} -> ${specifier}`);
       }
     }
   }

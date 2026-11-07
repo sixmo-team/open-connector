@@ -1,19 +1,18 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { EmailoctopusActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
-import {
-  compactObject,
-  objectArray,
-  optionalInteger,
-  optionalRecord,
-  optionalString,
-  requiredString,
-} from "../../core/cast.ts";
+import { compactObject, objectArray, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
-const emailoctopusApiBaseUrl = "https://emailoctopus.com/api/1.6";
+export const emailoctopusApiBaseUrl = "https://emailoctopus.com/api/1.6";
 const emailoctopusValidationPath = "/lists";
 
 interface EmailoctopusRequestOptions {
@@ -27,7 +26,7 @@ interface EmailoctopusRequestOptions {
 
 type EmailoctopusActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
 
-export const emailoctopusActionHandlers: Record<EmailoctopusActionName, EmailoctopusActionHandler> = {
+export const emailoctopusActionHandlers: ProviderActionHandlers<"emailoctopus", EmailoctopusActionHandler> = {
   list_lists(input, context) {
     return listLists(input, context);
   },
@@ -112,7 +111,7 @@ async function listLists(input: Record<string, unknown>, context: ApiKeyProvider
 async function getList(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
   const payload = await requestEmailoctopusJson({
     context,
-    path: `/lists/${encodePathSegment(readRequiredString(input.list_id, "list_id"))}`,
+    path: `/lists/${encodePathSegment(requiredInputString(input.list_id, "list_id"))}`,
     mode: "execute",
   });
 
@@ -122,7 +121,7 @@ async function getList(input: Record<string, unknown>, context: ApiKeyProviderCo
 async function listListContacts(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
   const payload = await requestEmailoctopusJson({
     context,
-    path: `/lists/${encodePathSegment(readRequiredString(input.list_id, "list_id"))}/contacts`,
+    path: `/lists/${encodePathSegment(requiredInputString(input.list_id, "list_id"))}/contacts`,
     query: compactObject({
       limit: optionalInteger(input.limit),
       page: optionalInteger(input.page),
@@ -149,10 +148,10 @@ async function getListContact(input: Record<string, unknown>, context: ApiKeyPro
 async function createListContact(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
   const payload = await requestEmailoctopusJson({
     context,
-    path: `/lists/${encodePathSegment(readRequiredString(input.list_id, "list_id"))}/contacts`,
+    path: `/lists/${encodePathSegment(requiredInputString(input.list_id, "list_id"))}/contacts`,
     method: "POST",
     body: compactObject({
-      email_address: readRequiredString(input.email_address, "email_address"),
+      email_address: requiredInputString(input.email_address, "email_address"),
       fields: optionalRecord(input.fields),
       tags: optionalStringArray(input.tags),
       status: optionalString(input.status),
@@ -211,7 +210,7 @@ async function listCampaigns(input: Record<string, unknown>, context: ApiKeyProv
 async function getCampaign(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
   const payload = await requestEmailoctopusJson({
     context,
-    path: `/campaigns/${encodePathSegment(readRequiredString(input.campaign_id, "campaign_id"))}`,
+    path: `/campaigns/${encodePathSegment(requiredInputString(input.campaign_id, "campaign_id"))}`,
     mode: "execute",
   });
 
@@ -348,10 +347,10 @@ function createEmailoctopusHttpError(
     return new ProviderRequestError(429, message);
   }
   if (mode === "validate" && status === 401) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 400 || status === 404 || status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status || 500, message);
 }
@@ -368,17 +367,13 @@ function buildJsonHeaders(hasBody: boolean): Record<string, string> {
 }
 
 function contactPath(input: Record<string, unknown>): string {
-  return `/lists/${encodePathSegment(readRequiredString(input.list_id, "list_id"))}/contacts/${encodePathSegment(
-    readRequiredString(input.contact_id, "contact_id"),
+  return `/lists/${encodePathSegment(requiredInputString(input.list_id, "list_id"))}/contacts/${encodePathSegment(
+    requiredInputString(input.contact_id, "contact_id"),
   )}`;
 }
 
-function readRequiredString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function readObjectArray(value: unknown, fieldName: string): Array<Record<string, unknown>> {
-  return Array.isArray(value) ? objectArray(value, fieldName, (message) => new ProviderRequestError(502, message)) : [];
+  return Array.isArray(value) ? objectArray(value, fieldName, providerResponseError) : [];
 }
 
 function optionalStringArray(value: unknown): string[] | undefined {

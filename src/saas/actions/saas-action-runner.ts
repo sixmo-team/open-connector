@@ -1,12 +1,21 @@
 import type { CatalogStore, RuntimeActionDefinition } from "../../catalog-store.ts";
-import type { ExecutionConnection, IConnectionStore } from "../../connection-service.ts";
+import type { ConnectionService } from "../../connection-service.ts";
+import type { RuntimeExecutionOptions } from "../../core/runtime-execution.ts";
 import type { ExecutionContext, ExecutionResult, RuntimeLogger, TransitFileWriter } from "../../core/types.ts";
+import type { ExecutionTarget } from "../../execution-target.ts";
+import type { MarketplaceService } from "../../marketplace/marketplace-service.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
 import type { SaasRequestScope } from "../contracts.ts";
+import type { SaasExecutionService } from "../saas-execution-service.ts";
+import type { PostgresActionPolicyStore } from "../storage/postgres-action-policy-store.ts";
+import type { SaasRuntimeConnectionStore } from "../storage/postgres-runtime-database.ts";
 
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
+import { ExecutionError } from "../../core/execution-error.ts";
 import { executeAction } from "../../core/execution.ts";
+import { withRuntimeExecution } from "../../core/runtime-execution.ts";
+import { resolveExecutionTarget } from "../../execution-target.ts";
 import { maximumActionOutputBytes } from "../contracts.ts";
 import { createIdempotencyExpiry, hashIdempotencyKey, readIdempotencyKey } from "./action-idempotency.ts";
 import { canonicalActionRequestHash } from "./canonical-request.ts";
@@ -96,16 +105,15 @@ export interface SaasActionIdempotencyStore {
   completeAction(input: SaasIdempotencyCompletionInput): Promise<boolean>;
 }
 
-export interface SaasExecutionConnections {
-  resolveForExecution(service: string, connectionName?: string): Promise<ExecutionConnection>;
-}
-
-export interface SaasActionRunnerOptions {
+export interface SaasActionRunnerOptions extends RuntimeExecutionOptions {
   scope: Readonly<SaasRequestScope>;
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
-  connectionStore: IConnectionStore;
-  connections: SaasExecutionConnections;
+  connectionStore: Pick<SaasRuntimeConnectionStore, "getSafeConnection">;
+  connections: Pick<ConnectionService, "getConnectionSummary" | "resolveConnection">;
+  actionPolicy: Pick<PostgresActionPolicyStore, "getEffectiveForActor">;
+  saasExecution?: Pick<SaasExecutionService, "executeAction">;
+  marketplace?: MarketplaceService;
   idempotency: SaasActionIdempotencyStore;
   journal: ExecutionJournal;
   transitFiles?: TransitFileWriter;
@@ -131,7 +139,7 @@ export class SaasActionRunner {
 
     const now = new Date();
     const claimId = randomUUID();
-    const keyHash = hashIdempotencyKey(key.key);
+    const keyHash = hashIdempotencyKey(JSON.stringify([this.options.scope.actorUserId, key.key]));
     const claimInput: SaasIdempotencyClaimInput = {
       keyHash,
       requestHash: binding.requestHash,
@@ -146,6 +154,8 @@ export class SaasActionRunner {
       return reconciliation("idempotency_unavailable");
     }
     if (claim.kind === "completed") {
+      const current = await this.authorize(request);
+      if (!current.ok) return current.result;
       if (claim.response.ok && jsonBytes(claim.response.output) > binding.maxOutputBytes) {
         return failed(
           "action_output_too_large",
@@ -178,21 +188,65 @@ export class SaasActionRunner {
     }
 
     let execution: ExecutionResult;
-    let connection: ExecutionConnection;
     try {
-      connection = await this.options.connections.resolveForExecution(binding.action.service, binding.connectionName);
-      const executor = binding.action.execution.locallyExecutable
-        ? await this.options.providerLoader.loadActionExecutor(
-            binding.action.service,
-            binding.action.id,
-            this.options.catalog.providers.find((provider) => provider.service === binding.action.service)?.displayName,
-          )
-        : undefined;
-      execution = await executeAction(
-        binding.action,
-        executor,
-        request.input,
-        this.executionContext(connection, request.signal),
+      execution = await withRuntimeExecution(
+        this.options,
+        {
+          operation: "action",
+          service: binding.action.service,
+          actionId: binding.action.id,
+          executionId,
+          connectionId: binding.connectionId,
+          connectionName: binding.connectionName,
+        },
+        async () => {
+          const connection = await resolveExecutionTarget({
+            connections: this.options.connections,
+            service: binding.action.service,
+            connectionName: binding.connectionName,
+            connectionId: binding.connectionId,
+            operation: "action",
+            actionId: binding.action.id,
+            marketplace: this.options.marketplace,
+            signal: request.signal,
+          });
+          if (connection.summary?.id !== binding.connectionId) {
+            throw new ExecutionError("connection_changed", "Connection changed before execution.", "conflict");
+          }
+          const executor =
+            connection.kind === "local" && binding.action.execution.locallyExecutable
+              ? await this.options.providerLoader.loadActionExecutor(
+                  binding.action.service,
+                  binding.action.id,
+                  this.options.catalog.providers.find((provider) => provider.service === binding.action.service)
+                    ?.displayName,
+                )
+              : undefined;
+          const current = await this.authorize(request);
+          if (!current.ok) return current.result;
+          if (connection.kind === "saas") {
+            if (!this.options.saasExecution) {
+              throw new ExecutionError("oauth_source_unavailable", "SaaS execution is not configured.", "unavailable");
+            }
+            const remote = await this.options.saasExecution.executeAction(
+              connection.reference,
+              binding.action.service,
+              binding.action.id,
+              request.input,
+              request.signal,
+            );
+            return { ok: true, output: remote.output };
+          }
+          if (connection.kind === "marketplace") {
+            return this.options.marketplace!.execute(binding.action.id, request.input, request.signal);
+          }
+          return executeAction(
+            binding.action,
+            executor,
+            request.input,
+            this.executionContext(connection, request.signal),
+          );
+        },
       );
     } catch {
       await this.markUnknown(executionId, startedAtMs);
@@ -282,13 +336,13 @@ export class SaasActionRunner {
       }
     | { ok: false; result: SaasActionFailure }
   > {
-    const action = this.options.catalog.actionsById.get(request.actionId);
+    const summary = this.options.catalog.actionsById.get(request.actionId);
     const maxOutputBytes = this.options.scope.maxOutputBytes;
     if (
-      this.options.scope.purpose !== "action:execute" ||
-      !this.options.scope.permissions.includes("action:execute") ||
-      !action ||
-      action.id !== this.options.scope.actionId ||
+      this.options.scope.purpose !== "action:execute:v2" ||
+      !this.options.scope.permissions.includes("action:execute:v2") ||
+      !summary ||
+      summary.id !== this.options.scope.actionId ||
       request.connectorConnectionId !== this.options.scope.connectorConnectionId ||
       typeof maxOutputBytes !== "number" ||
       !Number.isSafeInteger(maxOutputBytes) ||
@@ -300,7 +354,7 @@ export class SaasActionRunner {
 
     let requestHash: string;
     try {
-      requestHash = canonicalActionRequestHash(action.id, request.connectorConnectionId, request.input);
+      requestHash = canonicalActionRequestHash(summary.id, request.connectorConnectionId, request.input);
     } catch {
       return { ok: false, result: failed("invalid_input", "Action input must be canonical JSON.") };
     }
@@ -308,16 +362,40 @@ export class SaasActionRunner {
       return { ok: false, result: failed("request_hash_mismatch", "Action request does not match its authorization.") };
     }
 
+    let action: RuntimeActionDefinition | undefined;
     try {
-      // ponytail: reuse the scoped upstream contract; add a metadata-only getById if connection counts make this measurable.
-      const connection = (await this.options.connectionStore.list()).find(
-        (candidate) => candidate.id === request.connectorConnectionId,
-      );
-      if (!connection || connection.service !== action.service) {
+      action = await this.options.catalog.getAction(summary.id);
+    } catch {
+      return { ok: false, result: failed("action_schema_unavailable", "Action definition could not be loaded.") };
+    }
+    if (!action) return { ok: false, result: failed("forbidden", "Action definition is unavailable.") };
+
+    try {
+      const connection = await this.options.connectionStore.getSafeConnection(request.connectorConnectionId);
+      if (
+        !connection ||
+        connection.service !== action.service ||
+        connection.localConnectionId !== this.options.scope.localConnectionId ||
+        connection.subjectUserId !== this.options.scope.subjectUserId ||
+        connection.status !== "active" ||
+        (this.options.scope.actorUserId !== this.options.scope.subjectUserId && connection.visibility !== "workspace")
+      ) {
         return {
           ok: false,
           result: failed("connection_provider_mismatch", "Connection is not authorized for this provider."),
         };
+      }
+      try {
+        const decisions = await this.options.actionPolicy.getEffectiveForActor(this.options.scope, [summary.id]);
+        const decision = decisions[0];
+        if (decisions.length !== 1 || decision?.actionId !== summary.id || typeof decision.enabled !== "boolean") {
+          return { ok: false, result: failed("action_policy_unavailable", "Action permission could not be verified.") };
+        }
+        if (!decision.enabled) {
+          return { ok: false, result: failed("action_not_granted", "This action is not permitted.") };
+        }
+      } catch {
+        return { ok: false, result: failed("action_policy_unavailable", "Action permission could not be verified.") };
       }
       return {
         ok: true,
@@ -332,7 +410,10 @@ export class SaasActionRunner {
     }
   }
 
-  private executionContext(connection: ExecutionConnection, signal: AbortSignal | undefined): ExecutionContext {
+  private executionContext(
+    connection: Extract<ExecutionTarget, { kind: "local" }>,
+    signal: AbortSignal | undefined,
+  ): ExecutionContext {
     return {
       getCredential: connection.getCredential,
       ...(this.options.transitFiles ? { transitFiles: this.options.transitFiles } : {}),

@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -7,11 +8,12 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 export const workastApiBaseUrl = "https://api.todobot.io";
 
-const workastRequestTimeoutMs = 30_000;
 const taskWriteKeys = ["text", "description", "startDate", "dueDate", "dueDateTimezone", "dueDateTime"] as const;
 
 type WorkastRequestPhase = "validate" | "execute";
@@ -28,7 +30,7 @@ interface WorkastRequestOptions {
   readonly body?: Readonly<Record<string, unknown>>;
 }
 
-export const workastActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const workastActionHandlers: ProviderActionHandlers<"workast", ProviderRuntimeHandler<ApiKeyProviderContext>> = {
   async get_my_details(_input, context) {
     const user = await requestWorkastJson({
       apiKey: context.apiKey,
@@ -115,7 +117,7 @@ export const workastActionHandlers: Record<string, ProviderRuntimeHandler<ApiKey
     const taskId = requireString(input.taskId, "taskId");
     const body = compactObject(pickTaskWriteFields(input));
     if (Object.keys(body).length == 0) {
-      throw providerError("invalid_input", "update_task requires at least one field to update", 400);
+      throw providerInputError("update_task requires at least one field to update");
     }
     const task = await requestWorkastJson({
       apiKey: context.apiKey,
@@ -179,7 +181,7 @@ async function getTask(
 }
 
 async function requestWorkastJson(options: WorkastRequestOptions) {
-  const timeout = createProviderTimeout(options.signal, workastRequestTimeoutMs);
+  const timeout = createProviderTimeout(options.signal);
   const url = new URL(`${workastApiBaseUrl}${options.path}`);
   appendQuery(url, options.query);
   const headers: Record<string, string> = {
@@ -204,20 +206,14 @@ async function requestWorkastJson(options: WorkastRequestOptions) {
   } catch (error) {
     if (error instanceof ProviderRequestError) throw error;
     if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw providerError("provider_error", "Workast request timed out", 504);
+      throw new ProviderRequestError(504, "Workast request timed out");
     }
-    throw providerError(
-      "provider_error",
+    throw providerResponseError(
       error instanceof Error ? `Workast request failed: ${error.message}` : "Workast request failed",
-      502,
     );
   } finally {
     timeout.cleanup();
   }
-}
-
-function providerError(_code: string, message: string, status: number): ProviderRequestError {
-  return new ProviderRequestError(status, message);
 }
 
 function appendQuery(url: URL, query: Readonly<Record<string, WorkastQueryValue>> | undefined) {
@@ -232,22 +228,20 @@ async function readResponsePayload(response: Response) {
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw providerError("provider_error", "Workast returned invalid JSON", 502);
+    throw providerResponseError("Workast returned invalid JSON");
   }
 }
 
 function mapWorkastError(status: number, payload: unknown, phase: WorkastRequestPhase) {
   const message = readErrorMessage(payload) ?? `Workast API request failed with status ${status}`;
   if (status == 401 || status == 403) {
-    return phase == "validate"
-      ? providerError("invalid_input", message, 400)
-      : providerError("credential_expired", message, 409);
+    return phase == "validate" ? providerInputError(message) : new ProviderRequestError(401, message);
   }
-  if (status == 429) return providerError("rate_limited", message, 429);
+  if (status == 429) return new ProviderRequestError(429, message);
   if (status == 400 || status == 404 || status == 409 || status == 422) {
-    return providerError("invalid_input", message, 400);
+    return providerInputError(message);
   }
-  return providerError("provider_error", message, 502);
+  return providerResponseError(message);
 }
 
 function readErrorMessage(payload: unknown) {
@@ -258,7 +252,7 @@ function readErrorMessage(payload: unknown) {
 function requireArrayPayload(payload: unknown, fieldName: string) {
   const candidate = Array.isArray(payload) ? payload : optionalRecord(payload)?.[fieldName];
   if (!Array.isArray(candidate)) {
-    throw providerError("provider_error", `Workast returned an invalid ${fieldName} payload`, 502);
+    throw providerResponseError(`Workast returned an invalid ${fieldName} payload`);
   }
   return candidate.map((item) => requireObjectPayload(item, fieldName));
 }
@@ -268,14 +262,14 @@ function requireObjectPayload(payload: unknown, fieldName: string) {
   const nested = optionalRecord(record?.[fieldName]);
   const candidate = nested ?? record;
   if (!candidate) {
-    throw providerError("provider_error", `Workast returned an invalid ${fieldName} payload`, 502);
+    throw providerResponseError(`Workast returned an invalid ${fieldName} payload`);
   }
   return candidate;
 }
 
 function requireString(value: unknown, fieldName: string) {
   if (typeof value != "string" || value.trim() == "") {
-    throw providerError("invalid_input", `${fieldName} must be a non-empty string`, 400);
+    throw providerInputError(`${fieldName} must be a non-empty string`);
   }
   return value;
 }

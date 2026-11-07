@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { ScraperapiActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -16,6 +17,7 @@ import {
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 type ScraperapiPhase = "validate" | "execute";
@@ -31,7 +33,7 @@ const scraperapiMaxResponseBytes = 10 * 1024 * 1024;
 const scraperapiMaxErrorBytes = 64 * 1024;
 const maxNonJsonErrorMessageLength = 300;
 
-export const scraperapiActionHandlers: Record<ScraperapiActionName, ScraperapiActionHandler> = {
+export const scraperapiActionHandlers: ProviderActionHandlers<"scraperapi", ScraperapiActionHandler> = {
   async scrape_url(input, context) {
     const customHeaders = readOptionalStringRecord(input.customHeaders, "customHeaders");
     const response = await requestScraperapiRaw(
@@ -175,7 +177,7 @@ async function requestScraperapiUrl(
 function buildScraperapiUrl(url: string, query: Record<string, ScraperapiQueryValue>, apiKey: string): URL {
   const requestUrl = assertPublicHttpUrl(url, {
     fieldName: "url",
-    createError: (message) => new ProviderRequestError(400, message),
+    createError: providerInputError,
   });
   requestUrl.searchParams.set("api_key", apiKey);
   for (const [key, value] of Object.entries(query)) {
@@ -272,13 +274,13 @@ function createScraperapiError(status: number, body: string, phase: ScraperapiPh
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && status === 401) {
     return new ProviderRequestError(401, message);
   }
   if (phase === "execute" && status === 400) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status || 500, message);
 }

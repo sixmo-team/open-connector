@@ -2,20 +2,36 @@ import type {
   ProviderCredentialRevocationOutcome,
   SaasProviderCredentialRevoker,
 } from "../connections/provider-credential-revoker.ts";
-import type { SafeConnectionSummary, SaasRequestScope } from "../contracts.ts";
+import type {
+  ActionPolicyAuditRecord,
+  ActionPolicyRecord,
+  SafeConnectionSummary,
+  SaasRequestScope,
+} from "../contracts.ts";
 import type { SeaweedFsTransitFileService } from "../files/seaweedfs-transit-files.ts";
+import type { PostgresActionPolicyStore } from "../storage/postgres-action-policy-store.ts";
+import type { PostgresConnectionRequestStore } from "../storage/postgres-connection-request-store.ts";
 import type {
   LifecycleConnectionCursor,
+  LifecycleConnectionRetirement,
   LifecyclePurgeConnection,
   PostgresConnectionStore,
 } from "../storage/postgres-connection-store.ts";
 import type { PostgresOAuthStateStore } from "../storage/postgres-oauth-state-store.ts";
 import type { PostgresRunStore } from "../storage/postgres-run-store.ts";
+import type { PostgresSaasProjectStore } from "../storage/postgres-saas-project-store.ts";
 import type { PostgresTransitFileStore, TransitFileRecord } from "../storage/postgres-transit-file-store.ts";
 import type { RunLog } from "../storage/run-store.ts";
+import type {
+  PostgresTriggerStore,
+  TriggerLifecycleCleanup,
+  TriggerSourceApplicationMetadata,
+  TriggerSubscriptionMetadata,
+} from "../triggers/postgres-trigger-store.ts";
 import type { Pool, PoolClient } from "pg";
 
 import { Buffer } from "node:buffer";
+import { toSafeConnectionSummary } from "../connections/safe-connection-summary.ts";
 import { lifecyclePurgeInputSchema } from "../contracts.ts";
 import { LifecyclePurgeClaimConflictError } from "../storage/postgres-connection-store.ts";
 import { decodeRunLogCursor } from "../storage/run-store.ts";
@@ -50,6 +66,15 @@ export interface LifecycleRecordCounts {
   oauthStates: LifecycleStatusSummary;
   idempotencyRecords: LifecycleStatusSummary;
   transitFiles: LifecycleStatusSummary;
+  actionGrants: number;
+  actionPolicyAudit: number;
+  connectionRequests: LifecycleStatusSummary;
+  saasCleanup: LifecycleStatusSummary;
+  connectionRetirements: number;
+  triggerSubscriptions: LifecycleStatusSummary;
+  triggerSourceApplications: number;
+  triggerSecrets: number;
+  triggerExecutionLeases: number;
 }
 
 export interface LifecycleExportPage {
@@ -58,6 +83,13 @@ export interface LifecycleExportPage {
   subjectUserId: string;
   connections: SafeConnectionSummary[];
   runs: SafeLifecycleRun[];
+  actionGrants: ActionPolicyRecord[];
+  actionPolicyAudit: ActionPolicyAuditRecord[];
+  connectionRequests: Array<{ id: string; status: string }>;
+  saasCleanup: Array<{ id: string; status: string }>;
+  connectionRetirements: LifecycleConnectionRetirement[];
+  triggerSubscriptions: TriggerSubscriptionMetadata[];
+  triggerSourceApplications: TriggerSourceApplicationMetadata[];
   counts: LifecycleRecordCounts;
   nextCursor: string | null;
 }
@@ -71,6 +103,16 @@ export interface LifecyclePurgeCounts {
   connectionSecrets: number;
   oauthStateSecrets: number;
   transitObjects: number;
+  actionGrants: number;
+  actionPolicyAudit: number;
+  connectionRequests: number;
+  saasCleanup: number;
+  connectionRetirements: number;
+  requestSecrets: number;
+  triggerSubscriptions: number;
+  triggerSourceApplications: number;
+  triggerSecrets: number;
+  triggerExecutionLeases: number;
 }
 export interface LifecycleRemoteRevocationAudit {
   revoked: number;
@@ -109,12 +151,33 @@ export class LifecyclePurgeConflictError extends Error {
 export interface ScopedLifecycleServiceOptions {
   pool: Pool;
   scope: Readonly<SaasRequestScope>;
+  actionPolicy: Pick<PostgresActionPolicyStore, "getLifecycleCounts" | "exportForLifecycle">;
+  connectionRequests: Pick<
+    PostgresConnectionRequestStore,
+    "listExactOwnedForLifecycle" | "countExactOwnedForLifecycle" | "purgeExactOwnedForLifecycle"
+  >;
+  saasProjects: Pick<
+    PostgresSaasProjectStore,
+    "listExactOwnedCleanupForLifecycle" | "countExactOwnedCleanupForLifecycle" | "drainExactOwnedCleanupForLifecycle"
+  >;
+  runSaasCleanup: () => Promise<void>;
+  triggers: Pick<
+    PostgresTriggerStore,
+    | "listExactOwnedForLifecycle"
+    | "countExactOwnedForLifecycle"
+    | "cleanupExactOwnedForLifecycle"
+    | "purgeExactOwnedForLifecycle"
+  >;
+  triggerCleanup?: TriggerLifecycleCleanup;
   connections: Pick<
     PostgresConnectionStore,
     | "listExactOwnedForLifecycle"
     | "prepareExactOwnedForLifecyclePurge"
     | "markExactOwnedLifecycleProviderRevocation"
     | "deleteExactOwnedLifecycleSecret"
+    | "listExactOwnedRetirementsForLifecycle"
+    | "countExactOwnedRetirementsForLifecycle"
+    | "purgeExactOwnedRetirementsForLifecycle"
   >;
   oauthStates: Pick<PostgresOAuthStateStore, "listExactOwnedForLifecycle" | "deleteExactOwnedLifecycleSecret">;
   runLogs: Pick<PostgresRunStore, "list">;
@@ -123,9 +186,19 @@ export interface ScopedLifecycleServiceOptions {
   credentialRevoker?: SaasProviderCredentialRevoker;
 }
 
+const lifecyclePhases = [
+  "connections",
+  "runs",
+  "policies",
+  "connectionRequests",
+  "saasCleanup",
+  "connectionRetirements",
+  "triggers",
+] as const;
+type LifecyclePhase = (typeof lifecyclePhases)[number];
 type LifecycleCursor =
-  | { v: 1; phase: "connections"; after: LifecycleConnectionCursor }
-  | { v: 1; phase: "runs"; after?: string };
+  | { phase: "connections"; after?: LifecycleConnectionCursor }
+  | { phase: Exclude<LifecyclePhase, "connections">; after?: string };
 
 /** Exact tenant/workspace/subject lifecycle export and purge. */
 export class ScopedLifecycleService {
@@ -139,47 +212,144 @@ export class ScopedLifecycleService {
     if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
       throw new TypeError("Lifecycle export limit must be between 1 and 100");
     }
-    const cursor = decodeCursor(input.cursor);
+    const cursor = decodeCursor(input.cursor, this.options.scope);
     const counts = await this.readCounts();
-    let connections: SafeConnectionSummary[] = [];
-    let runs: SafeLifecycleRun[] = [];
-    let nextCursor: string | null = null;
-
-    if (!cursor || cursor.phase === "connections") {
-      const page = await this.options.connections.listExactOwnedForLifecycle(cursor?.after, input.limit);
-      connections = page.items.map((connection) => ({ ...connection }));
-      if (page.nextCursor) {
-        nextCursor = encodeCursor({ v: 1, phase: "connections", after: page.nextCursor });
-      } else {
-        const remaining = input.limit - connections.length;
-        if (remaining > 0) {
-          const runPage = await this.options.runLogs.list({ limit: remaining });
-          runs = runPage.items.map(toSafeRun);
-          if (runPage.nextCursor) nextCursor = encodeCursor({ v: 1, phase: "runs", after: runPage.nextCursor });
-        } else if (counts.runs > 0) {
-          nextCursor = encodeCursor({ v: 1, phase: "runs" });
-        }
-      }
-    } else {
-      const runPage = await this.options.runLogs.list({ limit: input.limit, cursor: cursor.after });
-      runs = runPage.items.map(toSafeRun);
-      if (runPage.nextCursor) nextCursor = encodeCursor({ v: 1, phase: "runs", after: runPage.nextCursor });
-    }
-
-    return {
+    const result: LifecycleExportPage = {
       tenantId: this.options.scope.tenantId,
       workspaceId: this.options.scope.workspaceId,
       subjectUserId: this.options.scope.subjectUserId,
-      connections,
-      runs,
+      connections: [],
+      runs: [],
+      actionGrants: [],
+      actionPolicyAudit: [],
+      connectionRequests: [],
+      saasCleanup: [],
+      connectionRetirements: [],
+      triggerSubscriptions: [],
+      triggerSourceApplications: [],
       counts,
-      nextCursor,
+      nextCursor: null,
     };
+    let remaining = input.limit;
+    const totals: Record<LifecyclePhase, number> = {
+      connections: counts.connections,
+      runs: counts.runs,
+      policies: counts.actionGrants + counts.actionPolicyAudit,
+      connectionRequests: counts.connectionRequests.total,
+      saasCleanup: counts.saasCleanup.total,
+      connectionRetirements: counts.connectionRetirements,
+      triggers: counts.triggerSubscriptions.total + counts.triggerSourceApplications,
+    };
+    for (let index = cursor ? lifecyclePhases.indexOf(cursor.phase) : 0; index < lifecyclePhases.length; index++) {
+      const phase = lifecyclePhases[index]!;
+      let next: LifecycleCursor | undefined;
+      switch (phase) {
+        case "connections": {
+          const page = await this.options.connections.listExactOwnedForLifecycle(
+            cursor?.phase === phase ? cursor.after : undefined,
+            remaining,
+          );
+          result.connections.push(...page.items.map(toSafeConnectionSummary));
+          remaining -= page.items.length;
+          if (page.nextCursor) next = { phase, after: page.nextCursor };
+          break;
+        }
+        case "runs": {
+          const page = await this.options.runLogs.list({
+            limit: remaining,
+            cursor: cursor?.phase === phase ? cursor.after : undefined,
+          });
+          result.runs.push(...page.items.map(toSafeRun));
+          remaining -= page.items.length;
+          if (page.nextCursor) next = { phase, after: page.nextCursor };
+          break;
+        }
+        case "policies": {
+          const page = await this.options.actionPolicy.exportForLifecycle(this.options.scope, {
+            limit: remaining,
+            cursor: cursor?.phase === phase ? cursor.after : undefined,
+          });
+          result.actionGrants.push(...page.items);
+          result.actionPolicyAudit.push(...page.audit);
+          remaining -= page.items.length + page.audit.length;
+          if (page.nextCursor) next = { phase, after: page.nextCursor };
+          break;
+        }
+        case "connectionRequests": {
+          const page = await this.options.connectionRequests.listExactOwnedForLifecycle(
+            cursor?.phase === phase ? cursor.after : undefined,
+            remaining,
+          );
+          result.connectionRequests.push(...page.items);
+          remaining -= page.items.length;
+          if (page.nextCursor) next = { phase, after: page.nextCursor };
+          break;
+        }
+        case "saasCleanup": {
+          const page = await this.options.saasProjects.listExactOwnedCleanupForLifecycle(
+            cursor?.phase === phase ? cursor.after : undefined,
+            remaining,
+          );
+          result.saasCleanup.push(...page.items);
+          remaining -= page.items.length;
+          if (page.nextCursor) next = { phase, after: page.nextCursor };
+          break;
+        }
+        case "connectionRetirements": {
+          const page = await this.options.connections.listExactOwnedRetirementsForLifecycle(
+            cursor?.phase === phase ? cursor.after : undefined,
+            remaining,
+          );
+          result.connectionRetirements.push(...page.items);
+          remaining -= page.items.length;
+          if (page.nextCursor) next = { phase, after: page.nextCursor };
+          break;
+        }
+        case "triggers": {
+          const page = await this.options.triggers.listExactOwnedForLifecycle(
+            cursor?.phase === phase ? cursor.after : undefined,
+            remaining,
+          );
+          result.triggerSubscriptions.push(...page.subscriptions);
+          result.triggerSourceApplications.push(...page.sourceApplications);
+          remaining -= page.subscriptions.length + page.sourceApplications.length;
+          if (page.nextCursor) next = { phase, after: page.nextCursor };
+          break;
+        }
+      }
+      if (remaining < 0) throw new Error("Lifecycle store exceeded the combined page bound");
+      if (next) {
+        result.nextCursor = encodeCursor(next, this.options.scope);
+        break;
+      }
+      if (remaining === 0) {
+        for (let later = index + 1; later < lifecyclePhases.length; later++) {
+          const nextPhase = lifecyclePhases[later]!;
+          if (totals[nextPhase] > 0) {
+            result.nextCursor = encodeCursor({ phase: nextPhase }, this.options.scope);
+            break;
+          }
+        }
+        break;
+      }
+    }
+    return result;
   }
 
   async purge(input: { correlationId: string }, signal: AbortSignal): Promise<LifecyclePurgeResult> {
     const { correlationId } = lifecyclePurgeInputSchema.parse(input);
     try {
+      await this.requirePolicyPurged();
+      const triggerCounts = await this.options.triggers.countExactOwnedForLifecycle();
+      if (triggerCounts.requiresCleanup) {
+        const cleanup = this.options.triggerCleanup;
+        if (!cleanup) throw new Error("Native trigger cleanup is unavailable");
+        await this.options.triggers.cleanupExactOwnedForLifecycle((record, save, nativeSignal) =>
+          cleanup(record, save, AbortSignal.any([signal, nativeSignal])),
+        );
+      }
+      const triggers = await this.options.triggers.purgeExactOwnedForLifecycle();
+      const requests = await this.options.connectionRequests.purgeExactOwnedForLifecycle();
       const connections = await this.options.connections.prepareExactOwnedForLifecyclePurge(correlationId);
       const oauthStates = await this.listAllOAuthStates();
       const transitFiles = await this.listAllTransitFiles();
@@ -215,6 +385,9 @@ export class ScopedLifecycleService {
         oauthStates: oauthStates.length,
         transitFiles: transitFiles.length,
       });
+      const cleanup = await this.options.saasProjects.drainExactOwnedCleanupForLifecycle(this.options.runSaasCleanup);
+      const retirements = await this.options.connections.purgeExactOwnedRetirementsForLifecycle();
+      await this.requirePolicyPurged();
       return {
         tenantId: this.options.scope.tenantId,
         workspaceId: this.options.scope.workspaceId,
@@ -226,6 +399,16 @@ export class ScopedLifecycleService {
           connectionSecrets: connections.length,
           oauthStateSecrets: oauthStates.length,
           transitObjects: transitFiles.length,
+          actionGrants: 0,
+          actionPolicyAudit: 0,
+          connectionRequests: requests.deletedRequests,
+          requestSecrets: requests.deletedRequestSecrets,
+          saasCleanup: cleanup.deletedCleanup,
+          connectionRetirements: retirements,
+          triggerSubscriptions: triggers.deletedSubscriptions,
+          triggerSourceApplications: triggers.deletedSourceApplications,
+          triggerSecrets: triggers.deletedTriggerSecrets,
+          triggerExecutionLeases: triggers.deletedExecutionLeases,
         },
         remoteRevocations,
       };
@@ -305,8 +488,39 @@ export class ScopedLifecycleService {
     }
   }
 
+  private async requirePolicyPurged(): Promise<void> {
+    const counts = await this.options.actionPolicy.getLifecycleCounts(this.options.scope);
+    if (counts.actionGrants !== 0 || counts.actionPolicyAudit !== 0) {
+      throw new LifecycleReconciliationRequiredError(new Error("Dedicated action policy purge must complete first"));
+    }
+  }
+
   private async readCounts(): Promise<LifecycleRecordCounts> {
-    return await withScopedClient(this.options.pool, this.options.scope, async (client) => {
+    const [core, policy, requests, cleanup, retirements, triggers] = await Promise.all([
+      this.readCoreCounts(),
+      this.options.actionPolicy.getLifecycleCounts(this.options.scope),
+      this.options.connectionRequests.countExactOwnedForLifecycle(),
+      this.options.saasProjects.countExactOwnedCleanupForLifecycle(),
+      this.options.connections.countExactOwnedRetirementsForLifecycle(),
+      this.options.triggers.countExactOwnedForLifecycle(),
+    ]);
+    return {
+      ...core,
+      ...policy,
+      connectionRequests: requests,
+      saasCleanup: cleanup,
+      connectionRetirements: retirements,
+      triggerSubscriptions: triggers.subscriptions,
+      triggerSourceApplications: triggers.sourceApplications,
+      triggerSecrets: triggers.secrets,
+      triggerExecutionLeases: triggers.executionLeases,
+    };
+  }
+
+  private async readCoreCounts(): Promise<
+    Pick<LifecycleRecordCounts, "connections" | "runs" | "oauthStates" | "idempotencyRecords" | "transitFiles">
+  > {
+    return withScopedClient(this.options.pool, this.options.scope, async (client) => {
       const parameters = [
         this.options.scope.tenantId,
         this.options.scope.workspaceId,
@@ -332,20 +546,20 @@ export class ScopedLifecycleService {
         const values = result.rows.map(({ status, count: value }) => ({ status, count: Number(value) }));
         return { total: values.reduce((sum, value) => sum + value.count, 0), statuses: values };
       };
-      const [connections, runs, oauthStates, idempotencyRecords, transitFiles] = await Promise.all([
-        count("connections"),
-        count("run_intents"),
-        statuses("oauth_states"),
-        statuses("idempotency_records"),
-        statuses("transit_files"),
-      ]);
+      const connections = await count("connections");
+      const runs = await count("run_intents");
+      const oauthStates = await statuses("oauth_states");
+      const idempotencyRecords = await statuses("idempotency_records");
+      const transitFiles = await statuses("transit_files");
       return { connections, runs, oauthStates, idempotencyRecords, transitFiles };
     });
   }
 
   private async finalizePurge(
     expected: Pick<LifecyclePurgeCounts, "connections" | "oauthStates" | "transitFiles">,
-  ): Promise<Omit<LifecyclePurgeCounts, "connectionSecrets" | "oauthStateSecrets" | "transitObjects">> {
+  ): Promise<
+    Pick<LifecyclePurgeCounts, "connections" | "runs" | "oauthStates" | "idempotencyRecords" | "transitFiles">
+  > {
     return await withScopedClient(this.options.pool, this.options.scope, async (client) => {
       const parameters = [
         this.options.scope.tenantId,
@@ -434,59 +648,59 @@ function toSafeRun(run: RunLog): SafeLifecycleRun {
   };
 }
 
-function encodeCursor(cursor: LifecycleCursor): string {
-  const encoded = Buffer.from(JSON.stringify(cursor)).toString("base64url");
-  if (encoded.length > 512) throw new Error("Lifecycle cursor exceeds its wire bound");
+function encodeCursor(cursor: LifecycleCursor, scope: Readonly<SaasRequestScope>): string {
+  const encoded = Buffer.from(
+    JSON.stringify({ v: 2, target: [scope.tenantId, scope.workspaceId, scope.subjectUserId], ...cursor }),
+  ).toString("base64url");
+  if (encoded.length > 4096) throw new Error("Lifecycle cursor exceeds its wire bound");
   return encoded;
 }
 
-function decodeCursor(cursor: string | undefined): LifecycleCursor | undefined {
+function decodeCursor(cursor: string | undefined, scope: Readonly<SaasRequestScope>): LifecycleCursor | undefined {
   if (cursor === undefined) return undefined;
-  if (cursor.length < 1 || cursor.length > 512) throw new TypeError("Invalid lifecycle cursor");
-  let decoded: Buffer;
-  let value: unknown;
+  if (cursor.length < 1 || cursor.length > 4096) throw new TypeError("Invalid lifecycle cursor");
+  let value: Record<string, unknown>;
   try {
-    decoded = Buffer.from(cursor, "base64url");
-    if (decoded.toString("base64url") !== cursor) throw new Error("non-canonical base64url");
+    const decoded = Buffer.from(cursor, "base64url");
+    if (decoded.toString("base64url") !== cursor) throw new Error("non-canonical cursor");
     value = JSON.parse(decoded.toString("utf8"));
-  } catch {
-    throw new TypeError("Invalid lifecycle cursor");
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Invalid lifecycle cursor");
-  if (!("v" in value) || value.v !== 1 || !("phase" in value)) throw new TypeError("Invalid lifecycle cursor");
-  if (value.phase === "connections") {
     if (
-      Object.keys(value).length !== 3 ||
-      !("after" in value) ||
-      !value.after ||
-      typeof value.after !== "object" ||
-      Array.isArray(value.after) ||
-      Object.keys(value.after).length !== 2 ||
-      !("createdAt" in value.after) ||
-      typeof value.after.createdAt !== "string" ||
-      !Number.isFinite(Date.parse(value.after.createdAt)) ||
-      !("id" in value.after) ||
-      typeof value.after.id !== "string" ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.after.id)
-    ) {
-      throw new TypeError("Invalid lifecycle cursor");
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      value.v !== 2 ||
+      Object.keys(value).some((key) => !["v", "target", "phase", "after"].includes(key)) ||
+      !Array.isArray(value.target) ||
+      value.target.length !== 3 ||
+      value.target.some((part, index) => part !== [scope.tenantId, scope.workspaceId, scope.subjectUserId][index]) ||
+      typeof value.phase !== "string" ||
+      !lifecyclePhases.includes(value.phase as LifecyclePhase)
+    )
+      throw new Error("invalid cursor");
+    if (value.phase === "connections") {
+      if (value.after === undefined) return { phase: "connections" };
+      const after = value.after as Record<string, unknown>;
+      if (
+        !after ||
+        typeof after !== "object" ||
+        Array.isArray(after) ||
+        Object.keys(after).length !== 2 ||
+        typeof after.createdAt !== "string" ||
+        !Number.isFinite(Date.parse(after.createdAt)) ||
+        typeof after.id !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(after.id)
+      )
+        throw new Error("invalid connection cursor");
+      return { phase: "connections", after: { createdAt: after.createdAt, id: after.id } };
     }
-    return { v: 1, phase: "connections", after: { createdAt: value.after.createdAt, id: value.after.id } };
-  }
-  if (
-    value.phase !== "runs" ||
-    Object.keys(value).some((key) => key !== "v" && key !== "phase" && key !== "after") ||
-    Object.keys(value).length < 2 ||
-    Object.keys(value).length > 3
-  ) {
-    throw new TypeError("Invalid lifecycle cursor");
-  }
-  if (!("after" in value)) return { v: 1, phase: "runs" };
-  if (typeof value.after !== "string" || !value.after) throw new TypeError("Invalid lifecycle cursor");
-  try {
-    decodeRunLogCursor(value.after);
+    if (value.after !== undefined && (typeof value.after !== "string" || !value.after))
+      throw new Error("invalid opaque cursor");
+    if (value.phase === "runs" && value.after !== undefined) decodeRunLogCursor(value.after as string);
+    return {
+      phase: value.phase as Exclude<LifecyclePhase, "connections">,
+      ...(value.after === undefined ? {} : { after: value.after as string }),
+    };
   } catch {
     throw new TypeError("Invalid lifecycle cursor");
   }
-  return { v: 1, phase: "runs", after: value.after };
 }

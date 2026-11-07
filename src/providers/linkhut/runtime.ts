@@ -1,17 +1,17 @@
 import type { CredentialValidationResult, ResolvedCredential } from "../../core/types.ts";
-import type { OAuthProviderContext } from "../provider-runtime.ts";
-import type { LinkhutActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { OAuthProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 import { linkhutOAuthScopes } from "./actions.ts";
 
-const linkhutApiBaseUrl = "https://api.ln.ht/v1";
+export const linkhutApiBaseUrl = "https://api.ln.ht/v1";
 
 type LinkhutActionContext = OAuthProviderContext;
 type LinkhutActionHandler = (input: Record<string, unknown>, context: LinkhutActionContext) => Promise<unknown>;
 
-export const linkhutActionHandlers: Record<LinkhutActionName, LinkhutActionHandler> = {
+export const linkhutActionHandlers: ProviderActionHandlers<"linkhut", LinkhutActionHandler> = {
   add_bookmark(input, context) {
     return linkhutAddBookmark(input, context);
   },

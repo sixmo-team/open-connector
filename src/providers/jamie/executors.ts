@@ -1,8 +1,15 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 
 import { optionalString } from "../../core/cast.ts";
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
-import { jamieActionHandlers, readJamieKeyScope, validateJamieCredential } from "./runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { jamieActionHandlers, jamieApiBaseUrl, readJamieKeyScope, validateJamieCredential } from "./runtime.ts";
 
 const service = "jamie";
 
@@ -19,6 +26,16 @@ export const executors: ProviderExecutors = defineProviderExecutors({
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: jamieApiBaseUrl,
+  auth: { type: "api_key_header", name: "x-api-key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 

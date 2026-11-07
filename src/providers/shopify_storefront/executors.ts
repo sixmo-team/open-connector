@@ -4,16 +4,13 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ShopifyStorefrontActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  providerUserAgent,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "shopify_storefront";
 const shopifyStorefrontApiVersion = "2026-04";
@@ -262,7 +259,10 @@ const addCartLinesMutation = `mutation ShopifyStorefrontAddCartLines($cartId: ID
 
 ${cartFieldsFragment}`;
 
-export const shopifyStorefrontActionHandlers: Record<ShopifyStorefrontActionName, ShopifyStorefrontActionHandler> = {
+export const shopifyStorefrontActionHandlers: ProviderActionHandlers<
+  "shopify_storefront",
+  ShopifyStorefrontActionHandler
+> = {
   async get_shop(_input, context) {
     const payload = await requestShopifyStorefrontGraphQL(context, { query: currentShopQuery });
     return {

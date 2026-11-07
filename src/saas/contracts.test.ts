@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { canonicalActionRequestHash, canonicalRequestHash } from "./actions/canonical-request.ts";
 import {
+  connectorCredentialInputSchema,
+  connectorCredentialReplacementInputSchema,
   connectionVisibilityInputSchema,
   lifecyclePurgeInputSchema,
   maximumActionOutputBytes,
@@ -38,6 +40,21 @@ const validCatalogServiceClaims = {
 } as const;
 
 describe("parseConnectorIdentityClaims", () => {
+  it("rejects legacy action:execute v1 even with complete execution bindings", () => {
+    expect(() =>
+      parseConnectorIdentityClaims({
+        ...validClaims,
+        purpose: "action:execute",
+        permissions: ["action:execute"],
+        local_connection_id: "local-1",
+        connector_connection_id: "connector-1",
+        action_id: "gmail.messages_list",
+        max_output_bytes: maximumActionOutputBytes,
+        request_hash: canonicalActionRequestHash("gmail.messages_list", "connector-1", { maxResults: 10 }),
+      }),
+    ).toThrow();
+  });
+
   it("strictly rejects unknown wire claims", () => {
     expect(() => parseConnectorIdentityClaims({ ...validClaims, tenantId: "tenant-override" })).toThrow(
       /unrecognized key/i,
@@ -102,16 +119,16 @@ describe("parseConnectorIdentityClaims", () => {
   });
 
   it("requires every action execution binding", () => {
-    expect(() => parseConnectorIdentityClaims({ ...validClaims, purpose: "action:execute" })).toThrow(
-      "action:execute claims are incomplete",
+    expect(() => parseConnectorIdentityClaims({ ...validClaims, purpose: "action:execute:v2" })).toThrow(
+      "action:execute:v2 claims are incomplete",
     );
 
     const requestHash = canonicalActionRequestHash("gmail.messages_list", "connector-1", { maxResults: 10 });
     expect(
       parseConnectorIdentityClaims({
         ...validClaims,
-        purpose: "action:execute",
-        permissions: ["action:execute"],
+        purpose: "action:execute:v2",
+        permissions: ["action:execute:v2"],
         local_connection_id: "local-1",
         connector_connection_id: "connector-1",
         action_id: "gmail.messages_list",
@@ -128,8 +145,8 @@ describe("parseConnectorIdentityClaims", () => {
     expect(() =>
       parseConnectorIdentityClaims({
         ...validClaims,
-        purpose: "action:execute",
-        permissions: ["action:execute"],
+        purpose: "action:execute:v2",
+        permissions: ["action:execute:v2"],
         local_connection_id: "local-1",
         connector_connection_id: "connector-1",
         action_id: "gmail.messages_list",
@@ -140,8 +157,8 @@ describe("parseConnectorIdentityClaims", () => {
     expect(() =>
       parseConnectorIdentityClaims({
         ...validClaims,
-        purpose: "action:execute",
-        permissions: ["action:execute"],
+        purpose: "action:execute:v2",
+        permissions: ["action:execute:v2"],
         local_connection_id: "local-1",
         connector_connection_id: "connector-1",
         action_id: "gmail.messages_list",
@@ -150,7 +167,7 @@ describe("parseConnectorIdentityClaims", () => {
       }),
     ).toThrow();
     expect(() => parseConnectorIdentityClaims({ ...validClaims, max_output_bytes: 1 })).toThrow(
-      "max_output_bytes is only valid for action:execute claims",
+      "max_output_bytes is only valid for action:execute:v2 claims",
     );
   });
 
@@ -180,8 +197,8 @@ describe("parseConnectorIdentityClaims", () => {
     expect(() =>
       parseConnectorIdentityClaims({
         ...validClaims,
-        purpose: "action:execute",
-        permissions: ["action:execute"],
+        purpose: "action:execute:v2",
+        permissions: ["action:execute:v2"],
         local_connection_id: "local-1",
         connector_connection_id: "connector-1",
         action_id: "gmail.messages_list",
@@ -191,7 +208,7 @@ describe("parseConnectorIdentityClaims", () => {
     ).toThrow("request_hash must be a SHA-256 base64url digest");
   });
 
-  it("requires exact local and connector bindings for hashed connection writes", () => {
+  it("requires local lineage while allowing hashed connection creation and exact target writes", () => {
     expect(() =>
       parseConnectorIdentityClaims({
         ...validClaims,
@@ -210,7 +227,7 @@ describe("parseConnectorIdentityClaims", () => {
 
     const visibility = { visibility: "workspace" } as const;
     const requestHash = canonicalActionRequestHash("connection.visibility", "connector-1", visibility);
-    expect(() =>
+    expect(
       parseConnectorIdentityClaims({
         ...validClaims,
         purpose: "connection:write",
@@ -218,7 +235,7 @@ describe("parseConnectorIdentityClaims", () => {
         local_connection_id: "00000000-0000-4000-8000-000000000001",
         request_hash: requestHash,
       }),
-    ).toThrow("connection:write claims are incomplete");
+    ).toMatchObject({ localConnectionId: "00000000-0000-4000-8000-000000000001", requestHash });
     expect(
       parseConnectorIdentityClaims({
         ...validClaims,
@@ -342,5 +359,27 @@ describe("parseConnectorIdentityClaims", () => {
     expect(() => parseConnectorIdentityClaims({ ...validClaims, permissions: ["action:*"] })).toThrow(
       "wildcard permissions are forbidden",
     );
+  });
+});
+
+describe("public provider connection credentials", () => {
+  it("creates a real no-auth connection only without secrets and rejects credential replacement for it", () => {
+    const input = {
+      localConnectionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      service: "public_data",
+      connectionName: "public-account",
+      authType: "no_auth",
+      credentials: {},
+    };
+    expect(connectorCredentialInputSchema.parse(input)).toEqual(input);
+    expect(() =>
+      connectorCredentialInputSchema.parse({ ...input, credentials: { apiKey: "must-not-store" } }),
+    ).toThrow();
+    expect(() =>
+      connectorCredentialReplacementInputSchema.parse({
+        ...input,
+        connectorConnectionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      }),
+    ).toThrow();
   });
 });

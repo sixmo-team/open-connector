@@ -1,6 +1,7 @@
 import type { FeishuJsonRequest } from "./client.ts";
 
-import { ProviderRequestError } from "../../provider-runtime.ts";
+import { optionalNumber } from "../../../core/cast.ts";
+import { providerInputError, ProviderRequestError } from "../../provider-runtime.ts";
 
 interface CalendarActionHandler {
   (input: Record<string, unknown>): Promise<unknown>;
@@ -55,10 +56,9 @@ async function listAgenda(input: Record<string, unknown>, request: FeishuJsonReq
   const start = unixSeconds(input.startTime, "startTime");
   const end = unixSeconds(input.endTime, "endTime");
   if (end < start) {
-    throw invalidInput("endTime must be later than startTime");
+    throw providerInputError("endTime must be later than startTime");
   }
-
-  const windows = splitUnixRange(start, end, 40 * 24 * 60 * 60);
+  const windows = splitUnixRange(start, end, 40 * 24 * 60 * 60 - 1);
   const pages = await Promise.all(
     windows.map(([windowStart, windowEnd]) =>
       request({
@@ -79,7 +79,7 @@ async function searchEvents(input: Record<string, unknown>, request: FeishuJsonR
   const filter: Record<string, unknown> = {};
   if (input.startTime != null || input.endTime != null) {
     if (input.startTime == null || input.endTime == null) {
-      throw invalidInput("startTime and endTime must be provided together");
+      throw providerInputError("startTime and endTime must be provided together");
     }
     filter.time_range = {
       start_time: rfc3339(input.startTime, "startTime"),
@@ -318,13 +318,24 @@ async function getMeetingInfo(input: Record<string, unknown>, request: FeishuJso
     },
   });
   const items = recordArray(data.instance_relation_infos ?? data.items);
-  return { items, hasMore: false, pageToken: null };
+  return {
+    items,
+    hasMore: false,
+    pageToken: null,
+    failedInstances: recordArray(data.failed_instance_ids),
+  };
 }
 
 function buildEventBody(input: Record<string, unknown>, required: boolean) {
+  if ((input.startTime != null) !== (input.endTime != null)) {
+    throw providerInputError("startTime and endTime must be provided together");
+  }
+  if ((input.timezone !== undefined || input.isAllDay !== undefined) && input.startTime == null) {
+    throw providerInputError("timezone and isAllDay require startTime and endTime");
+  }
   const body: Record<string, unknown> = {};
   assignString(body, "summary", input.summary, required);
-  assignString(body, "description_rich", input.description);
+  assignScalar(body, "description_rich", input.description);
   assignScalar(body, "visibility", input.visibility);
   assignScalar(body, "attendee_ability", input.attendeeAbility);
   assignScalar(body, "free_busy_status", input.freeBusyStatus);
@@ -334,33 +345,41 @@ function buildEventBody(input: Record<string, unknown>, required: boolean) {
   if (input.startTime != null) {
     body.start_time = calendarTime(input.startTime, input.timezone, input.isAllDay);
   } else if (required) {
-    throw invalidInput("startTime is required");
+    throw providerInputError("startTime is required");
   }
   if (input.endTime != null) {
     body.end_time = calendarTime(input.endTime, input.timezone, input.isAllDay);
   } else if (required) {
-    throw invalidInput("endTime is required");
+    throw providerInputError("endTime is required");
   }
   if (
     input.startTime != null &&
     input.endTime != null &&
     unixSeconds(input.endTime, "endTime") <= unixSeconds(input.startTime, "startTime")
   ) {
-    throw invalidInput("endTime must be later than startTime");
+    throw providerInputError("endTime must be later than startTime");
+  }
+  if (Object.keys(body).length > 0) {
+    body.need_notification = input.notifyAttendees !== false;
   }
   return body;
 }
 
 function calendarTime(value: unknown, timezone: unknown, isAllDay: unknown) {
+  if (isAllDay === true) {
+    const date = requiredString(value, "time");
+    const parsed = new Date(date);
+    if (date.length !== 10 || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+      throw providerInputError("all-day event times must be valid YYYY-MM-DD dates with an exclusive end date");
+    }
+    return { date };
+  }
   const result: Record<string, unknown> = {
     timestamp: unixSeconds(value, "time").toString(),
   };
   const timezoneString = optionalString(timezone);
   if (timezoneString) {
     result.timezone = timezoneString;
-  }
-  if (typeof isAllDay === "boolean") {
-    result.is_all_day = isAllDay;
   }
   return result;
 }
@@ -463,22 +482,18 @@ function requiredString(value: unknown, field: string) {
   if (typeof value === "string" && value.length > 0) {
     return value;
   }
-  throw invalidInput(`${field} must be a non-empty string`);
+  throw providerInputError(`${field} must be a non-empty string`);
 }
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function optionalNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function requiredNumber(value: unknown, field: string) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
-  throw invalidInput(`${field} must be a number`);
+  throw providerInputError(`${field} must be a number`);
 }
 
 function unixSeconds(value: unknown, field: string) {
@@ -491,7 +506,7 @@ function unixSeconds(value: unknown, field: string) {
   if (Number.isFinite(milliseconds)) {
     return Math.trunc(milliseconds / 1000);
   }
-  throw invalidInput(`${field} must be an RFC 3339 date-time or Unix timestamp`);
+  throw providerInputError(`${field} must be an RFC 3339 date-time or Unix timestamp`);
 }
 
 function rfc3339(value: unknown, field: string) {
@@ -499,7 +514,7 @@ function rfc3339(value: unknown, field: string) {
   const numeric = Number(raw);
   const milliseconds = Number.isFinite(numeric) ? numeric * 1000 : Date.parse(raw);
   if (!Number.isFinite(milliseconds)) {
-    throw invalidInput(`${field} must be an RFC 3339 date-time or Unix timestamp`);
+    throw providerInputError(`${field} must be an RFC 3339 date-time or Unix timestamp`);
   }
   return new Date(milliseconds).toISOString();
 }
@@ -509,7 +524,7 @@ function assignString(target: Record<string, unknown>, key: string, value: unkno
   if (stringValue) {
     target[key] = stringValue;
   } else if (required) {
-    throw invalidInput(`${key} is required`);
+    throw providerInputError(`${key} is required`);
   }
 }
 
@@ -529,8 +544,4 @@ function encode(value: string) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
-}
-
-function invalidInput(message: string) {
-  return new ProviderRequestError(400, message);
 }

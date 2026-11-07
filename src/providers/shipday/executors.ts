@@ -1,13 +1,10 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ShipdayActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "shipday";
 const shipdayBaseUrl = "https://api.shipday.com";
@@ -30,7 +27,7 @@ interface ShipdayRequestInput {
 
 type ShipdayActionHandler = (input: Record<string, unknown>, context: ShipdayActionContext) => Promise<unknown>;
 
-export const shipdayActionHandlers: Record<ShipdayActionName, ShipdayActionHandler> = {
+export const shipdayActionHandlers: ProviderActionHandlers<"shipday", ShipdayActionHandler> = {
   list_active_orders(_input, context) {
     return listActiveOrders(context);
   },

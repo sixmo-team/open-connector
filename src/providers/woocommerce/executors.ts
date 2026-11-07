@@ -4,25 +4,31 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
+import type { PollDefinition } from "../../triggers/common/poll.ts";
 
 import { isPrivateNetworkAccessAllowed } from "../../core/request.ts";
+import { requireCustomCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireCustomCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  basicAuthorizationHeader,
+  createProviderFetch,
+  ProviderRequestError,
+  providerUserAgent,
 } from "../provider-runtime.ts";
 import {
   resolveWooCommerceCredentialContext,
   validateWooCommerceCredential,
   woocommerceActionHandlers,
 } from "./runtime.ts";
+import { wooCommerceStoreEvent } from "./trigger-on-store-event.ts";
 
 const service = "woocommerce";
 
@@ -52,7 +58,7 @@ export const proxy: ProviderProxyExecutor = async (input, context) => {
     const headers = normalizeProviderProxyHeaders(input.headers);
     headers.set(
       "authorization",
-      `Basic ${btoa(`${credentialContext.consumerKey}:${credentialContext.consumerSecret}`)}`,
+      basicAuthorizationHeader(`${credentialContext.consumerKey}:${credentialContext.consumerSecret}`),
     );
     headers.set("user-agent", providerUserAgent);
 
@@ -88,3 +94,5 @@ export const credentialValidators: CredentialValidators = {
     return validateWooCommerceCredential(input.values, guardedFetcher, signal);
   },
 };
+
+export const triggers: readonly (IntegrationDefinition | PollDefinition)[] = [wooCommerceStoreEvent];

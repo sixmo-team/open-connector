@@ -21,7 +21,7 @@ const scope: Readonly<SaasRequestScope> = Object.freeze({
   subjectUserId: "subject-exact",
   workspaceRole: "member",
   purpose: "lifecycle:delete",
-  permissions: Object.freeze(["lifecycle:delete"]) as unknown as string[],
+  permissions: ["lifecycle:delete"],
 });
 const correlationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
@@ -55,6 +55,7 @@ class FakeLifecyclePool {
   };
   failDeleteTable?: string;
   private snapshot?: Record<string, number>;
+  private fenced = false;
 
   readonly pool = {
     connect: async () => ({
@@ -66,14 +67,25 @@ class FakeLifecyclePool {
   private query(sql: string, parameters: unknown[]): { rows: unknown[]; rowCount: number } {
     this.queryParameters.push(parameters);
     if (sql === "BEGIN") {
+      if (this.snapshot) throw new Error("Unexpected nested lifecycle transaction");
       this.snapshot = { ...this.rows };
+      this.fenced = false;
       return { rows: [], rowCount: 0 };
     }
-    if (sql === "ROLLBACK") {
-      if (this.snapshot) this.rows = { ...this.snapshot };
+    if (sql === "ROLLBACK" || sql === "COMMIT") {
+      if (!this.snapshot) throw new Error("No lifecycle transaction to finish");
+      if (sql === "ROLLBACK") this.rows = { ...this.snapshot };
+      this.snapshot = undefined;
+      this.fenced = false;
       return { rows: [], rowCount: 0 };
     }
-    if (sql === "COMMIT" || sql.includes("set_config(")) return { rows: [], rowCount: 0 };
+    if (!this.snapshot) throw new Error("Lifecycle query requires a transaction");
+    if (sql.includes("set_config(")) return { rows: [], rowCount: 0 };
+    if (/^SELECT pg_advisory_xact_lock(?:_shared)?\(/.test(sql)) {
+      this.fenced = true;
+      return { rows: [], rowCount: 0 };
+    }
+    if (!this.fenced) throw new Error("Lifecycle data query requires a maintenance fence");
     const table = /integration_runtime\.([a-z_]+)/.exec(sql)?.[1];
     if (!table) throw new Error(`Unexpected SQL: ${sql}`);
     if (sql.includes("SELECT count(*) AS count")) {
@@ -119,6 +131,7 @@ function createHarness(
     transitCount?: number;
     runs?: RunLog[];
     safeConnections?: SafeStoredConnection[];
+    actionGrants?: number;
   } = {},
 ): Harness {
   const pool = new FakeLifecyclePool();
@@ -149,6 +162,15 @@ function createHarness(
   const runs = input.runs ?? [];
 
   const connectionStore: ScopedLifecycleServiceOptions["connections"] = {
+    async listExactOwnedRetirementsForLifecycle() {
+      return { items: [] };
+    },
+    async countExactOwnedRetirementsForLifecycle() {
+      return 0;
+    },
+    async purgeExactOwnedRetirementsForLifecycle() {
+      return 0;
+    },
     async listExactOwnedForLifecycle(cursor, limit) {
       const offset = cursor ? safeConnections.findIndex(({ id }) => id === cursor.id) + 1 : 0;
       const items = safeConnections.slice(offset, offset + limit);
@@ -207,6 +229,67 @@ function createHarness(
   const service = new ScopedLifecycleService({
     pool: pool.pool,
     scope,
+    actionPolicy: {
+      async getLifecycleCounts() {
+        return { actionGrants: input.actionGrants ?? 0, actionPolicyAudit: 0 };
+      },
+      async exportForLifecycle() {
+        if (input.actionGrants) throw new Error("Nonempty policy export is outside this fixture");
+        return { items: [], audit: [], nextCursor: null };
+      },
+    },
+    connectionRequests: {
+      async listExactOwnedForLifecycle() {
+        return { items: [] };
+      },
+      async countExactOwnedForLifecycle() {
+        return { total: 0, statuses: [] };
+      },
+      async purgeExactOwnedForLifecycle() {
+        return { deletedRequests: 0, deletedRequestSecrets: 0 };
+      },
+    },
+    saasProjects: {
+      async listExactOwnedCleanupForLifecycle() {
+        return { items: [] };
+      },
+      async countExactOwnedCleanupForLifecycle() {
+        return { total: 0, statuses: [] };
+      },
+      async drainExactOwnedCleanupForLifecycle() {
+        return { deletedCleanup: 0 };
+      },
+    },
+    async runSaasCleanup() {
+      throw new Error("No native SaaS cleanup records in this fixture");
+    },
+    triggers: {
+      async listExactOwnedForLifecycle() {
+        return { subscriptions: [], sourceApplications: [] };
+      },
+      async countExactOwnedForLifecycle() {
+        return {
+          subscriptions: { total: 0, statuses: [] },
+          sourceApplications: 0,
+          secrets: 0,
+          pendingSecrets: 0,
+          executionLeases: 0,
+          pendingExecutions: 0,
+          requiresCleanup: false,
+        };
+      },
+      async cleanupExactOwnedForLifecycle() {
+        throw new Error("No native triggers in this fixture");
+      },
+      async purgeExactOwnedForLifecycle() {
+        return {
+          deletedSubscriptions: 0,
+          deletedSourceApplications: 0,
+          deletedTriggerSecrets: 0,
+          deletedExecutionLeases: 0,
+        };
+      },
+    },
     connections: connectionStore,
     oauthStates: oauthStore,
     transitMetadata: transitStore,
@@ -251,6 +334,7 @@ describe("ScopedLifecycleService export", () => {
       localConnectionId: `30000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
       service: `service-${index}`,
       connectionName: `connection-${index}`,
+      subjectUserId: scope.subjectUserId,
       visibility: "user",
       status: index ? "failed" : "active",
       createdAt: `2026-01-0${index + 1}T00:00:00.000Z`,
@@ -289,6 +373,15 @@ describe("ScopedLifecycleService export", () => {
       oauthStates: { total: 2, statuses: [{ status: "pending", count: 2 }] },
       idempotencyRecords: { total: 1, statuses: [{ status: "completed", count: 1 }] },
       transitFiles: { total: 3, statuses: [{ status: "available", count: 3 }] },
+      actionGrants: 0,
+      actionPolicyAudit: 0,
+      connectionRequests: { total: 0, statuses: [] },
+      saasCleanup: { total: 0, statuses: [] },
+      connectionRetirements: 0,
+      triggerSubscriptions: { total: 0, statuses: [] },
+      triggerSourceApplications: 0,
+      triggerSecrets: 0,
+      triggerExecutionLeases: 0,
     });
 
     const second = await harness.service.exportPage({ cursor: first.nextCursor!, limit: 2 });
@@ -323,6 +416,16 @@ describe("ScopedLifecycleService export", () => {
 });
 
 describe("ScopedLifecycleService purge", () => {
+  it("refuses local erasure until dedicated action policy purge completes", async () => {
+    const harness = createHarness({ connectionCount: 1, actionGrants: 1 });
+    await expect(harness.service.purge({ correlationId }, AbortSignal.timeout(1_000))).rejects.toBeInstanceOf(
+      LifecycleReconciliationRequiredError,
+    );
+    expect(harness.events).toEqual([]);
+    expect(harness.pool.deletes).toEqual([]);
+    expect(harness.pool.rows.connections).toBe(1);
+  });
+
   it("is a zero-row idempotent success with exact FK-safe finalization", async () => {
     const harness = createHarness();
     const result = await harness.service.purge({ correlationId }, AbortSignal.timeout(1_000));
@@ -341,6 +444,16 @@ describe("ScopedLifecycleService purge", () => {
         connectionSecrets: 0,
         oauthStateSecrets: 0,
         transitObjects: 0,
+        actionGrants: 0,
+        actionPolicyAudit: 0,
+        connectionRequests: 0,
+        requestSecrets: 0,
+        saasCleanup: 0,
+        connectionRetirements: 0,
+        triggerSubscriptions: 0,
+        triggerSourceApplications: 0,
+        triggerSecrets: 0,
+        triggerExecutionLeases: 0,
       },
       remoteRevocations: { revoked: 0, unsupported: 0, unresolved: 0 },
     });
@@ -377,6 +490,16 @@ describe("ScopedLifecycleService purge", () => {
       connectionSecrets: 2,
       oauthStateSecrets: 201,
       transitObjects: 201,
+      actionGrants: 0,
+      actionPolicyAudit: 0,
+      connectionRequests: 0,
+      requestSecrets: 0,
+      saasCleanup: 0,
+      connectionRetirements: 0,
+      triggerSubscriptions: 0,
+      triggerSourceApplications: 0,
+      triggerSecrets: 0,
+      triggerExecutionLeases: 0,
     });
     expect(result.remoteRevocations).toEqual({ revoked: 2, unsupported: 0, unresolved: 0 });
     expect(harness.events.filter((event) => event.startsWith("oauth:"))).toHaveLength(201);

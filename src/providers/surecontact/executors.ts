@@ -1,6 +1,7 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 
-import { defineApiKeyProviderExecutors } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { surecontactActionHandlers, validateSureContactCredential } from "./runtime.ts";
 
 const service = "surecontact";
@@ -12,3 +13,9 @@ export const credentialValidators: CredentialValidators = {
     return validateSureContactCredential(input.apiKey, fetcher, signal);
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.surecontact.com/api/v1/public",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

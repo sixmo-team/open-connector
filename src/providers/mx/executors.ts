@@ -6,12 +6,10 @@ import type {
 } from "../../core/types.ts";
 import type { MxContext } from "./runtime.ts";
 
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { basicAuthorizationHeader, ProviderRequestError } from "../provider-runtime.ts";
 import { mxActionHandlers, mxApiBaseUrl, validateMxCredential } from "./runtime.ts";
 
 const service = "mx";
@@ -46,7 +44,7 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
     if (!clientId) {
       throw new ProviderRequestError(401, "Configure MX client ID first.");
     }
-    headers.set("authorization", `Basic ${btoa(`${clientId}:${credential.apiKey}`)}`);
+    headers.set("authorization", basicAuthorizationHeader(`${clientId}:${credential.apiKey}`));
     headers.set("accept", "application/vnd.mx.api.v1+json");
     headers.set("accept-version", "v20250224");
   },

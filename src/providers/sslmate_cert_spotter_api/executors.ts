@@ -1,18 +1,16 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineApiKeyProviderExecutors,
   normalizeProviderProxyEndpoint,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 import {
   certSpotterActionHandlers,
   certSpotterCtSearchApiBaseUrl,
@@ -23,11 +21,9 @@ import {
 const service = "sslmate_cert_spotter_api";
 const ctSearchProxyPrefix = "/ct-search";
 
-const certSpotterFetch = createProviderFetch({ skipDnsValidation: true });
+const certSpotterFetch = createProviderFetch();
 
-export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, certSpotterActionHandlers, {
-  skipDnsValidation: true,
-});
+export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, certSpotterActionHandlers);
 
 export const proxy: ProviderProxyExecutor = async (input, context) => {
   try {

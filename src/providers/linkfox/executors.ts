@@ -1,17 +1,22 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { defineApiKeyProviderExecutors, defineProviderProxy } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors, mapProviderActionHandlers } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { linkfoxActions } from "./actions.ts";
 import { executeLinkfoxAction, linkfoxApiBaseUrl, validateLinkfoxCredential } from "./runtime.ts";
 
 const service = "linkfox";
-const handlers: Record<string, (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>> =
-  {};
-for (const action of linkfoxActions) {
-  handlers[action.name] = (input, context) =>
-    executeLinkfoxAction(action.name, input, context.apiKey, context.fetcher, context.signal);
-}
+const handlers: ProviderActionHandlers<
+  "linkfox",
+  (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>
+> = mapProviderActionHandlers(
+  service,
+  linkfoxActions,
+  (_action, name) => (input, context) =>
+    executeLinkfoxAction(name, input, context.apiKey, context.fetcher, context.signal),
+);
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, handlers, {
   skipDnsValidation: true,

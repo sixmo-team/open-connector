@@ -1,16 +1,21 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ClockifyActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  providerUserAgent,
+  ProviderRequestError,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 const clockifyApiBaseUrl = "https://api.clockify.me/api/v1";
 
 type ClockifyRequestPhase = "validate" | "execute";
 type ClockifyActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const clockifyActionHandlers: Record<ClockifyActionName, ClockifyActionHandler> = {
+export const clockifyActionHandlers: ProviderActionHandlers<"clockify", ClockifyActionHandler> = {
   get_current_user(input, context) {
     return getCurrentUser(input, context);
   },
@@ -402,16 +407,16 @@ async function readClockifyPayload(response: Response): Promise<unknown> {
 function createClockifyError(response: Response, payload: unknown, phase: ClockifyRequestPhase): ProviderRequestError {
   const message = readClockifyErrorMessage(payload) ?? `Clockify request failed with status ${response.status}`;
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 404) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 429) {
     return new ProviderRequestError(429, message);
   }
   if (response.status >= 500) {
-    return new ProviderRequestError(502, message);
+    return providerResponseError(message);
   }
   return new ProviderRequestError(response.status, message);
 }

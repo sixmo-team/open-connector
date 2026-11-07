@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -11,9 +13,8 @@ import {
 } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
-const neonApiBaseUrl = "https://console.neon.tech/api/v2";
+export const neonApiBaseUrl: string = "https://console.neon.tech/api/v2";
 
-type NeonRequestPhase = "validate" | "execute";
 type NeonQueryValue = string | number | boolean | undefined;
 type NeonActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type NeonActionHandler = (input: Record<string, unknown>, context: NeonActionContext) => Promise<unknown>;
@@ -22,7 +23,6 @@ interface NeonRequestInput {
   apiKey: string;
   path: string;
   fetcher: ProviderFetch;
-  phase: NeonRequestPhase;
   signal?: AbortSignal;
   method?: "GET" | "POST" | "PATCH" | "DELETE";
   query?: Record<string, NeonQueryValue>;
@@ -31,7 +31,7 @@ interface NeonRequestInput {
   allowNoContent?: boolean;
 }
 
-export const neonActionHandlers: Record<string, NeonActionHandler> = {
+export const neonActionHandlers: ProviderActionHandlers<"neon", NeonActionHandler> = {
   get_current_user(_input, context) {
     return getCurrentUser(context);
   },
@@ -99,7 +99,6 @@ export async function validateNeonCredential(
       path: "/users/me",
       fetcher,
       signal,
-      phase: "validate",
     }),
   );
   const profileId = optionalString(profile.id);
@@ -136,7 +135,6 @@ async function getCurrentUser(context: NeonActionContext): Promise<Record<string
       path: "/users/me",
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
     }),
   );
 }
@@ -148,7 +146,6 @@ async function listProjects(input: Record<string, unknown>, context: NeonActionC
       path: "/projects",
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       query: compactObject({
         cursor: optionalString(input.cursor),
         limit: optionalNumber(input.limit),
@@ -175,7 +172,6 @@ async function getProject(input: Record<string, unknown>, context: NeonActionCon
       path: `/projects/${encodeURIComponent(projectId)}`,
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
     }),
     "project detail response",
@@ -194,7 +190,6 @@ async function createProject(input: Record<string, unknown>, context: NeonAction
       method: "POST",
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       body: {
         project: compactObject({
           name: readRequiredInputString(input, "name"),
@@ -228,7 +223,6 @@ async function updateProject(input: Record<string, unknown>, context: NeonAction
       method: "PATCH",
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
       body: {
         project: compactObject({
@@ -255,7 +249,6 @@ async function deleteProject(input: Record<string, unknown>, context: NeonAction
       method: "DELETE",
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
     }),
     "delete project response",
@@ -275,7 +268,6 @@ async function listBranches(input: Record<string, unknown>, context: NeonActionC
       path: `/projects/${encodeURIComponent(projectId)}/branches`,
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
       query: compactObject({
         search: optionalString(input.search),
@@ -304,7 +296,6 @@ async function getBranch(input: Record<string, unknown>, context: NeonActionCont
       path: `/projects/${encodeURIComponent(projectId)}/branches/${encodeURIComponent(branchId)}`,
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
     }),
     "branch detail response",
@@ -328,7 +319,6 @@ async function createBranch(input: Record<string, unknown>, context: NeonActionC
       method: "POST",
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
       body: {
         branch: compactObject({
@@ -361,7 +351,6 @@ async function updateBranch(input: Record<string, unknown>, context: NeonActionC
       method: "PATCH",
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
       body: {
         branch: compactObject({
@@ -388,7 +377,6 @@ async function deleteBranch(input: Record<string, unknown>, context: NeonActionC
     method: "DELETE",
     fetcher: context.fetcher,
     signal: context.signal,
-    phase: "execute",
     notFoundAsInvalidInput: true,
     allowNoContent: true,
   });
@@ -418,7 +406,6 @@ async function listDatabases(input: Record<string, unknown>, context: NeonAction
       path: `/projects/${encodeURIComponent(projectId)}/branches/${encodeURIComponent(branchId)}/databases`,
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
     }),
     "database list response",
@@ -439,7 +426,6 @@ async function getDatabase(input: Record<string, unknown>, context: NeonActionCo
       path: `/projects/${encodeURIComponent(projectId)}/branches/${encodeURIComponent(branchId)}/databases/${encodeURIComponent(databaseName)}`,
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
     }),
     "database detail response",
@@ -460,7 +446,6 @@ async function createDatabase(input: Record<string, unknown>, context: NeonActio
       method: "POST",
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
       body: {
         database: {
@@ -490,7 +475,6 @@ async function updateDatabase(input: Record<string, unknown>, context: NeonActio
       method: "PATCH",
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
       body: {
         database: compactObject({
@@ -518,7 +502,6 @@ async function deleteDatabase(input: Record<string, unknown>, context: NeonActio
     method: "DELETE",
     fetcher: context.fetcher,
     signal: context.signal,
-    phase: "execute",
     notFoundAsInvalidInput: true,
     allowNoContent: true,
   });
@@ -547,7 +530,6 @@ async function listOperations(input: Record<string, unknown>, context: NeonActio
       path: `/projects/${encodeURIComponent(projectId)}/operations`,
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
       query: compactObject({
         cursor: optionalString(input.cursor),
@@ -572,7 +554,6 @@ async function getOperation(input: Record<string, unknown>, context: NeonActionC
       path: `/projects/${encodeURIComponent(projectId)}/operations/${encodeURIComponent(operationId)}`,
       fetcher: context.fetcher,
       signal: context.signal,
-      phase: "execute",
       notFoundAsInvalidInput: true,
     }),
     "operation detail response",
@@ -583,11 +564,10 @@ async function getOperation(input: Record<string, unknown>, context: NeonActionC
   };
 }
 
-async function requestNeonJson({
+export async function requestNeonJson({
   apiKey,
   path,
   fetcher,
-  phase,
   signal,
   method = "GET",
   query,
@@ -628,9 +608,10 @@ async function requestNeonJson({
   }
 
   throw new ProviderRequestError(
-    mapNeonStatusToErrorStatus(response.status, phase, notFoundAsInvalidInput),
+    mapNeonStatusToErrorStatus(response.status, notFoundAsInvalidInput),
     extractNeonErrorMessage(payload) ?? `Neon request failed with HTTP ${response.status}`,
     payload,
+    response.status === 401 || response.status === 403 ? "provider_error" : undefined,
   );
 }
 
@@ -659,10 +640,7 @@ async function readResponseBody(response: Response): Promise<unknown | null> {
   }
 }
 
-function mapNeonStatusToErrorStatus(status: number, phase: NeonRequestPhase, notFoundAsInvalidInput: boolean): number {
-  if (phase === "validate" && (status === 401 || status === 403)) {
-    return 400;
-  }
+function mapNeonStatusToErrorStatus(status: number, notFoundAsInvalidInput: boolean): number {
   if (status === 404 && notFoundAsInvalidInput) {
     return 400;
   }
@@ -735,7 +713,7 @@ function normalizeCurrentUser(value: unknown): Record<string, unknown> {
   return normalizeNeonObject(value, "current user");
 }
 
-function normalizeNeonObject(value: unknown, field: string): Record<string, unknown> {
+export function normalizeNeonObject(value: unknown, field: string): Record<string, unknown> {
   return normalizeNeonValue(requireResponseObject(value, field)) as Record<string, unknown>;
 }
 
@@ -746,7 +724,7 @@ function normalizeNullableNeonObject(value: unknown): Record<string, unknown> | 
   return normalizeNeonValue(value) as Record<string, unknown>;
 }
 
-function normalizeNeonArray(value: unknown, field: string): Array<Record<string, unknown>> {
+export function normalizeNeonArray(value: unknown, field: string): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) {
     throw new ProviderRequestError(502, `Malformed Neon response: missing ${field}`);
   }

@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FrontActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { isAbortLikeError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "front";
 const frontApiBaseUrl = "https://api2.frontapp.com";
@@ -49,7 +51,7 @@ interface FrontTeammate {
   customFields: Record<string, unknown>;
 }
 
-export const frontActionHandlers: Record<FrontActionName, FrontActionHandler> = {
+export const frontActionHandlers: ProviderActionHandlers<"front", FrontActionHandler> = {
   list_contacts(input, context) {
     return listContacts(input, context);
   },
@@ -68,6 +70,16 @@ export const frontActionHandlers: Record<FrontActionName, FrontActionHandler> = 
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, frontActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: frontApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -245,10 +257,6 @@ async function frontFetch(
       error,
     );
   }
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
 async function readFrontPayload(response: Response): Promise<unknown> {

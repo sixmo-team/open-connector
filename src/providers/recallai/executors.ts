@@ -5,18 +5,15 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
-import type { RecallAiActionName } from "./actions.ts";
 
 import { createHash } from "node:crypto";
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import {
-  defineProviderProxy,
-  defineProviderExecutors,
-  ProviderRequestError,
-  providerUserAgent,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent, requiredInputString } from "../provider-runtime.ts";
 
 const service = "recallai";
 const recallaiApiBaseUrlByRegion: Record<RecallAiRegion, string> = {
@@ -37,7 +34,7 @@ interface RecallAiContext {
 
 type RecallAiActionHandler = (input: Record<string, unknown>, context: RecallAiContext) => Promise<unknown>;
 
-export const recallaiActionHandlers: Record<RecallAiActionName, RecallAiActionHandler> = {
+export const recallaiActionHandlers: ProviderActionHandlers<"recallai", RecallAiActionHandler> = {
   async create_bot(input, context) {
     return {
       bot: readRecallAiObject(
@@ -293,10 +290,6 @@ function readRecallAiObject(payload: unknown): Record<string, unknown> {
   const record = optionalRecord(payload);
   if (!record) throw new ProviderRequestError(502, "Recall.ai returned a non-object payload");
   return record;
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function readOptionalObject(value: unknown, fieldName: string): Record<string, unknown> | undefined {

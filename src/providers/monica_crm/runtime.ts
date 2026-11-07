@@ -1,7 +1,12 @@
-import type { MonicaCrmActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, requiredString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerUserAgent,
+  providerInputError,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 export interface MonicaCrmCredentialCheck {
   providerAccountId?: string;
@@ -19,7 +24,7 @@ interface MonicaCrmActionContext {
 
 type MonicaCrmActionHandler = (input: Record<string, unknown>, context: MonicaCrmActionContext) => Promise<unknown>;
 
-export const monicaCrmActionHandlers: Record<MonicaCrmActionName, MonicaCrmActionHandler> = {
+export const monicaCrmActionHandlers: ProviderActionHandlers<"monica_crm", MonicaCrmActionHandler> = {
   list_contacts(input, context) {
     return requestMonicaCrmJson(
       {
@@ -115,7 +120,7 @@ export const monicaCrmActionHandlers: Record<MonicaCrmActionName, MonicaCrmActio
       "execute",
     );
   },
-} satisfies Record<MonicaCrmActionName, MonicaCrmActionHandler>;
+};
 
 export async function validateMonicaCrmCredential(
   input: Record<string, string>,
@@ -188,7 +193,7 @@ async function readResponsePayload(response: Response) {
 function createMonicaCrmError(response: Response, payload: unknown, phase: "validate" | "execute") {
   const message = readMonicaCrmErrorMessage(payload) ?? `Monica request failed (${response.status})`;
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status, message);
 }
@@ -211,14 +216,14 @@ function readMonicaCrmErrorMessage(payload: unknown) {
 function readEnvelopeData(payload: Record<string, unknown>, message: string) {
   const data = payload.data;
   if (!data || typeof data !== "object" || Array.isArray(data)) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return data as Record<string, unknown>;
 }
 
 function readNumber(value: unknown, message: string) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return value;
 }

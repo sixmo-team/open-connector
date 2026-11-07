@@ -4,21 +4,22 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { FreshserviceActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineProviderProxy,
-  defineProviderExecutors,
+  isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
-  requireApiKeyCredential,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "freshservice";
 const freshserviceValidationPath = "/api/v2/tickets";
-const freshserviceDefaultRequestTimeoutMs = 30_000;
 const freshserviceDefaultPageSize = 30;
 
 interface FreshserviceActionContext {
@@ -43,7 +44,7 @@ type FreshserviceActionHandler = (
   context: FreshserviceActionContext,
 ) => Promise<unknown>;
 
-export const freshserviceActionHandlers: Record<FreshserviceActionName, FreshserviceActionHandler> = {
+export const freshserviceActionHandlers: ProviderActionHandlers<"freshservice", FreshserviceActionHandler> = {
   async list_tickets(input, context) {
     validateListTicketsInput(input);
     const perPage = optionalInteger(input.perPage) ?? freshserviceDefaultPageSize;
@@ -259,7 +260,7 @@ async function requestFreshserviceJson(
   context: FreshserviceActionContext,
   input: FreshserviceRequestInput,
 ): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(freshserviceDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = context.signal ? AbortSignal.any([context.signal, timeoutSignal]) : timeoutSignal;
 
   let response: Response;
@@ -280,7 +281,7 @@ async function requestFreshserviceJson(
     if (timeoutSignal.aborted && !context.signal?.aborted && isAbortLikeError(error)) {
       throw new ProviderRequestError(
         504,
-        `Freshservice request timed out after ${Math.max(1, Math.ceil(freshserviceDefaultRequestTimeoutMs / 1000))} seconds`,
+        `Freshservice request timed out after ${Math.max(1, Math.ceil(defaultProviderRequestTimeoutMs / 1000))} seconds`,
       );
     }
 
@@ -565,10 +566,6 @@ function readOptionalStringArray(value: unknown): string[] | undefined {
     .map((item) => optionalString(item))
     .filter((item): item is string => item !== undefined && item.length > 0);
   return result.length > 0 ? result : undefined;
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 }
 
 function trimTrailingSlash(value: string): string {

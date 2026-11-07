@@ -1,8 +1,8 @@
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { TextcortexActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 export const textcortexApiBaseUrl = "https://api.textcortex.com/v1";
 const textcortexApiOrigin = "https://api.textcortex.com";
@@ -41,7 +41,7 @@ export async function validateTextcortexCredential(context: TextcortexContext): 
   };
 }
 
-export const textcortexActionHandlers: Record<TextcortexActionName, TextcortexActionHandler> = {
+export const textcortexActionHandlers: ProviderActionHandlers<"textcortex", TextcortexActionHandler> = {
   list_models(_input, context) {
     return listModels(context);
   },
@@ -198,10 +198,10 @@ function createTextcortexError(response: Response, payload: unknown, phase: Text
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (response.status === 400 || response.status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status || 502, message);
 }

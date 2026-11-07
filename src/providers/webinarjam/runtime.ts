@@ -1,8 +1,9 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 export const webinarjamApiBaseUrl = "https://api.webinarjam.com/webinarjam";
 
@@ -15,7 +16,10 @@ interface WebinarjamRequestContext {
   signal?: AbortSignal;
 }
 
-export const webinarjamActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const webinarjamActionHandlers: ProviderActionHandlers<
+  "webinarjam",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   async list_webinars(_input, context) {
     const raw = await requestWebinarjam({
       path: "/webinars",
@@ -226,7 +230,7 @@ function createWebinarjamError(
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (response.status === 401 || response.status === 403)) {
     return new ProviderRequestError(response.status, message);
@@ -250,12 +254,12 @@ function readProviderStatusError(payload: unknown): string | null {
 
 function mapWebinarjamProviderStatusError(message: string, phase: WebinarjamRequestPhase): ProviderRequestError {
   if (phase === "validate") {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (message.toLowerCase().includes("api")) {
     return new ProviderRequestError(401, message);
   }
-  return new ProviderRequestError(400, message);
+  return providerInputError(message);
 }
 
 function readWebinarjamMessage(payload: unknown): string | undefined {

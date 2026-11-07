@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
@@ -27,7 +28,10 @@ function eventPath(input: Record<string, unknown>, suffix = "") {
   return `/events/${encodeURIComponent(requiredString(input.eventId, "eventId"))}${suffix}`;
 }
 
-export const ticketSourceActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const ticketSourceActionHandlers: ProviderActionHandlers<
+  "ticket_source",
+  ProviderRuntimeHandler<ApiKeyProviderContext>
+> = {
   list_events: (input, context) => execute("/events", input, context, "events"),
   get_event: (input, context) => execute(eventPath(input), input, context),
   list_event_venues: (input, context) => execute(eventPath(input, "/venues"), input, context, "venues"),

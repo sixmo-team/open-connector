@@ -1,10 +1,15 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { CloudinaryActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { optionalInteger, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
+  providerResponseError,
+} from "../provider-runtime.ts";
 
 export interface CloudinaryContext {
   apiKey: string;
@@ -18,7 +23,10 @@ type CloudinaryRequestPhase = "validate" | "execute";
 
 const cloudinaryApiBaseUrl = "https://api.cloudinary.com/v1_1";
 
-export const cloudinaryActionHandlers: Record<CloudinaryActionName, ProviderRuntimeHandler<CloudinaryContext>> = {
+export const cloudinaryActionHandlers: ProviderActionHandlers<
+  "cloudinary",
+  ProviderRuntimeHandler<CloudinaryContext>
+> = {
   upload_asset(input, context) {
     return uploadAsset(input, context);
   },
@@ -97,7 +105,7 @@ async function updateAsset(input: Record<string, unknown>, context: CloudinaryCo
   const resourceType = readCloudinaryResourceType(input, "image");
   const url = new URL(`${resourceType}/explicit`, buildCloudinaryBaseUrl(context.cloudName));
   const formData = new FormData();
-  formData.set("public_id", requiredString(input.publicId, "publicId", invalidInput));
+  formData.set("public_id", requiredString(input.publicId, "publicId", providerInputError));
   appendOptionalFormField(formData, "display_name", optionalString(input.displayName));
   appendOptionalFormField(formData, "asset_folder", optionalString(input.assetFolder));
   appendOptionalStringList(formData, "tags", input.tags);
@@ -121,8 +129,8 @@ async function renameAsset(input: Record<string, unknown>, context: CloudinaryCo
   const resourceType = readCloudinaryResourceType(input, "image");
   const url = new URL(`${resourceType}/rename`, buildCloudinaryBaseUrl(context.cloudName));
   const formData = new FormData();
-  formData.set("from_public_id", requiredString(input.fromPublicId, "fromPublicId", invalidInput));
-  formData.set("to_public_id", requiredString(input.toPublicId, "toPublicId", invalidInput));
+  formData.set("from_public_id", requiredString(input.fromPublicId, "fromPublicId", providerInputError));
+  formData.set("to_public_id", requiredString(input.toPublicId, "toPublicId", providerInputError));
   const payload = await requestCloudinaryJson(
     url,
     {
@@ -170,7 +178,7 @@ async function listAssets(input: Record<string, unknown>, context: CloudinaryCon
 }
 
 async function getAsset(input: Record<string, unknown>, context: CloudinaryContext): Promise<unknown> {
-  const assetId = requiredString(input.assetId, "assetId", invalidInput);
+  const assetId = requiredString(input.assetId, "assetId", providerInputError);
   const url = new URL(`resources/${encodeURIComponent(assetId)}`, buildCloudinaryBaseUrl(context.cloudName));
   const payload = await requestCloudinaryJson(
     url,
@@ -215,9 +223,9 @@ function resolveCloudinaryCredential(values: Record<string, string>): {
   cloudName: string;
 } {
   return {
-    apiKey: requiredString(values.apiKey, "apiKey", invalidInput),
-    apiSecret: requiredString(values.apiSecret, "apiSecret", invalidInput),
-    cloudName: requiredString(values.cloudName, "cloudName", invalidInput),
+    apiKey: requiredString(values.apiKey, "apiKey", providerInputError),
+    apiSecret: requiredString(values.apiSecret, "apiSecret", providerInputError),
+    cloudName: requiredString(values.cloudName, "cloudName", providerInputError),
   };
 }
 
@@ -256,7 +264,7 @@ function createCloudinaryError(
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (status === 400 || status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (status === 400 || status === 404 || status === 409)) {
     return new ProviderRequestError(status === 409 ? 409 : 400, message);
@@ -311,7 +319,7 @@ function normalizeCloudinaryAsset(payload: unknown): Record<string, unknown> {
 
 function readCloudinaryRecord(payload: unknown, label: string): Record<string, unknown> {
   try {
-    return requiredRecord(payload, label, (message) => new ProviderRequestError(502, message));
+    return requiredRecord(payload, label, providerResponseError);
   } catch {
     throw new ProviderRequestError(502, `${label} is not an object`);
   }
@@ -338,7 +346,7 @@ function readCloudinaryUploadSource(input: Record<string, unknown>): string {
   if (fileUrl) {
     return assertPublicHttpUrl(fileUrl, {
       fieldName: "fileUrl",
-      createError: (message) => new ProviderRequestError(400, message),
+      createError: providerInputError,
     }).toString();
   }
   return fileDataUri!;
@@ -382,8 +390,4 @@ function appendOptionalBooleanQuery(url: URL, name: string, value: unknown): voi
 function readOptionalStringifiedInteger(value: unknown): string | undefined {
   const integer = optionalInteger(value);
   return integer === undefined ? undefined : String(integer);
-}
-
-function invalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

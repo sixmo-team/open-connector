@@ -1,17 +1,23 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { KitActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
-  createProviderTimeout,
-  isAbortLikeError,
+  compactObject,
+  looseArray,
+  optionalBoolean,
+  optionalNumber,
+  optionalRecord,
+  optionalString,
+} from "../../core/cast.ts";
+import {
   providerUserAgent,
   ProviderRequestError,
+  runProviderRequest,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 const kitApiBaseUrl = "https://api.kit.com/v4";
-const kitDefaultRequestTimeoutMs = 30_000;
 
 type KitPhase = "validate" | "execute";
 type KitMethod = "GET" | "POST" | "PUT";
@@ -23,7 +29,7 @@ export interface KitRequestContext {
   signal?: AbortSignal;
 }
 
-export const kitActionHandlers: Record<KitActionName, KitActionHandler> = {
+export const kitActionHandlers: ProviderActionHandlers<"kit", KitActionHandler> = {
   async get_current_account(_input, context) {
     return normalizeAccountResponse(
       await requestKitJson({
@@ -220,9 +226,7 @@ async function requestKitJson(input: {
   phase: KitPhase;
   signal?: AbortSignal;
 }): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(input.signal, kitDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ signal: input.signal, label: "Kit" }, async (signal) => {
     const headers: Record<string, string> = {
       accept: "application/json",
       "user-agent": providerUserAgent,
@@ -236,7 +240,7 @@ async function requestKitJson(input: {
       method: input.method,
       headers,
       body: input.body ? JSON.stringify(input.body) : undefined,
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readKitPayload(response);
 
@@ -249,22 +253,7 @@ async function requestKitJson(input: {
       throw new ProviderRequestError(502, "Kit returned an invalid payload");
     }
     return record;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Kit request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Kit request failed: ${error.message}` : "Kit request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildKitUrl(path: string, params: Record<string, string | undefined>) {
@@ -300,7 +289,7 @@ function createKitError(status: number, payload: unknown, phase: KitPhase) {
   }
 
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (phase === "execute" && status === 401) {
@@ -424,7 +413,7 @@ function normalizeSubscriber(value: unknown) {
     fields: normalizeCustomFields(record.fields),
     canceled_at: readNullableString(record.canceled_at),
     attribution: record.attribution === undefined ? null : normalizeAttribution(record.attribution),
-    tags: readArrayOrEmpty(record.tags).map(normalizeTag),
+    tags: looseArray(record.tags).map(normalizeTag),
     location: record.location === undefined ? null : normalizeLocation(record.location),
     added_at: readNullableString(record.added_at),
     tagged_at: readNullableString(record.tagged_at),
@@ -545,10 +534,6 @@ function readArray(value: unknown, fieldName: string) {
     throw new ProviderRequestError(502, `Kit response missing array field: ${fieldName}`);
   }
   return value;
-}
-
-function readArrayOrEmpty(value: unknown) {
-  return Array.isArray(value) ? value : [];
 }
 
 function readRequiredString(value: unknown, fieldName: string) {

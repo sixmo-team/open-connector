@@ -1,7 +1,15 @@
 import type { ResolvedCredential } from "../../core/types.ts";
 import type { OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
-import type { SaasRequestScope } from "../contracts.ts";
+import type {
+  ActionPolicyAuditRecord,
+  ActionPolicyControlPrincipal,
+  ActionPolicyRecord,
+  ActionPolicyServicePrincipal,
+  ActionPolicyTarget,
+  ActionPolicyUserTarget,
+  SaasRequestScope,
+} from "../contracts.ts";
 import type { PostgresTestDatabase } from "../testing/postgres-test-database.ts";
 import type { ConnectionSecret, ConnectionSecretStore } from "./postgres-connection-store.ts";
 import type { OAuthStateSecretStore } from "./postgres-oauth-state-store.ts";
@@ -14,12 +22,14 @@ import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vitest"
 import { createCatalogStore } from "../../catalog-store.ts";
 import { SaasAuthorizationError } from "../auth/saas-jwt-verifier.ts";
 import { SaasConnectServer } from "../server/saas-connect-server.ts";
+import { MemorySecretCodec } from "../testing/native-store-fixtures.ts";
 import { createPostgresTestDatabase, postgresTestUrl } from "../testing/postgres-test-database.ts";
+import { PostgresActionPolicyStore } from "./postgres-action-policy-store.ts";
 import { ConnectionMetadataReconciliationError } from "./postgres-connection-store.ts";
 import { migratePostgres } from "./postgres-migrator.ts";
 import { OAuthStateConsumeReconciliationError, PostgresOAuthStateStore } from "./postgres-oauth-state-store.ts";
 import { probeSaasRuntimeDatabase, SaasRuntimeDatabaseFactory } from "./postgres-runtime-database.ts";
-import { withScopedClient } from "./scoped-query.ts";
+import { withActionPolicyClient, withScopedClient } from "./scoped-query.ts";
 
 const testPostgresUrl = postgresTestUrl();
 const nonce = randomBytes(6).toString("hex");
@@ -32,6 +42,7 @@ let testDatabase: PostgresTestDatabase;
 let factory: SaasRuntimeDatabaseFactory;
 let connectionSecrets: MemoryConnectionSecrets;
 let oauthStateSecrets: MemoryOAuthStateSecrets;
+const requestSecretCodec = new MemorySecretCodec();
 const tenantAUserA = scope(`tenant-a-${nonce}`, `workspace-a-${nonce}`, "user-a");
 const tenantAUserB = scope(`tenant-a-${nonce}`, `workspace-a-${nonce}`, "user-b");
 const tenantBUserA = scope(`tenant-b-${nonce}`, `workspace-a-${nonce}`, "user-a");
@@ -64,30 +75,435 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     await expect(probeSaasRuntimeDatabase(adminPool)).rejects.toThrow("runtime");
     factory = new SaasRuntimeDatabaseFactory({
       pool: runtimePool,
+      catalog: createCatalogStore([]),
       connectionSecrets,
       oauthStateSecrets,
+      secretCodecForScope: () => requestSecretCodec,
     });
   }, 30_000);
 
   afterAll(async () => {
     try {
-      if (adminPool) {
-        await adminPool.query("DELETE FROM integration_runtime.oauth_states WHERE tenant_id LIKE $1", [`%${nonce}`]);
-        await adminPool.query(
-          "DELETE FROM integration_runtime.connection_revocation_receipts WHERE tenant_id LIKE $1",
-          [`%${nonce}`],
-        );
-        await adminPool.query("DELETE FROM integration_runtime.run_intents WHERE tenant_id LIKE $1", [`%${nonce}`]);
-        await adminPool.query("DELETE FROM integration_runtime.idempotency_records WHERE tenant_id LIKE $1", [
-          `%${nonce}`,
-        ]);
-        await adminPool.query("DELETE FROM integration_runtime.connections WHERE tenant_id LIKE $1", [`%${nonce}`]);
-      }
+      await Promise.all([runtimePool?.end(), adminPool?.end()]);
     } finally {
-      await runtimePool?.end();
-      await adminPool?.end();
       await testDatabase?.dispose();
     }
+  });
+
+  it("durably fences callbacks and refresh across revoke, deletion, ownership and visibility changes", async () => {
+    const scoped = { ...tenantAUserA, workspaceRole: "owner" as const, localConnectionId: randomUUID() };
+    const store = factory.forScope(scoped).connectionStore;
+    const alias = `fenced-${randomUUID()}`;
+    const oauthCredential = {
+      authType: "oauth2" as const,
+      accessToken: "original",
+      tokenType: "Bearer",
+      refreshToken: "rotating-refresh",
+      profile: { accountId: "account", displayName: "Account", grantedScopes: [] },
+      metadata: {},
+    };
+    const generation = await store.getRetirementGeneration("gmail", alias);
+    const original = await store.setIfCurrentGeneration("gmail", alias, oauthCredential, generation);
+    expect(original).toBeDefined();
+    await store.blockForRevocation(original!.id);
+    expect(
+      await store.updateCredential(
+        { ...original!, credential: { ...oauthCredential, accessToken: "late-refresh" } },
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      await store.setIfCurrentGeneration(
+        "gmail",
+        alias,
+        { ...oauthCredential, accessToken: "late-callback" },
+        generation,
+      ),
+    ).toBeUndefined();
+    await store.delete("gmail", alias);
+    const nextGeneration = await factory.forScope(scoped).connectionStore.getRetirementGeneration("gmail", alias);
+    expect(nextGeneration).not.toBe(generation);
+    const replacement = await store.setIfCurrentGeneration(
+      "gmail",
+      alias,
+      { ...oauthCredential, accessToken: "replacement" },
+      nextGeneration,
+    );
+    expect(replacement).toBeDefined();
+    await expect(store.delete("gmail", alias, original!)).rejects.toMatchObject({ code: "connection_changed" });
+    expect((await store.getById(replacement!.id))?.id).toBe(replacement!.id);
+    await store.updateVisibilityById(replacement!.id, "workspace");
+    const shared = factory.forScope({ ...scoped, actorUserId: tenantAUserB.subjectUserId }).connectionStore;
+    expect((await shared.getSafeConnection(replacement!.id))?.subjectUserId).toBe(scoped.subjectUserId);
+    await store.updateVisibilityById(replacement!.id, "user");
+    expect(await shared.getSafeConnection(replacement!.id)).toBeUndefined();
+    expect(await shared.getById(replacement!.id)).toBeUndefined();
+    await store.updateVisibilityById(replacement!.id, "workspace");
+    const transferGeneration = await store.getRetirementGeneration("gmail", alias);
+    await store.transferById(replacement!.id, tenantAUserB.subjectUserId);
+    expect(await store.getById(replacement!.id)).toBeUndefined();
+    expect(
+      await store.setIfCurrentGeneration(
+        "gmail",
+        alias,
+        { ...oauthCredential, accessToken: "old-owner" },
+        transferGeneration,
+      ),
+    ).toBeUndefined();
+  });
+
+  it.each(["action_defaults", "action_grants", "action_policy_audit"])(
+    "requires forced RLS and presence for policy table %s",
+    async (table) => {
+      await adminPool.query(`ALTER TABLE integration_runtime.${table} NO FORCE ROW LEVEL SECURITY`);
+      try {
+        await expect(probeSaasRuntimeDatabase(runtimePool)).rejects.toThrow(table);
+      } finally {
+        await adminPool.query(`ALTER TABLE integration_runtime.${table} FORCE ROW LEVEL SECURITY`);
+      }
+      const temporary = `${table}_missing`;
+      await adminPool.query(`ALTER TABLE integration_runtime.${table} RENAME TO ${temporary}`);
+      try {
+        await expect(probeSaasRuntimeDatabase(runtimePool)).rejects.toThrow(table);
+      } finally {
+        await adminPool.query(`ALTER TABLE integration_runtime.${temporary} RENAME TO ${table}`);
+      }
+    },
+  );
+
+  it("resolves all nine persisted precedence combinations and reads the actor, never the credential owner", async () => {
+    const fixture = policyFixture("matrix", 9);
+    const combinations = [
+      { individual: null, defaults: null, enabled: false, source: "none" },
+      { individual: null, defaults: false, enabled: false, source: "platform" },
+      { individual: null, defaults: true, enabled: true, source: "platform" },
+      { individual: false, defaults: null, enabled: false, source: "individual" },
+      { individual: false, defaults: false, enabled: false, source: "individual" },
+      { individual: false, defaults: true, enabled: false, source: "individual" },
+      { individual: true, defaults: null, enabled: true, source: "individual" },
+      { individual: true, defaults: false, enabled: true, source: "individual" },
+      { individual: true, defaults: true, enabled: true, source: "individual" },
+    ] as const;
+    for (const [index, value] of combinations.entries()) {
+      const actionIds = [fixture.actionIds[index]!];
+      if (value.defaults !== null)
+        await fixture.store.applyForControl(policyControl({ kind: "platform" }), {
+          actionIds,
+          enabled: value.defaults,
+          reason: "common review",
+        });
+      if (value.individual !== null)
+        await fixture.store.applyForControl(policyControl(fixture.target), {
+          actionIds,
+          enabled: value.individual,
+          reason: "individual review",
+        });
+    }
+    const decisions = await fixture.store.getEffectiveForActor(fixture.actor, fixture.actionIds);
+    expect(decisions).toEqual(
+      combinations.map((value, index) => ({
+        actionId: fixture.actionIds[index],
+        enabled: value.enabled,
+        source: value.source,
+        individualEnabled: value.individual,
+        defaultEnabled: value.defaults,
+      })),
+    );
+    expect(
+      await fixture.store.getEffectiveForControl(
+        policyControl(fixture.target, "action-policy:read"),
+        fixture.actionIds,
+      ),
+    ).toEqual(decisions);
+    const common = await fixture.store.getEffectiveForControl(
+      policyControl({ kind: "platform" }, "action-policy:read"),
+      fixture.actionIds,
+    );
+    expect(common[5]).toMatchObject({ enabled: true, source: "platform", individualEnabled: null });
+    const reader = policyControl(fixture.target, "action-policy:read");
+    expect((await fixture.store.readForControl(reader)).items).toHaveLength(6);
+    const pageOne = await fixture.store.readForControl(reader, { limit: 1 });
+    const pageTwo = await fixture.store.readForControl(reader, { limit: 1, cursor: pageOne.nextCursor! });
+    expect(pageOne.items.map((row) => row.actionId)).toEqual([fixture.actionIds[3]]);
+    expect(pageTwo.items.map((row) => row.actionId)).toEqual([fixture.actionIds[4]]);
+    const newUser = { ...fixture.target, userId: randomUUID() };
+    expect((await fixture.store.readForControl(policyControl(newUser, "action-policy:read"))).items).toEqual([]);
+    expect(
+      (
+        await fixture.store.getEffectiveForControl(policyControl(newUser, "action-policy:read"), [
+          fixture.actionIds[2]!,
+        ])
+      )[0],
+    ).toMatchObject({ source: "platform", enabled: true, individualEnabled: null });
+    expect((await fixture.store.readForControl(policyControl(newUser, "action-policy:read"))).items).toEqual([]);
+    await expect(
+      fixture.store.readForControl(policyControl(newUser, "action-policy:read"), { cursor: pageOne.nextCursor! }),
+    ).rejects.toThrow("cursor");
+    const ownerId = randomUUID();
+    await fixture.store.applyForControl(policyControl({ ...fixture.target, userId: ownerId }), {
+      actionIds: [fixture.actionIds[5]!],
+      enabled: true,
+      reason: "owner-only grant",
+    });
+    const shared = {
+      ...fixture.actor,
+      subjectUserId: ownerId,
+      purpose: "action:execute:v2" as const,
+      permissions: ["action:execute:v2"],
+    };
+    expect(await fixture.store.getEffectiveForActor(shared, [fixture.actionIds[5]!])).toEqual([decisions[5]]);
+    const otherTenant = { ...fixture.actor, tenantId: randomUUID() };
+    expect((await fixture.store.getEffectiveForActor(otherTenant, [fixture.actionIds[3]!]))[0]).toMatchObject({
+      source: "none",
+      enabled: false,
+      individualEnabled: null,
+    });
+    const otherWorkspace = { ...fixture.actor, workspaceId: randomUUID() };
+    expect((await fixture.store.getEffectiveForActor(otherWorkspace, [fixture.actionIds[3]!]))[0]).toMatchObject({
+      source: "none",
+    });
+  });
+
+  it("keeps ordinary and workspace-owner SQL contexts read-only for policy, and resets verified context on pool reuse", async () => {
+    const fixture = policyFixture("rls");
+    const actionIds = [fixture.actionIds[0]!];
+    await fixture.store.applyForControl(policyControl({ kind: "platform" }), {
+      actionIds,
+      enabled: true,
+      reason: "common",
+    });
+    await fixture.store.applyForControl(policyControl(fixture.target), {
+      actionIds,
+      enabled: false,
+      reason: "personal",
+    });
+    for (const workspaceRole of ["member", "owner"] as const) {
+      const actor = { ...fixture.actor, workspaceRole };
+      await withScopedClient(runtimePool, actor, async (client) => {
+        expect(
+          (
+            await client.query(
+              "UPDATE integration_runtime.action_defaults SET enabled = false WHERE action_id = $1",
+              actionIds,
+            )
+          ).rowCount,
+        ).toBe(0);
+        expect(
+          (
+            await client.query(
+              "UPDATE integration_runtime.action_grants SET enabled = true WHERE action_id = $1",
+              actionIds,
+            )
+          ).rowCount,
+        ).toBe(0);
+        expect(
+          (await client.query("DELETE FROM integration_runtime.action_grants WHERE action_id = $1", actionIds))
+            .rowCount,
+        ).toBe(0);
+        const settings = await client.query(
+          `SELECT current_setting('integration.actor_user_id') AS actor, current_setting('integration.purpose') AS purpose, current_setting('integration.principal_kind') AS kind`,
+        );
+        expect(settings.rows[0]).toEqual({ actor: fixture.target.userId, purpose: "action:search", kind: "user" });
+      });
+      await expect(
+        withScopedClient(runtimePool, actor, (client) =>
+          client.query(
+            `INSERT INTO integration_runtime.action_defaults (action_id, enabled, created_by_subject, updated_by_subject) VALUES ($1, true, 'forged', 'forged')`,
+            [fixture.actionIds[1]],
+          ),
+        ),
+      ).rejects.toThrow(/row-level security/i);
+      await expect(
+        withScopedClient(runtimePool, actor, (client) =>
+          client.query(
+            `INSERT INTO integration_runtime.action_grants (id, tenant_id, workspace_id, user_id, action_id, enabled, created_by_subject, updated_by_subject) VALUES ($1, $2, $3, $4, $5, true, 'forged', 'forged')`,
+            [
+              randomUUID(),
+              fixture.target.tenantId,
+              fixture.target.workspaceId,
+              fixture.target.userId,
+              fixture.actionIds[1],
+            ],
+          ),
+        ),
+      ).rejects.toThrow(/row-level security/i);
+      await expect(
+        withScopedClient(runtimePool, actor, (client) =>
+          client.query(
+            `INSERT INTO integration_runtime.action_policy_audit (id, target_kind, operator_subject, action_ids, enabled, reason, request_id) VALUES ($1, 'platform', 'forged', $2, true, 'forged', 'forged')`,
+            [randomUUID(), actionIds],
+          ),
+        ),
+      ).rejects.toThrow(/row-level security/i);
+    }
+    const other = { ...fixture.target, tenantId: randomUUID() };
+    await withActionPolicyClient(runtimePool, policyControl(other, "action-policy:read"), async (client) => {
+      expect(
+        (
+          await client.query("SELECT * FROM integration_runtime.action_grants WHERE tenant_id = $1", [
+            fixture.target.tenantId,
+          ])
+        ).rows,
+      ).toEqual([]);
+    });
+    await withScopedClient(runtimePool, fixture.actor, async (client) => {
+      expect(
+        (await client.query("SELECT current_setting('integration.policy_target_kind', true) AS target")).rows[0],
+      ).toEqual({ target: "" });
+    });
+    const rows = await fixture.store.readForControl(policyControl(fixture.target, "action-policy:read"));
+    expect(rows.items[0]).toMatchObject({
+      enabled: false,
+      createdBySubject: "verified-operator",
+      updatedBySubject: "verified-operator",
+    });
+  });
+
+  it("validates entire batches and atomically rolls rules back when audit fails", async () => {
+    const fixture = policyFixture("atomic");
+    const actionIds = fixture.actionIds.slice(0, 2);
+    const writer = policyControl(fixture.target);
+    const first = await fixture.store.applyForControl(writer, {
+      actionIds,
+      enabled: true,
+      reason: "  approved batch  ",
+    });
+    expect(first).toMatchObject({ updatedCount: 2, removedCount: 0 });
+    await expect(
+      fixture.store.applyForControl(writer, {
+        actionIds: [...actionIds, "unknown.action"],
+        enabled: false,
+        reason: "invalid batch",
+      }),
+    ).rejects.toThrow("Unknown action");
+    await adminPool.query(`REVOKE INSERT ON integration_runtime.action_policy_audit FROM "${runtimeRole}"`);
+    try {
+      await expect(probeSaasRuntimeDatabase(runtimePool)).rejects.toThrow("policy privileges");
+      await expect(
+        fixture.store.applyForControl(writer, { actionIds, enabled: false, reason: "must roll back" }),
+      ).rejects.toThrow(/permission denied/i);
+    } finally {
+      await adminPool.query(`GRANT INSERT ON integration_runtime.action_policy_audit TO "${runtimeRole}"`);
+    }
+    expect(
+      (await fixture.store.readForControl(policyControl(fixture.target, "action-policy:read"))).items.map(
+        (row) => row.enabled,
+      ),
+    ).toEqual([true, true]);
+    const lifecycle = { ...fixture.actor, purpose: "lifecycle:read" as const, permissions: ["lifecycle:read"] };
+    const exported = await fixture.store.exportForLifecycle(lifecycle);
+    expect(exported.audit).toHaveLength(1);
+    expect(exported.audit[0]).toMatchObject({
+      id: first.auditId,
+      operatorSubject: "verified-operator",
+      reason: "approved batch",
+      requestId: writer.requestId,
+      actionIds,
+      enabled: true,
+    });
+    expect(await fixture.store.getLifecycleCounts(lifecycle)).toEqual({ actionGrants: 2, actionPolicyAudit: 1 });
+    const deletion = {
+      ...lifecycle,
+      purpose: "lifecycle:delete" as const,
+      permissions: ["lifecycle:delete"],
+      requestHash: "a".repeat(43),
+    };
+    expect(await fixture.store.getLifecycleCounts(deletion)).toEqual({ actionGrants: 2, actionPolicyAudit: 1 });
+    await expect(fixture.store.exportForLifecycle(deletion)).rejects.toThrow("forbidden");
+    await withScopedClient(runtimePool, deletion, async (client) => {
+      expect(
+        (
+          await client.query("DELETE FROM integration_runtime.action_grants WHERE tenant_id = $1", [
+            fixture.target.tenantId,
+          ])
+        ).rowCount,
+      ).toBe(0);
+      expect(
+        (
+          await client.query("DELETE FROM integration_runtime.action_policy_audit WHERE tenant_id = $1", [
+            fixture.target.tenantId,
+          ])
+        ).rowCount,
+      ).toBe(0);
+    });
+  });
+
+  it("inventories audit-only users, exports bounded exact subject pages, and purges only the signed target", async () => {
+    const fixture = policyFixture("lifecycle");
+    const actionIds = fixture.actionIds.slice(0, 2);
+    const adjacent = { ...fixture.target, userId: randomUUID() };
+    const foreign = { ...fixture.target, tenantId: randomUUID() };
+    await fixture.store.applyForControl(policyControl({ kind: "platform" }), {
+      actionIds,
+      enabled: true,
+      reason: "survives customer purge",
+    });
+    await fixture.store.applyForControl(policyControl(fixture.target), { actionIds, enabled: false, reason: "target" });
+    await fixture.store.applyForControl(policyControl(adjacent), { actionIds, enabled: true, reason: "adjacent" });
+    await fixture.store.applyForControl(policyControl(adjacent), {
+      actionIds,
+      enabled: null,
+      reason: "audit-only subject",
+    });
+    await fixture.store.applyForControl(policyControl(foreign), { actionIds, enabled: true, reason: "foreign" });
+    const inventory = policyService(
+      { kind: "workspace", tenantId: fixture.target.tenantId, workspaceId: fixture.target.workspaceId },
+      "action-policy:subjects",
+    );
+    const first = await fixture.store.listSubjects(inventory, { limit: 1 });
+    expect(first.items).toHaveLength(1);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await fixture.store.listSubjects(inventory, { limit: 1, cursor: first.nextCursor! });
+    expect([...first.items, ...second.items]).toEqual(expect.arrayContaining([fixture.target, adjacent]));
+    expect(second.nextCursor).toBeNull();
+    await expect(
+      fixture.store.listSubjects(
+        { ...inventory, target: { kind: "tenant", tenantId: foreign.tenantId } },
+        { cursor: first.nextCursor! },
+      ),
+    ).rejects.toThrow("cursor");
+    const lifecycle = { ...fixture.actor, purpose: "lifecycle:read" as const, permissions: ["lifecycle:read"] };
+    const grants: ActionPolicyRecord[] = [];
+    const audit: ActionPolicyAuditRecord[] = [];
+    let nextCursor: string | null | undefined;
+    do {
+      const page = await fixture.store.exportForLifecycle(lifecycle, {
+        limit: 1,
+        ...(nextCursor ? { cursor: nextCursor } : {}),
+      });
+      expect(page.items.length + page.audit.length).toBe(1);
+      grants.push(...page.items);
+      audit.push(...page.audit);
+      nextCursor = page.nextCursor;
+    } while (nextCursor);
+    expect(grants).toHaveLength(2);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.target).toEqual(fixture.target);
+    const correlationId = randomUUID();
+    expect(await fixture.store.purge(policyService(fixture.target, "action-policy:purge"), correlationId)).toEqual({
+      correlationId,
+      deletedGrants: 2,
+      deletedAudit: 1,
+    });
+    expect(await fixture.store.getLifecycleCounts(lifecycle)).toEqual({ actionGrants: 0, actionPolicyAudit: 0 });
+    expect((await fixture.store.listSubjects(inventory)).items).toEqual([adjacent]);
+    expect((await fixture.store.readForControl(policyControl(foreign, "action-policy:read"))).items).toHaveLength(2);
+    expect(
+      (
+        await fixture.store.getEffectiveForControl(policyControl({ kind: "platform" }, "action-policy:read"), actionIds)
+      ).every((row) => row.enabled && row.source === "platform"),
+    ).toBe(true);
+    const platformAudit = await adminPool.query(
+      "SELECT id FROM integration_runtime.action_policy_audit WHERE target_kind = 'platform' AND action_ids = $1::text[]",
+      [actionIds],
+    );
+    expect(platformAudit.rows).toHaveLength(1);
+    expect(
+      await fixture.store.purge(
+        policyService({ kind: "tenant", tenantId: fixture.target.tenantId }, "action-policy:purge"),
+        randomUUID(),
+      ),
+    ).toMatchObject({ deletedGrants: 0, deletedAudit: 2 });
   });
   it("rejects membership in an actual SaaS table owner role", async () => {
     await adminPool.query(`CREATE ROLE "${ownerMembershipRole}" NOLOGIN`);
@@ -156,6 +572,7 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     "0005_connection_revocation_receipts.sql",
     "0007_connection_revocation_receipts_delete_policy.sql",
     "0008_revocation_outcomes.sql",
+    "0009_action_permissions.sql",
   ])("requires the applied lifecycle migration checksum for %s", async (migrationName) => {
     const applied = await adminPool.query<{ checksum: string }>(
       "DELETE FROM integration_runtime_migrations.schema_migrations WHERE name = $1 RETURNING checksum",
@@ -268,14 +685,18 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     };
     const ownerStore = factory.forScope(ownerScope).connectionStore;
     const memberStore = factory.forScope(tenantAUserB).connectionStore;
+    const connection = await ownerStore.set("gmail", alias, credential("private"));
     const memberExecutionStore = factory.forScope({
       ...ownerScope,
       actorUserId: tenantAUserB.actorUserId,
       workspaceRole: "member",
-      purpose: "action:execute",
-      permissions: ["action:execute"],
+      purpose: "action:execute:v2",
+      permissions: ["action:execute:v2"],
+      connectorConnectionId: connection.id,
+      actionId: "gmail.messages_list",
+      requestHash: `visibility-request-${nonce}`,
+      maxOutputBytes: 1_024,
     }).connectionStore;
-    const connection = await ownerStore.set("gmail", alias, credential("private"));
 
     expect(await memberStore.get("gmail", alias)).toBeUndefined();
     const shared = await ownerStore.updateVisibilityById(connection.id, "workspace");
@@ -336,16 +757,16 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     expect(await ownerStore.updateVisibilityById(connection.id, "workspace")).toBeUndefined();
   });
 
-  it("captures a deeply frozen scope copy and never returns a global list", async () => {
+  it("retains the original scope after caller mutation and never returns a global list", async () => {
     const mutable = scope(`tenant-frozen-${nonce}`, `workspace-frozen-${nonce}`, "user-frozen");
     mutable.localConnectionId = localConnectionIds.frozen;
+    const originalScope = { ...mutable, permissions: [...mutable.permissions] };
     const database = factory.forScope(mutable);
-    mutable.tenantId = `tenant-mutated-${nonce}`;
-    mutable.workspaceId = `workspace-mutated-${nonce}`;
+    mutable.tenantId = randomUUID();
+    mutable.workspaceId = randomUUID();
     mutable.permissions.push("admin:read");
     const connection = await database.connectionStore.set("gmail", `frozen-${randomUUID()}`, credential("frozen"));
-    expect(connectionSecrets.observedScopes.every(Object.isFrozen)).toBe(true);
-    expect(connectionSecrets.observedScopes.every((item) => Object.isFrozen(item.permissions))).toBe(true);
+    expect(connectionSecrets.observedScopes.at(-1)).toMatchObject(originalScope);
     expect((await database.connectionStore.list()).map((item) => item.id)).toContain(connection.id);
     expect((await factory.forScope(mutable).connectionStore.list()).map((item) => item.id)).not.toContain(
       connection.id,
@@ -364,10 +785,17 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
   });
 
   it("replays the exact SaaS result and conflicts on a different authorized request hash", async () => {
+    const localConnectionId = randomUUID();
+    const connection = await factory
+      .forScope({ ...tenantAUserA, localConnectionId })
+      .connectionStore.set("gmail", `idempotency-${randomUUID()}`, credential("idempotency"));
     const actionScope = {
       ...tenantAUserA,
-      purpose: "action:execute" as const,
-      permissions: ["action:execute"],
+      purpose: "action:execute:v2" as const,
+      permissions: ["action:execute:v2"],
+      localConnectionId,
+      connectorConnectionId: connection.id,
+      maxOutputBytes: 1_024,
       actionId: "gmail.messages_list",
       requestHash: `saas-request-${nonce}`,
     };
@@ -426,10 +854,11 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     const actionScope = {
       ...tenantAUserA,
       localConnectionId: journalScope.localConnectionId,
-      purpose: "action:execute" as const,
-      permissions: ["action:execute"],
+      purpose: "action:execute:v2" as const,
+      permissions: ["action:execute:v2"],
       connectorConnectionId: connection.id,
       actionId: "gmail.messages_list",
+      maxOutputBytes: 1_024,
       requestHash,
     };
     const executionId = randomUUID();
@@ -486,7 +915,10 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     const ownerScope = { ...tenantAUserA, oauthSessionId: randomUUID() };
     const state: OAuthAuthorizationState = {
       service: "gmail",
-      connectionName: `oauth-${randomUUID()}`,
+      connectionName: ownerScope.oauthSessionId,
+      retirementGeneration: await factory
+        .forScope(ownerScope)
+        .connectionStore.getRetirementGeneration("gmail", ownerScope.oauthSessionId),
       state: randomBytes(32).toString("hex"),
       createdAt: new Date().toISOString(),
       pkceCodeVerifier: "verifier",
@@ -510,6 +942,10 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     const ownerScope = { ...tenantAUserA, oauthSessionId: randomUUID() };
     const state: OAuthAuthorizationState = {
       service: "gmail",
+      connectionName: ownerScope.oauthSessionId,
+      retirementGeneration: await factory
+        .forScope(ownerScope)
+        .connectionStore.getRetirementGeneration("gmail", ownerScope.oauthSessionId),
       state: randomBytes(32).toString("hex"),
       createdAt: new Date().toISOString(),
       pkceCodeVerifier: "verifier",
@@ -608,7 +1044,7 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     const alias = `revision-${randomUUID()}`;
     const original = await store.set("gmail", alias, credential("revision-old"));
     const invalid = credential("revision-new");
-    (invalid.profile.grantedScopes as unknown[]).push(1n);
+    invalid.profile.grantedScopes.push("invalid\u0000scope");
 
     await expect(store.updateCredential({ ...original, credential: invalid })).rejects.toBeInstanceOf(
       ConnectionMetadataReconciliationError,
@@ -697,9 +1133,12 @@ describe("SaaS per-request runtime binding", () => {
         catalogFingerprint: true,
       }),
       runtimeDatabaseFactory: {
-        forScope(requestScope) {
+        get actionPolicy(): PostgresActionPolicyStore {
+          throw new Error("Action policy is not used by connection request binding");
+        },
+        forScope(requestScope): never {
           captured.push(requestScope);
-          return undefined as never;
+          throw new Error("No database in request-binding-only test");
         },
       },
     }).createApp();
@@ -738,7 +1177,7 @@ describe("OAuth completion reconciliation", () => {
       release(): void {},
     };
     const fakePool = { connect: async () => client } as unknown as Pool;
-    const requestScope = scope("tenant", "workspace", "user");
+    const requestScope = { ...scope("tenant", "workspace", "user"), oauthSessionId: randomUUID() };
     const store = new PostgresOAuthStateStore(fakePool, requestScope, {
       async put() {
         return { secretRef: "unused", secretRevision: 1 };
@@ -814,20 +1253,25 @@ class MemoryConnectionSecrets implements ConnectionSecretStore {
 
 class MemoryOAuthStateSecrets implements OAuthStateSecretStore {
   failTake = false;
-  private readonly states = new Map<string, { pkceCodeVerifier?: string }>();
+  private readonly states = new Map<
+    string,
+    { pkceCodeVerifier?: string; authorizationState?: OAuthAuthorizationState }
+  >();
   async put(
     requestScope: Readonly<SaasRequestScope>,
     oauthSessionId: string,
     pkceCodeVerifier: string | undefined,
+    _expiresAt: string,
+    authorizationState?: OAuthAuthorizationState,
   ): Promise<{ secretRef: string; secretRevision: number }> {
     const secretRef = key(requestScope, oauthSessionId);
-    this.states.set(secretRef, pkceCodeVerifier === undefined ? {} : { pkceCodeVerifier });
+    this.states.set(secretRef, { pkceCodeVerifier, authorizationState });
     return { secretRef, secretRevision: 1 };
   }
   async take(
     requestScope: Readonly<SaasRequestScope>,
     oauthSessionId: string,
-  ): Promise<{ pkceCodeVerifier?: string } | undefined> {
+  ): Promise<{ pkceCodeVerifier?: string; authorizationState?: OAuthAuthorizationState } | undefined> {
     if (this.failTake) throw new Error("ambiguous OpenBao take");
     const secretRef = key(requestScope, oauthSessionId);
     const state = this.states.get(secretRef);
@@ -839,9 +1283,11 @@ class MemoryOAuthStateSecrets implements OAuthStateSecretStore {
   }
 }
 
-function scope(tenantId: string, workspaceId: string, subjectUserId: string): SaasRequestScope {
-  const digest = createHash("sha256").update(`${tenantId}\0${workspaceId}\0${subjectUserId}`).digest("hex");
-  const localConnectionId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+function scope(tenantLabel: string, workspaceLabel: string, subjectLabel: string): SaasRequestScope {
+  const tenantId = fixtureId(tenantLabel);
+  const workspaceId = fixtureId(workspaceLabel);
+  const subjectUserId = fixtureId(subjectLabel);
+  const localConnectionId = fixtureId(`${tenantId}\0${workspaceId}\0${subjectUserId}`);
   return {
     tenantId,
     workspaceId,
@@ -852,6 +1298,10 @@ function scope(tenantId: string, workspaceId: string, subjectUserId: string): Sa
     permissions: ["connection:read", "connection:write"],
     localConnectionId,
   };
+}
+function fixtureId(label: string): string {
+  const digest = createHash("sha256").update(label).digest("hex");
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }
 function credential(accountId: string): Extract<ResolvedCredential, { authType: "api_key" }> {
   return {
@@ -887,4 +1337,83 @@ function toSecret(provider: string, value: ResolvedCredential, revision: number)
         },
       };
   }
+}
+
+interface PolicyFixture {
+  store: PostgresActionPolicyStore;
+  target: ActionPolicyUserTarget;
+  actor: SaasRequestScope;
+  actionIds: string[];
+}
+function policyFixture(label: string, count = 3): PolicyFixture {
+  const service = `policy_${label}`;
+  const actionIds = Array.from({ length: count }, (_, index) => `${service}.action_${index}`);
+  const catalog = createCatalogStore([
+    {
+      service,
+      displayName: service,
+      categories: [],
+      authTypes: ["no_auth"],
+      auth: [{ type: "no_auth" }],
+      actions: actionIds.map((id) => ({
+        id,
+        service,
+        name: id,
+        description: id,
+        operationType: "read",
+        requiredScopes: [],
+        providerPermissions: [],
+        inputSchema: {},
+        outputSchema: {},
+      })),
+    },
+  ]);
+  const target: ActionPolicyUserTarget = {
+    kind: "user",
+    tenantId: randomUUID(),
+    workspaceId: randomUUID(),
+    userId: randomUUID(),
+  };
+  return {
+    store: new PostgresActionPolicyStore(runtimePool, catalog),
+    target,
+    actionIds,
+    actor: {
+      tenantId: target.tenantId,
+      workspaceId: target.workspaceId,
+      actorUserId: target.userId,
+      subjectUserId: target.userId,
+      workspaceRole: "member",
+      purpose: "action:search",
+      permissions: ["action:search"],
+    },
+  };
+}
+function policyControl(
+  target: ActionPolicyTarget,
+  purpose: ActionPolicyControlPrincipal["purpose"] = "action-policy:write",
+): ActionPolicyControlPrincipal {
+  return {
+    subjectKind: "policy_control",
+    subject: "verified-operator",
+    target,
+    purpose,
+    permissions: [purpose],
+    requestId: randomUUID(),
+    requestHash: purpose === "action-policy:write" ? "a".repeat(43) : undefined,
+  };
+}
+function policyService(
+  target: ActionPolicyTarget,
+  purpose: ActionPolicyServicePrincipal["purpose"],
+): ActionPolicyServicePrincipal {
+  return {
+    subjectKind: "service",
+    subject: "lifecycle-coordinator",
+    target,
+    purpose,
+    permissions: [purpose],
+    requestId: randomUUID(),
+    requestHash: purpose === "action-policy:purge" ? "a".repeat(43) : undefined,
+  };
 }

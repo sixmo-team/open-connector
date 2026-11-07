@@ -1,11 +1,26 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
 
-import { defineApiKeyProviderExecutors } from "../provider-runtime.ts";
-import { tallyActionHandlers, validateTallyCredential } from "./runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { tallyActionHandlers, tallyApiBaseUrl, validateTallyCredential } from "./runtime.ts";
+import { tallyFormResponse } from "./trigger-on-form-response.ts";
 
 const service = "tally";
 
+export const triggers: readonly IntegrationDefinition[] = [tallyFormResponse];
+
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, tallyActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: tallyApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   apiKey: validateTallyCredential,

@@ -4,36 +4,37 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { LemlistActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  isAbortLikeError,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  createProviderTimeout,
+  isAbortLikeError,
+  ProviderRequestError,
+  providerUserAgent,
 } from "../provider-runtime.ts";
 
 const service = "lemlist";
 const lemlistApiBaseUrl = "https://api.lemlist.com/api";
 const lemlistValidationPath = "/team";
-const lemlistDefaultRequestTimeoutMs = 30_000;
 const lemlistFetch = createProviderFetch({ skipDnsValidation: true });
 
 type LemlistRequestPhase = "validate" | "execute";
 type LemlistActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const lemlistActionHandlers: Record<LemlistActionName, LemlistActionHandler> = {
+export const lemlistActionHandlers: ProviderActionHandlers<"lemlist", LemlistActionHandler> = {
   async get_team(_input, context) {
     const payload = await requestLemlistJson({
       context,
@@ -181,7 +182,7 @@ async function requestLemlistJson(input: {
       url.searchParams.set(key, String(value));
     }
   }
-  const timeout = createProviderTimeout(input.context.signal, lemlistDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
 
   let response: Response;
   let payload: unknown;

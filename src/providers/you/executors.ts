@@ -1,6 +1,7 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 
-import { defineApiKeyProviderExecutors } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { validateYouCredential, youActionHandlers } from "./runtime.ts";
 
 const service = "you";
@@ -12,3 +13,9 @@ export const credentialValidators: CredentialValidators = {
     return validateYouCredential(input.apiKey, fetcher, signal);
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.you.com/v1",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

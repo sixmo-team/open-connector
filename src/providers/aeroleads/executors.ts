@@ -1,11 +1,20 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineProviderExecutors,
   providerUserAgent,
   ProviderRequestError,
-  requireApiKeyCredential,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 const service = "aeroleads";
@@ -20,7 +29,7 @@ interface AeroleadsActionContext {
 
 type AeroleadsActionHandler = (input: Record<string, unknown>, context: AeroleadsActionContext) => Promise<unknown>;
 
-export const aeroleadsActionHandlers: Record<string, AeroleadsActionHandler> = {
+export const aeroleadsActionHandlers: ProviderActionHandlers<"aeroleads", AeroleadsActionHandler> = {
   get_details_from_linkedin_url(input, context) {
     return getDetailsFromLinkedinUrl(input, context);
   },
@@ -36,6 +45,16 @@ export const executors: ProviderExecutors = defineProviderExecutors<AeroleadsAct
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: aeroleadsApiBaseUrl,
+  auth: { type: "api_key_query", name: "api_key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 
@@ -204,7 +223,7 @@ function mapAeroleadsError(status: number, message: string): ProviderRequestErro
     return new ProviderRequestError(status, message);
   }
   if (status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }

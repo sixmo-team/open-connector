@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -14,14 +16,15 @@ import {
   createProviderTimeout,
   isAbortSignalError,
   parseProviderJsonBodyText,
+  providerInputError,
   ProviderRequestError,
+  providerResponseError,
   providerUserAgent,
   readProviderTextBody,
 } from "../provider-runtime.ts";
 import { qdrantUuidPattern } from "./actions.ts";
 
 const service = "qdrant";
-const requestTimeoutMs = 30_000;
 const qdrantHostnameSuffix = ".cloud.qdrant.io";
 
 type QdrantRequestPhase = "validate" | "execute";
@@ -34,7 +37,7 @@ export interface QdrantContext {
   signal?: AbortSignal;
 }
 
-export const qdrantActionHandlers: Record<string, ProviderRuntimeHandler<QdrantContext>> = {
+export const qdrantActionHandlers: ProviderActionHandlers<"qdrant", ProviderRuntimeHandler<QdrantContext>> = {
   async list_collections(_input, context) {
     const payload = await requestQdrantJson(context, "/collections", "GET", undefined, "execute");
     const result = requireObjectResult(payload, "Qdrant collections response");
@@ -198,7 +201,7 @@ async function requestQdrantJson(
   body: object | undefined,
   phase: QdrantRequestPhase,
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(new URL(path, `${context.clusterUrl.origin}/`), {
       method,
@@ -241,7 +244,7 @@ async function requestQdrantJson(
   }
 }
 
-function normalizeQdrantClusterUrl(value: string | undefined): URL {
+export function normalizeQdrantClusterUrl(value: unknown): URL {
   const url = assertPublicHttpUrl(requiredString(value, "clusterUrl", providerInputError), {
     fieldName: "clusterUrl",
     createError: providerInputError,
@@ -289,7 +292,7 @@ function createQdrantError(status: number, payload: unknown, phase: QdrantReques
     optionalString(record?.message) ??
     `Qdrant request failed with status ${status}`;
   if ((status === 401 || status === 403) && phase === "validate") {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(status >= 500 ? 502 : status || 502, message);
 }
@@ -433,11 +436,3 @@ function isDistance(value: string): value is "Cosine" | "Euclid" | "Dot" | "Manh
 }
 
 const uuidPattern = new RegExp(qdrantUuidPattern);
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerResponseError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
-}

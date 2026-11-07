@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { FeaturebaseActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "featurebase";
 const featurebaseApiBaseUrl = "https://do.featurebase.app";
@@ -20,7 +22,7 @@ interface FeaturebaseActionContext {
 
 type FeaturebaseActionHandler = (input: Record<string, unknown>, context: FeaturebaseActionContext) => Promise<unknown>;
 
-export const featurebaseActionHandlers: Record<FeaturebaseActionName, FeaturebaseActionHandler> = {
+export const featurebaseActionHandlers: ProviderActionHandlers<"featurebase", FeaturebaseActionHandler> = {
   list_boards(_input, context) {
     return listFeaturebaseObjects("/v2/boards", {}, context);
   },
@@ -62,6 +64,16 @@ export const featurebaseActionHandlers: Record<FeaturebaseActionName, Featurebas
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, featurebaseActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: featurebaseApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {

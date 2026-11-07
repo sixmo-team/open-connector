@@ -3,13 +3,31 @@ import type {
   CredentialValidators,
   ExecutionContext,
   ProviderExecutors,
+  ProviderProxyExecutor,
 } from "../../core/types.ts";
 import type { RailwayActionContext } from "./runtime.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
-import { createRailwayContext, railwayActionHandlers, validateRailwayCredential } from "./runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  createRailwayContext,
+  railwayActionHandlers,
+  railwayApiBaseUrl,
+  validateRailwayCredential,
+} from "./runtime.ts";
 
 const service = "railway";
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: railwayApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
+});
 
 export const executors: ProviderExecutors = defineProviderExecutors<RailwayActionContext>({
   service,

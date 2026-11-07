@@ -1,19 +1,18 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { arrayPayload, requestJson } from "../http-json-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineApiKeyProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "zorus";
 const apiBaseUrl = "https://developer.zorustech.com";
@@ -33,7 +32,7 @@ const paths: Record<string, string> = {
   search_active_unblock_requests: "/api/unblock-requests/active/search",
 };
 
-export const zorusActionHandlers: Record<string, Handler> = {
+export const zorusActionHandlers: ProviderActionHandlers<"zorus", Handler> = {
   search_customers(input, context) {
     return searchZorus(paths.search_customers, input, context);
   },

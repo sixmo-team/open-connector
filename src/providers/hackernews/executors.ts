@@ -1,7 +1,12 @@
-import type { ProviderExecutors } from "../../core/types.ts";
+import type { ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { optionalBoolean, optionalInteger, positiveInteger, requiredString } from "../../core/cast.ts";
-import { defineProviderExecutors, readProviderJson, setSearchParams } from "../provider-runtime.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { readProviderJson, setSearchParams } from "../provider-runtime.ts";
+
+const service = "hackernews";
 
 const firebaseBaseUrl = "https://hacker-news.firebaseio.com/v0";
 const algoliaBaseUrl = "https://hn.algolia.com/api/v1";
@@ -68,27 +73,12 @@ interface TreeBuildOptions {
 /**
  * Action names implemented by the Hacker News provider.
  */
-export type HackernewsActionName =
-  | "get_ask_stories"
-  | "get_best_stories"
-  | "get_item"
-  | "get_item_with_id"
-  | "get_job_stories"
-  | "get_latest_posts"
-  | "get_max_item_id"
-  | "get_new_stories"
-  | "get_show_stories"
-  | "get_top_stories"
-  | "get_updates"
-  | "get_user"
-  | "get_user_by_username"
-  | "search_posts";
 
 /**
  * Hacker News action handlers backed by public Firebase and Algolia endpoints.
  */
-export const hackernewsActionHandlers: Record<
-  HackernewsActionName,
+export const hackernewsActionHandlers: ProviderActionHandlers<
+  "hackernews",
   (input: Record<string, unknown>, context: HackerNewsActionContext) => Promise<unknown>
 > = {
   get_ask_stories(input, context): Promise<unknown> {
@@ -136,7 +126,7 @@ export const hackernewsActionHandlers: Record<
 };
 
 export const executors: ProviderExecutors = defineProviderExecutors<HackerNewsActionContext>({
-  service: "hackernews",
+  service,
   handlers: hackernewsActionHandlers,
   createContext(_context, fetcher): HackerNewsActionContext {
     return { fetcher };
@@ -372,3 +362,9 @@ function maybeTruncateText(value: string, truncate: boolean): string {
 
   return value.slice(0, maxTruncatedTextLength);
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://hacker-news.firebaseio.com/v0",
+  auth: { type: "none" },
+});

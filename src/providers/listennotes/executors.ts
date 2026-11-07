@@ -1,6 +1,11 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { ListennotesActionName } from "./actions.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -12,7 +17,9 @@ import {
   requiredString,
 } from "../../core/cast.ts";
 import { queryFlag, queryParams } from "../../core/request.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "listennotes";
 const listennotesApiBaseUrl = "https://listen-api.listennotes.com/api/v2";
@@ -20,13 +27,13 @@ const listennotesValidationPath = "/languages";
 
 type ListennotesActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const listennotesActionHandlers: Record<ListennotesActionName, ListennotesActionHandler> = {
+export const listennotesActionHandlers: ProviderActionHandlers<"listennotes", ListennotesActionHandler> = {
   async search(input, context) {
     const resultType = readSearchType(input.type);
     const payload = await requestListennotesJson({
       path: "/search",
       query: queryParams({
-        q: requiredString(input.q, "q", invalidInputError),
+        q: requiredString(input.q, "q", providerInputError),
         type: resultType,
         offset: optionalInteger(input.offset),
         region: optionalString(input.region),
@@ -56,7 +63,7 @@ export const listennotesActionHandlers: Record<ListennotesActionName, Listennote
     const payload = await requestListennotesJson({
       path: "/typeahead",
       query: queryParams({
-        q: requiredString(input.q, "q", invalidInputError),
+        q: requiredString(input.q, "q", providerInputError),
         safe_mode: queryFlag(optionalBoolean(input.safeMode)),
         show_genres: queryFlag(optionalBoolean(input.showGenres)),
         show_podcasts: queryFlag(optionalBoolean(input.showPodcasts)),
@@ -73,7 +80,7 @@ export const listennotesActionHandlers: Record<ListennotesActionName, Listennote
     };
   },
   async get_podcast(input, context) {
-    const podcastId = requiredString(input.id, "id", invalidInputError);
+    const podcastId = requiredString(input.id, "id", providerInputError);
     const payload = await requestListennotesJson({
       path: `/podcasts/${encodeURIComponent(podcastId)}`,
       query: queryParams({
@@ -92,7 +99,7 @@ export const listennotesActionHandlers: Record<ListennotesActionName, Listennote
     };
   },
   async get_episode(input, context) {
-    const episodeId = requiredString(input.id, "id", invalidInputError);
+    const episodeId = requiredString(input.id, "id", providerInputError);
     const payload = await requestListennotesJson({
       path: `/episodes/${encodeURIComponent(episodeId)}`,
       query: {},
@@ -176,7 +183,7 @@ export const listennotesActionHandlers: Record<ListennotesActionName, Listennote
     };
   },
   async get_related_podcasts(input, context) {
-    const podcastId = requiredString(input.id, "id", invalidInputError);
+    const podcastId = requiredString(input.id, "id", providerInputError);
     const payload = await requestListennotesJson({
       path: `/podcasts/${encodeURIComponent(podcastId)}/recommendations`,
       query: queryParams({
@@ -500,6 +507,8 @@ function joinNumberArray(value: unknown): string | undefined {
   return numbers.length > 0 ? numbers.join(",") : undefined;
 }
 
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://listen-api.listennotes.com/api/v2",
+  auth: { type: "api_key_header", name: "x-listenapi-key" },
+});

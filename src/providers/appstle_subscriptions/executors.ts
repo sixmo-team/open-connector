@@ -1,8 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "appstle_subscriptions";
 const appstleSubscriptionsApiBaseUrl = "https://subscription-admin.appstle.com";
@@ -13,7 +16,10 @@ type AppstleSubscriptionsActionHandler = (
   context: ApiKeyProviderContext,
 ) => Promise<unknown>;
 
-export const appstleSubscriptionsActionHandlers: Record<string, AppstleSubscriptionsActionHandler> = {
+export const appstleSubscriptionsActionHandlers: ProviderActionHandlers<
+  "appstle_subscriptions",
+  AppstleSubscriptionsActionHandler
+> = {
   async list_customers_with_subscriptions(input, context) {
     const payload = await requestAppstleSubscriptionsJson({
       context,
@@ -71,6 +77,16 @@ export const appstleSubscriptionsActionHandlers: Record<string, AppstleSubscript
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, appstleSubscriptionsActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: appstleSubscriptionsApiBaseUrl,
+  auth: { type: "api_key_header", name: "X-API-Key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {

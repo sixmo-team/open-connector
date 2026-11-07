@@ -1,6 +1,12 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 
-import { defineApiKeyProviderExecutors } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { cloudlayerActionHandlers, validateCloudlayerCredential } from "./runtime.ts";
 
 const service = "cloudlayer";
@@ -12,3 +18,9 @@ export const credentialValidators: CredentialValidators = {
     return validateCloudlayerCredential(input.apiKey, fetcher, signal);
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.cloudlayer.io",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

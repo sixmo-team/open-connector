@@ -1,4 +1,4 @@
-import type { Auth0ManagementActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -7,14 +7,18 @@ import {
   optionalIntegerLike,
   optionalRecord,
   optionalString,
-  requiredString,
   stringArray,
 } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 const auth0ApiSegment = "api/v2";
 const auth0CredentialHelpUrl = "https://auth0.com/docs/api/management/v2";
-const auth0ManagementRequestTimeoutMs = 30_000;
 
 type Auth0ManagementPhase = "validate" | "execute";
 type Auth0QueryValue = string | number | boolean | undefined;
@@ -40,7 +44,7 @@ interface Auth0ManagementRequest {
   notFoundAsInvalidInput?: boolean;
 }
 
-export const auth0ManagementActionHandlers: Record<Auth0ManagementActionName, Auth0ActionHandler> = {
+export const auth0ManagementActionHandlers: ProviderActionHandlers<"auth0_management", Auth0ActionHandler> = {
   list_users(input, context) {
     return listUsers(input, context);
   },
@@ -191,7 +195,7 @@ async function searchUsersByEmail(input: Record<string, unknown>, context: Auth0
     ...context,
     path: "/users-by-email",
     query: {
-      email: readRequiredString(input.email, "email"),
+      email: requiredInputString(input.email, "email"),
     },
     phase: "execute",
   });
@@ -203,7 +207,7 @@ async function searchUsersByEmail(input: Record<string, unknown>, context: Auth0
 }
 
 async function getUser(input: Record<string, unknown>, context: Auth0ActionContext): Promise<unknown> {
-  const userId = readRequiredString(input.userId, "userId");
+  const userId = requiredInputString(input.userId, "userId");
   const payload = await requestAuth0ManagementJson({
     ...context,
     path: `/users/${encodeURIComponent(userId)}`,
@@ -232,7 +236,7 @@ async function listRoles(input: Record<string, unknown>, context: Auth0ActionCon
 }
 
 async function getRole(input: Record<string, unknown>, context: Auth0ActionContext): Promise<unknown> {
-  const roleId = readRequiredString(input.roleId, "roleId");
+  const roleId = requiredInputString(input.roleId, "roleId");
   const payload = await requestAuth0ManagementJson({
     ...context,
     path: `/roles/${encodeURIComponent(roleId)}`,
@@ -244,7 +248,7 @@ async function getRole(input: Record<string, unknown>, context: Auth0ActionConte
 }
 
 async function listUserRoles(input: Record<string, unknown>, context: Auth0ActionContext): Promise<unknown> {
-  const userId = readRequiredString(input.userId, "userId");
+  const userId = requiredInputString(input.userId, "userId");
   const payload = await requestAuth0ManagementJson({
     ...context,
     path: `/users/${encodeURIComponent(userId)}/roles`,
@@ -259,7 +263,7 @@ async function listUserRoles(input: Record<string, unknown>, context: Auth0Actio
 }
 
 async function listUserPermissions(input: Record<string, unknown>, context: Auth0ActionContext): Promise<unknown> {
-  const userId = readRequiredString(input.userId, "userId");
+  const userId = requiredInputString(input.userId, "userId");
   const payload = await requestAuth0ManagementJson({
     ...context,
     path: `/users/${encodeURIComponent(userId)}/permissions`,
@@ -277,7 +281,7 @@ async function listUserEffectivePermissions(
   input: Record<string, unknown>,
   context: Auth0ActionContext,
 ): Promise<unknown> {
-  const userId = readRequiredString(input.userId, "userId");
+  const userId = requiredInputString(input.userId, "userId");
   const payload = await requestAuth0ManagementJson({
     ...context,
     path: `/users/${encodeURIComponent(userId)}/effective-permissions`,
@@ -292,7 +296,7 @@ async function listUserEffectivePermissions(
 }
 
 async function listUserEffectiveRoles(input: Record<string, unknown>, context: Auth0ActionContext): Promise<unknown> {
-  const userId = readRequiredString(input.userId, "userId");
+  const userId = requiredInputString(input.userId, "userId");
   const payload = await requestAuth0ManagementJson({
     ...context,
     path: `/users/${encodeURIComponent(userId)}/effective-roles`,
@@ -311,7 +315,7 @@ async function updateUserRoles(
   context: Auth0ActionContext,
   method: "POST" | "DELETE",
 ): Promise<unknown> {
-  const userId = readRequiredString(input.userId, "userId");
+  const userId = requiredInputString(input.userId, "userId");
   await requestAuth0ManagementJson({
     ...context,
     path: `/users/${encodeURIComponent(userId)}/roles`,
@@ -326,7 +330,7 @@ async function updateUserRoles(
 }
 
 async function listRolePermissions(input: Record<string, unknown>, context: Auth0ActionContext): Promise<unknown> {
-  const roleId = readRequiredString(input.roleId, "roleId");
+  const roleId = requiredInputString(input.roleId, "roleId");
   const payload = await requestAuth0ManagementJson({
     ...context,
     path: `/roles/${encodeURIComponent(roleId)}/permissions`,
@@ -345,7 +349,7 @@ async function updateRolePermissions(
   context: Auth0ActionContext,
   method: "POST" | "DELETE",
 ): Promise<unknown> {
-  const roleId = readRequiredString(input.roleId, "roleId");
+  const roleId = requiredInputString(input.roleId, "roleId");
   await requestAuth0ManagementJson({
     ...context,
     path: `/roles/${encodeURIComponent(roleId)}/permissions`,
@@ -360,7 +364,7 @@ async function updateRolePermissions(
 }
 
 async function listRoleUsers(input: Record<string, unknown>, context: Auth0ActionContext): Promise<unknown> {
-  const roleId = readRequiredString(input.roleId, "roleId");
+  const roleId = requiredInputString(input.roleId, "roleId");
   const payload = await requestAuth0ManagementJson({
     ...context,
     path: `/roles/${encodeURIComponent(roleId)}/users`,
@@ -375,7 +379,7 @@ async function listRoleUsers(input: Record<string, unknown>, context: Auth0Actio
 }
 
 async function requestAuth0ManagementJson(input: Auth0ManagementRequest): Promise<unknown> {
-  const timeoutSignal = AbortSignal.timeout(auth0ManagementRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
 
   let response: Response;
@@ -472,8 +476,8 @@ function buildRoleUsersQuery(input: Record<string, unknown>): Record<string, Aut
 
 function normalizePermissionInputList(value: unknown): Array<Record<string, string>> {
   return objectArray(value, "permissions", providerInputError).map((record, index) => ({
-    permission_name: readRequiredString(record.permissionName, `permissions[${index}].permissionName`),
-    resource_server_identifier: readRequiredString(
+    permission_name: requiredInputString(record.permissionName, `permissions[${index}].permissionName`),
+    resource_server_identifier: requiredInputString(
       record.resourceServerIdentifier,
       `permissions[${index}].resourceServerIdentifier`,
     ),
@@ -541,10 +545,6 @@ function normalizeRawListPayload(payload: unknown): Array<Record<string, unknown
   return Array.isArray(payload) ? payload.map(normalizeRawObject) : normalizeRawObject(payload);
 }
 
-function readRequiredString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, providerInputError);
-}
-
 function createAuth0ManagementError(
   status: number,
   payload: unknown,
@@ -567,8 +567,4 @@ function createAuth0ManagementError(
     return new ProviderRequestError(status, message, payload);
   }
   return new ProviderRequestError(status >= 500 ? 502 : status, message, payload);
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

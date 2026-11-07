@@ -4,16 +4,13 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { SendbirdActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalRawString, pickOptionalString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError, providerInputError } from "../provider-runtime.ts";
 
 const sendbirdUserAgent = providerUserAgent;
 const sendbirdValidationPath = "/applications/settings_global";
@@ -40,7 +37,7 @@ interface SendbirdRequestOptions {
   allowEmptyResponse?: boolean;
 }
 
-export const sendbirdActionHandlers: Record<SendbirdActionName, SendbirdActionHandler> = {
+export const sendbirdActionHandlers: ProviderActionHandlers<"sendbird", SendbirdActionHandler> = {
   list_users(input, context) {
     return sendbirdListUsers(input, context);
   },
@@ -125,7 +122,7 @@ export const sendbirdActionHandlers: Record<SendbirdActionName, SendbirdActionHa
   unmute_user(input, context) {
     return sendbirdUnmuteUser(input, context);
   },
-} satisfies Record<SendbirdActionName, SendbirdActionHandler>;
+};
 
 export const executors: ProviderExecutors = defineProviderExecutors<SendbirdActionContext>({
   service: "sendbird",
@@ -613,7 +610,7 @@ function createSendbirdError(response: Response, payload: unknown, phase: Sendbi
   }
 
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (response.status === 400 || response.status === 404) {

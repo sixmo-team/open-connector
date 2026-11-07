@@ -1,9 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { GemActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "gem";
 const gemApiBaseUrl = "https://api.gem.com";
@@ -17,7 +19,7 @@ type GemResponse = {
 };
 type GemActionHandler = (input: Record<string, unknown>, context: GemActionContext) => Promise<unknown>;
 
-export const gemActionHandlers: Record<GemActionName, GemActionHandler> = {
+export const gemActionHandlers: ProviderActionHandlers<"gem", GemActionHandler> = {
   list_users(input, context) {
     return gemList(buildListUsersPath(input), "users", context);
   },
@@ -313,3 +315,9 @@ function gemUrl(path: string): URL {
 function gemPath(url: URL): string {
   return `${url.pathname}${url.search}`;
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.gem.com",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

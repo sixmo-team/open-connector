@@ -1,10 +1,11 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { GeminiActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 import type { GeminiRuntimeContext } from "./runtime.ts";
 
 import { compactObject } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   countGeminiTokens,
   embedGeminiContent,
@@ -24,7 +25,7 @@ const service = "gemini";
 
 type GeminiActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const geminiActionHandlers: Record<GeminiActionName, GeminiActionHandler> = {
+export const geminiActionHandlers: ProviderActionHandlers<"gemini", GeminiActionHandler> = {
   list_models(input, context) {
     return listGeminiModels(input, createGeminiRuntimeContext(context));
   },
@@ -91,3 +92,9 @@ function createGeminiRuntimeContext(context: ApiKeyProviderContext): GeminiRunti
     maxWaitMs: geminiDefaultVideoMaxWaitMs,
   };
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+  auth: { type: "api_key_header", name: "x-goog-api-key" },
+});

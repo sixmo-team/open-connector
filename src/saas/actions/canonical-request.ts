@@ -1,3 +1,5 @@
+import type { ActionPolicyTarget } from "../contracts.ts";
+
 import { createHash } from "node:crypto";
 import { actionInputMaxDepth } from "./action-idempotency.ts";
 
@@ -28,6 +30,17 @@ export function canonicalActionRequestHash(actionId: string, connectorConnection
 export function canonicalRequestHash(operation: string, input: unknown): string {
   const envelope: CanonicalRequestEnvelope = { operation, input };
   const canonical = canonicalize(envelope, 0, new WeakSet<object>());
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("base64url");
+}
+
+/** Bind policy mutations to their exact method, pathname, verified target and unnormalized wire body. */
+export function canonicalActionPolicyRequestHash(
+  method: string,
+  path: string,
+  target: ActionPolicyTarget,
+  body: unknown,
+): string {
+  const canonical = canonicalize({ method: method.toUpperCase(), path, target, body }, 0, new WeakSet<object>());
   return createHash("sha256").update(JSON.stringify(canonical)).digest("base64url");
 }
 

@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -10,20 +12,13 @@ import {
   optionalString,
 } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
-import {
-  createProviderTimeout,
-  isAbortLikeError,
-  providerUserAgent,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, runProviderRequest } from "../provider-runtime.ts";
 
 export interface SevenShiftsContext extends ApiKeyProviderContext {
   companyGuid?: string;
 }
 
 export const sevenShiftsApiBaseUrl = "https://api.7shifts.com";
-
-const sevenShiftsDefaultRequestTimeoutMs = 30_000;
 
 type SevenShiftsRequestPhase = "validate" | "execute";
 type SevenShiftsEntityKind = "company" | "location" | "department" | "role" | "user";
@@ -40,7 +35,7 @@ interface SevenShiftsRequestOptions {
   signal?: AbortSignal;
 }
 
-export const sevenShiftsActionHandlers: Record<string, SevenShiftsActionHandler> = {
+export const sevenShiftsActionHandlers: ProviderActionHandlers<"7_shifts", SevenShiftsActionHandler> = {
   async retrieve_identity(input, context) {
     return {
       identity: normalizeIdentityResponse(
@@ -180,13 +175,11 @@ export async function validateSevenShiftsCredential(
 }
 
 async function requestSevenShiftsJson(options: SevenShiftsRequestOptions): Promise<unknown> {
-  const timeout = createProviderTimeout(options.signal, sevenShiftsDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ signal: options.signal, label: "7shifts" }, async (signal) => {
     const response = await options.fetcher(buildSevenShiftsUrl(options.path, options.query), {
       method: "GET",
       headers: buildSevenShiftsHeaders(options),
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readSevenShiftsPayload(response);
 
@@ -198,20 +191,7 @@ async function requestSevenShiftsJson(options: SevenShiftsRequestOptions): Promi
     }
 
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "7shifts request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `7shifts request failed: ${error.message}` : "7shifts request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildSevenShiftsUrl(path: string, query?: Record<string, string | undefined>): URL {

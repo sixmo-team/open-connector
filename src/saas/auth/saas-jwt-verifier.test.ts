@@ -22,6 +22,11 @@ const completeEnvironment: NodeJS.ProcessEnv = {
   OPEN_CONNECTOR_JWT_ISSUER: "integration-backend",
   OPEN_CONNECTOR_JWT_AUDIENCE: "open-connector-saas",
   OPEN_CONNECTOR_JWT_ACTIVE_KID: "current",
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWKS_URL:
+    "http://integration-admin/internal/integrations/.well-known/action-policy-jwks.json",
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ISSUER: "integration-admin",
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_AUDIENCE: "open-connector-action-policy",
+  OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ACTIVE_KID: "policy-current",
   OPEN_CONNECTOR_SEAWEEDFS_ENDPOINT: "http://seaweedfs:8333",
   OPEN_CONNECTOR_SEAWEEDFS_BUCKET: "integration-transit",
   OPEN_CONNECTOR_SEAWEEDFS_ACCESS_KEY_ID: "connector",
@@ -110,12 +115,86 @@ describe("createSaasJwtVerifier", () => {
     expect(Object.isFrozen(scope.permissions)).toBe(true);
   });
 
+  it("accepts only exact customer maintenance authority without execution bindings", async () => {
+    const user = randomUUID();
+    const claims = {
+      sub: user,
+      actor_user_id: user,
+      subject_user_id: user,
+      purpose: "maintenance:run",
+      permissions: ["maintenance:run"],
+    };
+    expect(await verifier()(header(await token(claims)))).toMatchObject({
+      actorUserId: user,
+      subjectUserId: user,
+      purpose: "maintenance:run",
+      permissions: ["maintenance:run"],
+    });
+    for (const extra of [
+      { actor_user_id: randomUUID() },
+      { permissions: ["maintenance:run", "action:execute:v2"] },
+      { local_connection_id: randomUUID() },
+      { connector_connection_id: randomUUID() },
+      { oauth_session_id: randomUUID() },
+      { file_id: randomUUID() },
+      { action_id: "example.run" },
+      { request_hash: "a".repeat(43) },
+      { max_output_bytes: 4096 },
+      { subject_kind: "policy_control" },
+    ])
+      await expect(verifier()(header(await token({ ...claims, ...extra })))).rejects.toThrow("unauthorized");
+  });
+
+  it("retains a hashed connection-create binding without inventing a connector connection or action", async () => {
+    const userId = randomUUID();
+    const localConnectionId = randomUUID();
+    const scope = await verifier()(
+      header(
+        await token({
+          sub: userId,
+          tenant_id: randomUUID(),
+          workspace_id: randomUUID(),
+          actor_user_id: userId,
+          subject_user_id: userId,
+          purpose: "connection:write",
+          permissions: ["connection:write"],
+          local_connection_id: localConnectionId,
+          request_hash: "a".repeat(43),
+        }),
+      ),
+    );
+    expect(scope).toMatchObject({ purpose: "connection:write", localConnectionId, requestHash: "a".repeat(43) });
+    expect(scope).not.toHaveProperty("connectorConnectionId", expect.anything());
+    expect(scope).not.toHaveProperty("actionId", expect.anything());
+  });
+
+  it.each([
+    { local_connection_id: undefined },
+    { action_id: "example.run" },
+    { oauth_session_id: randomUUID() },
+    { max_output_bytes: 4096 },
+  ])("keeps hashed connection-create claims restricted: %j", async (changes) => {
+    await expect(
+      verifier()(
+        header(
+          await token({
+            purpose: "connection:write",
+            permissions: ["connection:write"],
+            local_connection_id: randomUUID(),
+            request_hash: "a".repeat(43),
+            ...changes,
+          }),
+        ),
+      ),
+    ).rejects.toThrow("unauthorized");
+  });
+
   it("retains the signed reviewed output bound on action execution scopes", async () => {
     const scope = await verifier()(
       header(
         await token({
-          purpose: "action:execute",
-          permissions: ["action:execute"],
+          purpose: "action:execute:v2",
+          permissions: ["action:execute:v2"],
           local_connection_id: "local-1",
           connector_connection_id: "connector-1",
           action_id: "gmail.messages_list",
@@ -125,7 +204,7 @@ describe("createSaasJwtVerifier", () => {
       ),
     );
 
-    expect(scope).toMatchObject({ purpose: "action:execute", maxOutputBytes: 8_388_608 });
+    expect(scope).toMatchObject({ purpose: "action:execute:v2", maxOutputBytes: 8_388_608 });
   });
 
   it("retains the signed file binding on file read scopes", async () => {
@@ -282,7 +361,11 @@ describe("createSaasJwtVerifier", () => {
   });
 
   it("rejects incomplete purpose-specific bindings", async () => {
-    const jwt = await token({ purpose: "action:execute", permissions: ["action:execute"], request_hash: undefined });
+    const jwt = await token({
+      purpose: "action:execute:v2",
+      permissions: ["action:execute:v2"],
+      request_hash: undefined,
+    });
     await expect(verifier()(header(jwt))).rejects.toThrow("unauthorized");
   });
 

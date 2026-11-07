@@ -1,11 +1,12 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
-import type { VeriphoneActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
-const veriphoneApiBaseUrl = "https://api.veriphone.io";
+export const veriphoneApiBaseUrl = "https://api.veriphone.io";
 
 type VeriphoneRequestPhase = "validate" | "execute";
 type VeriphoneActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
@@ -19,7 +20,7 @@ interface VeriphoneRequestInput {
   signal?: AbortSignal;
 }
 
-export const veriphoneActionHandlers: Record<VeriphoneActionName, VeriphoneActionHandler> = {
+export const veriphoneActionHandlers: ProviderActionHandlers<"veriphone", VeriphoneActionHandler> = {
   get_credits(_input, context) {
     return requestVeriphone({
       path: "/v2/credits",

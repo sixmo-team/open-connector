@@ -1,5 +1,10 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
-import type { CraftmypdfActionName } from "./actions.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import {
   compactObject,
@@ -10,12 +15,10 @@ import {
   optionalRecord,
   optionalString,
 } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "craftmypdf";
 const defaultApiBaseUrl = "https://api.craftmypdf.com/v1";
@@ -48,7 +51,7 @@ interface CraftmypdfTemplate {
 type CraftmypdfRequestPhase = "validate" | "execute";
 type CraftmypdfActionHandler = (input: Record<string, unknown>, context: CraftmypdfContext) => Promise<unknown>;
 
-const actionHandlers: Record<CraftmypdfActionName, CraftmypdfActionHandler> = {
+const actionHandlers: ProviderActionHandlers<"craftmypdf", CraftmypdfActionHandler> = {
   get_account_info(_input, context) {
     return getAccountInfo(context);
   },
@@ -403,3 +406,9 @@ function booleanToFlag(value: unknown): number | undefined {
   }
   return parsed ? 1 : 0;
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.craftmypdf.com/v1",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

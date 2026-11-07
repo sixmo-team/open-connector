@@ -1,10 +1,12 @@
-import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { RealPhoneValidationActionName } from "./actions.ts";
+import type { CredentialValidationResult, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { createHash } from "node:crypto";
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "realphonevalidation";
 const realPhoneValidationApiBaseUrl = "https://api.realvalidation.com";
@@ -26,8 +28,8 @@ type RealPhoneValidationActionHandler = (
   context: ApiKeyProviderContext,
 ) => Promise<unknown>;
 
-export const realPhoneValidationActionHandlers: Record<
-  RealPhoneValidationActionName,
+export const realPhoneValidationActionHandlers: ProviderActionHandlers<
+  "realphonevalidation",
   RealPhoneValidationActionHandler
 > = {
   validate_phone_standard(input, context) {
@@ -51,6 +53,16 @@ export const realPhoneValidationActionHandlers: Record<
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, realPhoneValidationActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: realPhoneValidationApiBaseUrl,
+  auth: { type: "api_key_query", name: "token" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export async function validateRealPhoneValidationCredential(
   input: Record<string, string>,

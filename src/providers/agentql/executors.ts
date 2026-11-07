@@ -1,6 +1,13 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { agentqlActionHandlers, validateAgentqlCredential } from "./runtime.ts";
 
 const service = "agentql";
@@ -23,3 +30,9 @@ export const credentialValidators: CredentialValidators = {
     return validateAgentqlCredential(input.apiKey, fetcher, signal);
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.agentql.com",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

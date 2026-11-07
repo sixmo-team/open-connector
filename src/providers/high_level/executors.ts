@@ -1,8 +1,16 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { HighLevelContext } from "./runtime.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
-import { highLevelActionHandlers, readHighLevelLocationId, validateHighLevelCredential } from "./runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  highLevelActionHandlers,
+  highLevelApiBaseUrl,
+  highLevelApiVersion,
+  readHighLevelLocationId,
+  validateHighLevelCredential,
+} from "./runtime.ts";
 
 const service = "high_level";
 
@@ -17,6 +25,17 @@ export const executors: ProviderExecutors = defineProviderExecutors<HighLevelCon
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: highLevelApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+    headers.set("version", highLevelApiVersion);
   },
 });
 

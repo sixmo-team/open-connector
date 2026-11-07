@@ -1,11 +1,11 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { MindbodyActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 
-const mindbodyApiBaseUrl = "https://api.mindbodyonline.com";
+export const mindbodyApiBaseUrl = "https://api.mindbodyonline.com";
 const mindbodyBusinessDirectoryPath = "/partnergateway/consumer/activity/v1/businesses";
 
 interface MindbodyBusinessPayload extends Record<string, unknown> {
@@ -20,7 +20,7 @@ interface MindbodyListBusinessesOutput {
 type MindbodyRequestPhase = "validate" | "execute";
 type MindbodyActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const mindbodyActionHandlers: Record<MindbodyActionName, MindbodyActionHandler> = {
+export const mindbodyActionHandlers: ProviderActionHandlers<"mindbody", MindbodyActionHandler> = {
   list_businesses(input, context) {
     return executeListBusinesses(input, context, "execute");
   },
@@ -146,15 +146,15 @@ function createMindbodyError(response: Response, payload: unknown, phase: Mindbo
   }
 
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   if (phase === "execute" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
 
   if (phase === "execute" && [400, 404, 422].includes(response.status)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
 
   return new ProviderRequestError(response.status || 500, message);

@@ -1,11 +1,15 @@
+import type { OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts";
 import type { SaasRequestScope } from "../contracts.ts";
 import type { OpenBaoReadResult } from "./openbao-client.ts";
 import type { OpenBaoSecretReference } from "./openbao-connection-store.ts";
 
+import { assertProcessingActive } from "../../core/cancellation.ts";
 import { OpenBaoClient, OpenBaoError } from "./openbao-client.ts";
+import { withSecretCleanup } from "./secret-codec.ts";
 
 export interface OpenBaoOAuthStateSecret {
   pkceCodeVerifier?: string;
+  authorizationState?: OAuthAuthorizationState;
 }
 
 interface StoredOAuthStateSecret extends OpenBaoOAuthStateSecret {
@@ -27,9 +31,11 @@ export class OpenBaoOAuthStateSecretStore {
     oauthSessionId: string,
     pkceCodeVerifier: string | undefined,
     expiresAt: string,
+    authorizationState?: OAuthAuthorizationState,
   ): Promise<OpenBaoSecretReference> {
     const path = oauthStatePath(scope, oauthSessionId);
     const record: StoredOAuthStateSecret = {
+      authorizationState,
       ...(pkceCodeVerifier === undefined
         ? {}
         : { pkceCodeVerifier: requiredString(pkceCodeVerifier, "pkceCodeVerifier") }),
@@ -37,7 +43,8 @@ export class OpenBaoOAuthStateSecretStore {
       revision: 1,
       consumed: false,
     };
-    const secretRevision = await this.client.write(path, { ...record }, 0);
+    assertProcessingActive(scope);
+    const secretRevision = await this.client.write(path, { ...record }, 0, scope.requestSignal);
     if (secretRevision !== 1) throw invalid(path);
     return { secretRef: path, secretRevision };
   }
@@ -46,22 +53,25 @@ export class OpenBaoOAuthStateSecretStore {
     const path = oauthStatePath(scope, oauthSessionId);
     let current: OpenBaoReadResult<Record<string, unknown>>;
     try {
-      current = await this.client.read<Record<string, unknown>>(path);
+      assertProcessingActive(scope);
+      current = await this.client.read<Record<string, unknown>>(path, undefined, scope.requestSignal);
     } catch (error) {
       if (error instanceof OpenBaoError && error.code === "OPENBAO_NOT_FOUND") return undefined;
       throw error;
     }
 
     if (current.data.consumed !== false) {
-      await this.client.delete(path);
+      await withSecretCleanup(scope, () => this.client.delete(path));
       return undefined;
     }
     const stored = parseRecord(current.data, current.revision, path);
     try {
+      assertProcessingActive(scope);
       const claimedRevision = await this.client.write(
         path,
         { consumed: true, expiresAt: stored.expiresAt, revision: current.revision + 1 },
         current.revision,
+        scope.requestSignal,
       );
       if (claimedRevision !== current.revision + 1) throw invalid(path);
     } catch (error) {
@@ -69,12 +79,13 @@ export class OpenBaoOAuthStateSecretStore {
       throw error;
     }
 
-    await this.client.delete(path);
+    await withSecretCleanup(scope, () => this.client.delete(path));
     if (Date.now() >= Date.parse(stored.expiresAt)) return undefined;
-    return stored.pkceCodeVerifier === undefined ? {} : { pkceCodeVerifier: stored.pkceCodeVerifier };
+    return { pkceCodeVerifier: stored.pkceCodeVerifier, authorizationState: stored.authorizationState };
   }
 
   async delete(scope: Readonly<SaasRequestScope>, oauthSessionId: string): Promise<void> {
+    assertProcessingActive(scope);
     try {
       await this.client.delete(oauthStatePath(scope, oauthSessionId));
     } catch (error) {
@@ -93,6 +104,7 @@ function parseRecord(data: Record<string, unknown>, revision: number, path: stri
     expiresAt: validTimestamp(data.expiresAt, path),
     revision,
     consumed: false,
+    authorizationState: data.authorizationState as OAuthAuthorizationState | undefined,
   };
   if (data.pkceCodeVerifier !== undefined) {
     record.pkceCodeVerifier = storedString(data.pkceCodeVerifier, path);

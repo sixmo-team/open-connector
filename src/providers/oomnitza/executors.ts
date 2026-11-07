@@ -1,8 +1,10 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { OomnitzaActionContext } from "./runtime.ts";
 
 import { optionalString } from "../../core/cast.ts";
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { oomnitzaActionHandlers, resolveOomnitzaCredential, validateOomnitzaCredential } from "./runtime.ts";
 
 const service = "oomnitza";
@@ -21,6 +23,21 @@ export const executors: ProviderExecutors = defineProviderExecutors<OomnitzaActi
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context) {
+    const credential = await requireApiKeyCredential(context, service);
+    return resolveOomnitzaCredential(
+      credential.apiKey,
+      optionalString(credential.metadata.baseUrl) ?? optionalString(credential.values.baseUrl),
+    ).baseUrl;
+  },
+  auth: { type: "api_key_header", name: "Authorization2" },
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
   },
 });
 

@@ -4,15 +4,13 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  providerUserAgent,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "weatherbit";
 const weatherbitApiBaseUrl = "https://api.weatherbit.io";
@@ -21,7 +19,7 @@ type WeatherbitPhase = "validate" | "execute";
 type WeatherbitQueryValue = string | number | boolean | undefined;
 type WeatherbitActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
 
-const weatherbitActionHandlers: Record<string, WeatherbitActionHandler> = {
+const weatherbitActionHandlers: ProviderActionHandlers<"weatherbit", WeatherbitActionHandler> = {
   get_current_weather(input, context): Promise<unknown> {
     return executeCurrentWeather(input, context, "execute");
   },

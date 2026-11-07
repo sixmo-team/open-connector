@@ -1,7 +1,14 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { AgentyRuntimeContext } from "./runtime.ts";
 
-import { defineProviderExecutors, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { agentyActionHandlers, validateAgentyApiKey } from "./runtime.ts";
 
 const service = "agenty";
@@ -28,3 +35,9 @@ export const credentialValidators: CredentialValidators = {
     return validateAgentyApiKey(input.apiKey, fetcher, signal);
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.agenty.com/v2",
+  auth: { type: "api_key_header", name: "x-agenty-apikey" },
+});

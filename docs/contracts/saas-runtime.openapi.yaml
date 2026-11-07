@@ -130,6 +130,38 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /internal/saas/connections/marketplace:
+    post:
+      operationId: createSaasMarketplaceConnection
+      summary: Validate and create one explicitly selected native Marketplace connection
+      description: >-
+        Exact interactive actor equals subject. The local connection ID and canonical
+        method/path/user-target/raw-body hash must match the signed capability; no connector
+        connection ID is accepted. Discovery and key validation use the native guarded client.
+        Selected action IDs do not grant action permission or product admission.
+      tags: [Connections]
+      security:
+        - SaasBearer: []
+      x-required-purpose: connection:write
+      requestBody:
+        required: true
+        description: Strict JSON limited to 65536 bytes. No query parameters are accepted.
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MarketplaceConnectInput" }
+      responses:
+        "201":
+          description: Actual stored connection metadata, never the API key or internal Marketplace binding.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SafeConnectionSummary" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /internal/saas/connections/{connectionId}/transfer:
     post:
       operationId: transferSaasConnection
@@ -227,7 +259,7 @@ paths:
         - SaasBearer: []
       x-required-purpose: oauth:start
       requestBody:
-        description: JSON request body limited to 262144 bytes, including declared Content-Length.
+        description: JSON request body limited to 65536 bytes, including declared Content-Length.
         required: true
         content:
           application/json:
@@ -254,7 +286,7 @@ paths:
         - SaasBearer: []
       x-required-purpose: oauth:complete
       requestBody:
-        description: JSON request body limited to 262144 bytes, including declared Content-Length.
+        description: JSON request body limited to 65536 bytes, including declared Content-Length.
         required: true
         content:
           application/json:
@@ -266,20 +298,138 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SafeConnectionSummary"
+                $ref: "#/components/schemas/OAuthCompletion"
         "400": { $ref: "#/components/responses/InvalidInput" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /internal/saas/oauth/requests/{requestId}:
+    get:
+      operationId: readSaasOAuthRequest
+      summary: Read a managed authorization request belonging to the exact reserved connection and session
+      tags: [OAuth]
+      security:
+        - SaasBearer: []
+      x-required-purpose: oauth:complete
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Safe request state and, after completion, safe connection metadata. No query parameters are accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthRequestStatus" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/oauth/requests/{requestId}/cancel:
+    post:
+      operationId: cancelSaasOAuthRequest
+      summary: Cancel an owned managed authorization request without accepting a late connection
+      tags: [OAuth]
+      security:
+        - SaasBearer: []
+      x-required-purpose: oauth:complete
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        description: An empty JSON object, limited to 65536 bytes. No query parameters are accepted.
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        "200":
+          description: Safe resulting request state; remote cleanup remains owned by OpenConnector.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthRequestStatus" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/triggers/{service}/{triggerId}:
+    post:
+      operationId: executeSaasTriggerOperation
+      summary: Execute a signed native trigger operation within the verified customer scope
+      description: >-
+        The action:execute:v2 capability binds the exact declared trigger key as trigger:<key>,
+        connection, canonical input hash and output ceiling. This is not a public callback or
+        anonymous subscription endpoint. Native trigger input validation and actor-private
+        subscription state apply even when the credential connection is shared.
+      tags: [Triggers]
+      security:
+        - SaasBearer: []
+      x-required-purpose: action:execute:v2
+      parameters:
+        - in: path
+          name: service
+          required: true
+          schema: { type: string, minLength: 1 }
+        - in: path
+          name: triggerId
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        description: JSON limited to 262144 bytes. No query parameters are accepted.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [connectorConnectionId, input]
+              properties:
+                connectorConnectionId: { type: string, format: uuid }
+                input: {}
+      responses:
+        "200":
+          description: The native trigger operation result, bounded by the signed output ceiling.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, output]
+                properties:
+                  ok: { type: boolean, const: true }
+                  output: {}
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /internal/saas/actions/{actionId}:
     post:
       operationId: executeSaasAction
       summary: Execute the exact action and connection bound into the bearer token
+      description: >-
+        Only action:execute:v2 with one identical permission is accepted; legacy v1 is rejected.
+        The token binds exact action, local and connector connection IDs, request hash and output ceiling.
+        OpenConnector reads current actor permissions before provider execution AND persisted replay.
+        Idempotent result reuse is isolated by the verified actor as well as the credential owner;
+        sharing a connection never shares another actor's saved result.
+        action_not_granted is a proven pre-execution 403 without executionId; action_policy_unavailable
+        is a distinct 503 and never substitutes a local grant. A transport timeout after sending an
+        executable command remains uncertain. Permission does not replace backend business checks or consent.
       tags: [Actions]
       security:
         - SaasBearer: []
-      x-required-purpose: action:execute
+      x-required-purpose: action:execute:v2
       parameters:
         - $ref: "#/components/parameters/ActionId"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -302,6 +452,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /internal/saas/files/{fileId}:
     get:
       operationId: downloadSaasTransitFile
@@ -393,7 +544,8 @@ paths:
       summary: Export one exact tenant, workspace, and subject scope
       description: >-
         Private backend-only export of safe connection metadata, redacted run summaries, and
-        aggregate status counts. The page contains at most limit combined connection and run items.
+        aggregate status counts, individual action rules and their targeted audit. At most limit
+        combined connection/run/grant/audit items are returned; platform rules and platform audit are excluded.
         It never returns credentials, secret references, object keys, OAuth state values, raw inputs,
         raw outputs, or provider response bodies.
       tags: [Lifecycle]
@@ -446,6 +598,330 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "503": { $ref: "#/components/responses/ReconciliationRequired" }
+  /internal/saas/action-access:
+    post:
+      operationId: getSaasActionAccess
+      summary: Resolve current action permissions for the verified actor or signed control target
+      description: >-
+        Ordinary action:search requires actor_user_id = subject_user_id. Control action-policy:read
+        requires an exact user or platform policy_target. Platform reads compute common-only decisions,
+        without a fabricated customer. Credential ownership never substitutes the requesting actor.
+        Every distinct current catalog action receives exactly one decision, in input order.
+      security:
+        - SaasBearer: []
+        - ActionPolicyControlBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActionAccessInput" }
+      responses:
+        "200":
+          description: Complete authoritative decisions; no copied or cached grants.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [decisions]
+                properties:
+                  decisions:
+                    type: array
+                    maxItems: 5000
+                    items: { $ref: "#/components/schemas/ActionPermissionDecision" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/action-policy/defaults:
+    get:
+      operationId: readSaasActionDefaults
+      summary: Read platform-owned action rules
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: action-policy:read
+      x-policy-target: platform
+      parameters:
+        - $ref: "#/components/parameters/PolicyCursor"
+        - $ref: "#/components/parameters/PolicyLimit"
+      responses:
+        "200":
+          description: Platform rules in stable action ID order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActionPolicyReadPage" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    put:
+      operationId: setSaasActionDefaults
+      summary: Atomically set a batch of platform defaults and its operator audit
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: action-policy:write
+      x-policy-target: platform
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActionDefaultMutation" }
+      responses:
+        "200":
+          description: One transaction committed rules and truthful history.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActionPolicyWriteResult" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/action-policy/grants:
+    get:
+      operationId: readSaasIndividualActionRules
+      summary: Read individual rules for the exact signed user target
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: action-policy:read
+      x-policy-target: user
+      parameters:
+        - $ref: "#/components/parameters/PolicyCursor"
+        - $ref: "#/components/parameters/PolicyLimit"
+      responses:
+        "200":
+          description: Individual rules only, in stable action ID order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActionPolicyReadPage" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    put:
+      operationId: setSaasIndividualActionRules
+      summary: Atomically set or remove individual exceptions and audit the verified operator
+      description: Null deletes only listed individual overrides; it never stores a nullable permission or changes human consent.
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: action-policy:write
+      x-policy-target: user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActionGrantMutation" }
+      responses:
+        "200":
+          description: One transaction committed rules and history.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActionPolicyWriteResult" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/action-policy/defaults/{actionId}:
+    put:
+      operationId: setSaasActionDefault
+      summary: Set one default using the same atomic batch implementation
+      description: Hash the actual single-write body and exact received pathname, not a fabricated batch envelope.
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: action-policy:write
+      x-policy-target: platform
+      parameters: [{ $ref: "#/components/parameters/ActionId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActionDefaultSingleMutation" }
+      responses:
+        "200":
+          description: Rule and audit committed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActionPolicyWriteResult" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/action-policy/grants/{actionId}:
+    put:
+      operationId: setSaasIndividualActionRule
+      summary: Set or remove one individual rule using the atomic batch implementation
+      description: Hash the actual single-write body and exact received pathname before normalizing the reason.
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: action-policy:write
+      x-policy-target: user
+      parameters: [{ $ref: "#/components/parameters/ActionId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActionGrantSingleMutation" }
+      responses:
+        "200":
+          description: Rule and audit committed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActionPolicyWriteResult" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/action-policy/subjects:
+    get:
+      operationId: listSaasActionPolicySubjects
+      summary: Inventory permission-only and audit-only users in a signed tenant or workspace
+      security: [{ SaasBearer: [] }]
+      x-required-purpose: action-policy:subjects
+      x-subject-kind: service
+      parameters:
+        - $ref: "#/components/parameters/PolicyCursor"
+        - $ref: "#/components/parameters/PolicyLimit"
+      responses:
+        "200":
+          description: Exact user targets; no connections are required.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 100
+                    items: { $ref: "#/components/schemas/ActionPolicyUserTarget" }
+                  nextCursor: { type: [string, "null"], maxLength: 4096 }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/action-policy/purge:
+    post:
+      operationId: purgeSaasActionPolicies
+      summary: Delete only the signed user, workspace or tenant individual rows and target audit
+      description: Platform defaults and platform audit always survive customer cleanup.
+      security: [{ SaasBearer: [] }]
+      x-required-purpose: action-policy:purge
+      x-subject-kind: service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LifecyclePurgeInput" }
+      responses:
+        "200":
+          description: Atomic targeted policy purge result.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [correlationId, deletedGrants, deletedAudit]
+                properties:
+                  correlationId: { type: string, format: uuid }
+                  deletedGrants: { type: integer, minimum: 0 }
+                  deletedAudit: { type: integer, minimum: 0 }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/lifecycle/subjects:
+    get:
+      operationId: listSaasNativeLifecycleSubjects
+      summary: Discover native resource owners within one signed tenant or workspace
+      description: Includes owners with pending native requests, retirement or trigger state but no active connection.
+      tags: [Lifecycle]
+      security:
+        - SaasBearer: []
+      x-required-purpose: lifecycle:subjects
+      parameters:
+        - { $ref: "#/components/parameters/LifecycleCursor" }
+        - { $ref: "#/components/parameters/LifecycleLimit" }
+      responses:
+        "200":
+          description: Bounded target-bound owner page; no synthetic user or administrator execution identity.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LifecycleSubjectPage" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/lifecycle/configuration:
+    get:
+      operationId: readSaasNativeLifecycleConfiguration
+      summary: Export safe tenant or workspace technical configuration metadata
+      tags: [Lifecycle]
+      security:
+        - SaasBearer: []
+      x-required-purpose: lifecycle:configuration:read
+      parameters:
+        - { $ref: "#/components/parameters/LifecycleCursor" }
+        - { $ref: "#/components/parameters/LifecycleLimit" }
+      responses:
+        "200":
+          description: Managed projects and OAuth sources only; credentials and secret references are never returned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NativeConfigurationPage" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/lifecycle/configuration/purge:
+    post:
+      operationId: purgeSaasNativeLifecycleConfiguration
+      summary: Remove technical configuration after all scoped customer resources and cleanup have settled
+      description: >-
+        Requires an execution-profile service identity, exact tenant or workspace policy_target
+        and canonical method/path/target/raw-body request_hash. No query parameters or fake
+        customer identities are accepted. A pending resource or cleanup refuses completion.
+      tags: [Lifecycle]
+      security:
+        - SaasBearer: []
+      x-required-purpose: lifecycle:configuration:purge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LifecyclePurgeInput" }
+      responses:
+        "200":
+          description: Actual metadata and secret deletion counts for the signed target.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NativeConfigurationPurgeResult" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/maintenance:
+    post:
+      operationId: maintainSaasNativeResources
+      summary: Run a bounded native cleanup pass for one freshly authorized actor
+      description: >-
+        Requires execution-profile maintenance:run with actor equal to subject and no
+        connection, OAuth, action, file, request-hash or output bindings. The existing host
+        recovery callback supplies current verified membership authority; OpenConnector
+        retains all task storage, permission decisions, native cleanup and retries.
+        The same request cancellation and hard processing deadline bound every operation.
+        Maintenance cannot execute business actions or provision a replacement resource.
+      tags: [Lifecycle]
+      security:
+        - SaasBearer: []
+      x-required-purpose: maintenance:run
+      requestBody:
+        required: true
+        description: An empty JSON object, limited to 65536 bytes. No query parameters are accepted.
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        "204":
+          description: The bounded pass completed; retry/manual work may remain. This does not assert an empty queue.
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 components:
   securitySchemes:
     SaasBearer:
@@ -453,10 +929,40 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >-
-        Backend-only asymmetric JWT with audience open-connector-saas; a maximum 60-second lifetime;
-        mandatory snake_case tenant_id, workspace_id, actor_user_id, and subject_user_id claims; and
-        exactly one non-wildcard permission equal to the operation's x-required-purpose.
+        Backend-only asymmetric execution-profile JWT with audience open-connector-saas and maximum
+        60-second lifetime. User tokens require tenant_id/workspace_id/actor_user_id/subject_user_id;
+        permissions is exactly [purpose]. Policy and native lifecycle service tokens instead have
+        subject_kind=service, a real service sub and exact policy_target, with no fake role/customer
+        scope. Purge mutations include request_hash. Lifecycle configuration/subject purposes are
+        restricted to a real tenant or workspace target. Catalog service identities remain catalog-only.
+        maintenance:run is customer-only, actor equals subject, with no resource/execution bindings;
+        it grants cleanup authority only, never action execution or permission mutation.
+    ActionPolicyControlBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Dedicated EdDSA control profile, never execution signing keys. Configured through
+        OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWKS_URL, OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ISSUER,
+        OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_AUDIENCE and OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ACTIVE_KID.
+        Control kid and JWKS URL must differ from execution profile. Control JWKS serves public key
+        material; it is not a static administrative bearer. Claims require iss/aud/sub/jti/iat/nbf/exp,
+        subject_kind=policy_control, exact action-policy:read/write purpose and one identical permission,
+        strict policy_target (platform or user) and real verified operator sub; maximum lifetime 60 seconds.
+        Write/purge request_hash is SHA-256 base64url of canonical JSON {method,path,target,body};
+        method uppercase, path exact pathname without query, body actual received parsed JSON before
+        trimming reason. No fake action/connection IDs, operation wrapper or customer identities.
   parameters:
+    PolicyCursor:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string, minLength: 1, maxLength: 4096 }
+    PolicyLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
     Cursor:
       name: cursor
       in: query
@@ -481,7 +987,7 @@ components:
       name: cursor
       in: query
       required: false
-      schema: { type: string, minLength: 1, maxLength: 512 }
+      schema: { type: string, minLength: 1, maxLength: 4096 }
     LifecycleLimit:
       name: limit
       in: query
@@ -554,6 +1060,160 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/SafeError" }
   schemas:
+    ActionPolicyTarget:
+      oneOf:
+        - $ref: "#/components/schemas/ActionPolicyPlatformTarget"
+        - $ref: "#/components/schemas/ActionPolicyUserTarget"
+        - type: object
+          additionalProperties: false
+          required: [kind, tenantId, workspaceId]
+          properties:
+            kind: { const: workspace }
+            tenantId: { type: string, format: uuid }
+            workspaceId: { type: string, format: uuid }
+        - type: object
+          additionalProperties: false
+          required: [kind, tenantId]
+          properties:
+            kind: { const: tenant }
+            tenantId: { type: string, format: uuid }
+    ActionPolicyPlatformTarget:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: { const: platform }
+    ActionPolicyUserTarget:
+      type: object
+      additionalProperties: false
+      required: [kind, tenantId, workspaceId, userId]
+      properties:
+        kind: { const: user }
+        tenantId: { type: string, format: uuid }
+        workspaceId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+    ActionPermissionDecision:
+      type: object
+      additionalProperties: false
+      required: [actionId, enabled, source, individualEnabled, defaultEnabled]
+      description: >-
+        Individual true/false if present, otherwise platform true/false if present, otherwise deny.
+        False never means absence. Defaults do not copy rows to users or grant access to personal connections.
+      properties:
+        actionId: { type: string, minLength: 1, maxLength: 255 }
+        enabled: { type: boolean }
+        source: { type: string, enum: [individual, platform, none] }
+        individualEnabled: { type: [boolean, "null"] }
+        defaultEnabled: { type: [boolean, "null"] }
+    ActionIds:
+      type: array
+      minItems: 1
+      maxItems: 5000
+      uniqueItems: true
+      description: Exact current catalog IDs, all validated before any write. No wildcard or automatic grant for new actions.
+      items: { type: string, minLength: 1, maxLength: 255, pattern: '^[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+$' }
+    ActionAccessInput:
+      type: object
+      additionalProperties: false
+      required: [actionIds]
+      properties:
+        actionIds: { $ref: "#/components/schemas/ActionIds" }
+    ActionPolicyReason:
+      type: string
+      minLength: 1
+      maxLength: 500
+      pattern: '\S'
+      description: Real nonblank reason; raw bounded wire text is hashed, then trimmed only after authorization.
+    ActionDefaultMutation:
+      type: object
+      additionalProperties: false
+      required: [actionIds, enabled, reason]
+      properties:
+        actionIds: { $ref: "#/components/schemas/ActionIds" }
+        enabled: { type: boolean }
+        reason: { $ref: "#/components/schemas/ActionPolicyReason" }
+    ActionGrantMutation:
+      type: object
+      additionalProperties: false
+      required: [actionIds, enabled, reason]
+      properties:
+        actionIds: { $ref: "#/components/schemas/ActionIds" }
+        enabled: { type: [boolean, "null"] }
+        reason: { $ref: "#/components/schemas/ActionPolicyReason" }
+    ActionDefaultSingleMutation:
+      type: object
+      additionalProperties: false
+      required: [enabled, reason]
+      properties:
+        enabled: { type: boolean }
+        reason: { $ref: "#/components/schemas/ActionPolicyReason" }
+    ActionGrantSingleMutation:
+      type: object
+      additionalProperties: false
+      required: [enabled, reason]
+      properties:
+        enabled: { type: [boolean, "null"] }
+        reason: { $ref: "#/components/schemas/ActionPolicyReason" }
+    ActionPolicyRecord:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [actionId, enabled, createdBySubject, updatedBySubject, createdAt, updatedAt]
+          properties:
+            actionId: { type: string, minLength: 1, maxLength: 255 }
+            enabled: { type: boolean }
+            createdBySubject: { type: string, minLength: 1 }
+            updatedBySubject: { type: string, minLength: 1 }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+        - type: object
+          additionalProperties: false
+          required:
+            [actionId, enabled, createdBySubject, updatedBySubject, createdAt, updatedAt, tenantId, workspaceId, userId]
+          properties:
+            actionId: { type: string, minLength: 1, maxLength: 255 }
+            enabled: { type: boolean }
+            createdBySubject: { type: string, minLength: 1 }
+            updatedBySubject: { type: string, minLength: 1 }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+            tenantId: { type: string, format: uuid }
+            workspaceId: { type: string, format: uuid }
+            userId: { type: string, format: uuid }
+    ActionPolicyAuditRecord:
+      type: object
+      additionalProperties: false
+      required: [id, target, operatorSubject, actionIds, enabled, reason, createdAt, requestId]
+      properties:
+        id: { type: string, format: uuid }
+        target:
+          oneOf:
+            - $ref: "#/components/schemas/ActionPolicyPlatformTarget"
+            - $ref: "#/components/schemas/ActionPolicyUserTarget"
+        operatorSubject: { type: string, minLength: 1 }
+        actionIds: { $ref: "#/components/schemas/ActionIds" }
+        enabled: { type: [boolean, "null"] }
+        reason: { $ref: "#/components/schemas/ActionPolicyReason" }
+        createdAt: { type: string, format: date-time }
+        requestId: { type: string, minLength: 1 }
+    ActionPolicyReadPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/ActionPolicyRecord" }
+        nextCursor: { type: [string, "null"], maxLength: 4096 }
+    ActionPolicyWriteResult:
+      type: object
+      additionalProperties: false
+      required: [updatedCount, removedCount, auditId]
+      properties:
+        updatedCount: { type: integer, minimum: 0, maximum: 5000 }
+        removedCount: { type: integer, minimum: 0, maximum: 5000 }
+        auditId: { type: string, format: uuid }
     JsonSchema:
       type: object
       additionalProperties: true
@@ -683,13 +1343,21 @@ components:
         localConnectionId: { type: string, format: uuid }
         service: { type: string, minLength: 1 }
         connectionName: { type: string, minLength: 1 }
-        authType: { type: string, enum: [api_key, custom_credential] }
+        authType: { type: string, enum: [no_auth, api_key, custom_credential] }
         credentials:
           type: object
           writeOnly: true
           additionalProperties: { type: string, maxLength: 65536 }
           maxProperties: 64
           description: Sent directly to OpenBao-backed storage and never persisted in PostgreSQL or returned.
+      allOf:
+        - if:
+            properties:
+              authType: { const: no_auth }
+            required: [authType]
+          then:
+            properties:
+              credentials: { maxProperties: 0 }
     ConnectionTransferInput:
       type: object
       additionalProperties: false
@@ -702,29 +1370,114 @@ components:
       required: [visibility]
       properties:
         visibility: { type: string, enum: [user, workspace] }
+    MarketplaceConnectInput:
+      type: object
+      additionalProperties: false
+      required: [localConnectionId, service, connectionName, apiKey, actionIds]
+      properties:
+        localConnectionId: { type: string, format: uuid }
+        service: { type: string, minLength: 1, maxLength: 128 }
+        connectionName: { type: string, minLength: 1, maxLength: 255 }
+        apiKey: { type: string, minLength: 1, maxLength: 8192, writeOnly: true }
+        discoveryUrl: { type: string, format: uri, maxLength: 4096 }
+        actionIds:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 255 }
     OAuthStartRequest:
       type: object
       additionalProperties: false
       required: [localConnectionId, oauthSessionId, service]
       properties:
-        localConnectionId: { type: string, minLength: 1 }
-        oauthSessionId: { type: string, minLength: 1 }
-        service: { type: string, minLength: 1 }
+        localConnectionId: { type: string, format: uuid }
+        oauthSessionId: { type: string, format: uuid }
+        service: { type: string, minLength: 1, maxLength: 255 }
+        authorizationOptionIds:
+          type: array
+          maxItems: 64
+          items: { type: string, minLength: 1, maxLength: 255 }
+        clientConfig:
+          type: object
+          additionalProperties: false
+          required: [clientId]
+          properties:
+            clientId: { type: string, minLength: 1, maxLength: 4096 }
+            clientSecret: { type: string, maxLength: 8192, writeOnly: true }
+            redirectUri: { type: string, format: uri }
+            requestedScopes:
+              type: array
+              maxItems: 256
+              items: { type: string, minLength: 1, maxLength: 4096 }
+            extra:
+              type: object
+              propertyNames: { minLength: 1, maxLength: 128 }
+              additionalProperties: { type: string, maxLength: 8192 }
+            secretExtra:
+              type: object
+              writeOnly: true
+              propertyNames: { minLength: 1, maxLength: 128 }
+              additionalProperties: { type: string, maxLength: 8192 }
     OAuthStartResponse:
       type: object
       additionalProperties: false
       required: [authorizeUrl]
       properties:
         authorizeUrl: { type: string, format: uri }
+        connectionRequestId: { type: string, format: uuid }
+        stateHandle: { type: string }
+        status: { type: string, const: initiated }
+        expiresAt: { type: string, format: date-time }
     OAuthCompleteRequest:
       type: object
       additionalProperties: false
       required: [localConnectionId, oauthSessionId, code, state]
       properties:
-        localConnectionId: { type: string, minLength: 1 }
-        oauthSessionId: { type: string, minLength: 1 }
-        code: { type: string, minLength: 1, writeOnly: true }
-        state: { type: string, minLength: 1, writeOnly: true }
+        localConnectionId: { type: string, format: uuid }
+        oauthSessionId: { type: string, format: uuid }
+        code: { type: string, minLength: 1, maxLength: 4096, pattern: '\S', writeOnly: true }
+        state: { type: string, minLength: 1, maxLength: 4096, pattern: '\S', writeOnly: true }
+        callbackQuery: { type: string, maxLength: 16384, writeOnly: true }
+        callbackParameters:
+          type: object
+          maxProperties: 64
+          writeOnly: true
+          propertyNames: { minLength: 1, maxLength: 128 }
+          additionalProperties: { type: string, maxLength: 4096 }
+    OAuthCompletion:
+      type: object
+      additionalProperties: false
+      required: [id, localConnectionId, service, connectionName, visibility, status, profile]
+      properties:
+        id: { type: string, format: uuid }
+        localConnectionId: { type: string, format: uuid }
+        service: { type: string, minLength: 1 }
+        connectionName: { type: string, minLength: 1 }
+        visibility: { type: string, enum: [user, workspace] }
+        status: { type: string, enum: [active, reconnect_required] }
+        profile: { $ref: "#/components/schemas/SafeCredentialProfile" }
+    OAuthRequestStatus:
+      type: object
+      additionalProperties: false
+      required: [request]
+      properties:
+        request: { $ref: "#/components/schemas/SafeOAuthRequest" }
+        connection: { $ref: "#/components/schemas/OAuthCompletion" }
+    SafeOAuthRequest:
+      type: object
+      additionalProperties: false
+      required: [connectionRequestId, service, status, appId, errorCode, errorMessage, expiresAt, createdAt, updatedAt]
+      properties:
+        connectionRequestId: { type: string, format: uuid }
+        service: { type: string }
+        status: { type: string, enum: [initiated, connected, failed, expired] }
+        appId: { type: [string, "null"] }
+        errorCode: { type: [string, "null"] }
+        errorMessage: { type: [string, "null"] }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: number }
+        updatedAt: { type: number }
     ConnectorActionRequest:
       type: object
       additionalProperties: false
@@ -811,7 +1564,24 @@ components:
     LifecycleExportPage:
       type: object
       additionalProperties: false
-      required: [tenantId, workspaceId, subjectUserId, connections, runs, counts, nextCursor]
+      required:
+        [
+          tenantId,
+          workspaceId,
+          subjectUserId,
+          connections,
+          runs,
+          actionGrants,
+          actionPolicyAudit,
+          connectionRequests,
+          saasCleanup,
+          connectionRetirements,
+          triggerSubscriptions,
+          triggerSourceApplications,
+          counts,
+          nextCursor,
+        ]
+      description: Nine safe metadata collections share one bounded page budget; no credentials, checkpoints or webhook secrets.
       properties:
         tenantId: { type: string, minLength: 1, maxLength: 255 }
         workspaceId: { type: string, minLength: 1, maxLength: 255 }
@@ -824,21 +1594,74 @@ components:
           type: array
           maxItems: 100
           items: { $ref: "#/components/schemas/SafeRun" }
+        actionGrants:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/ActionPolicyRecord" }
+        actionPolicyAudit:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/ActionPolicyAuditRecord" }
+        connectionRequests:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/LifecycleStatusMetadata" }
+        saasCleanup:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/LifecycleStatusMetadata" }
+        connectionRetirements:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/LifecycleConnectionRetirement" }
+        triggerSubscriptions:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/LifecycleTriggerSubscription" }
+        triggerSourceApplications:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/LifecycleTriggerSourceApplication" }
         counts:
           $ref: "#/components/schemas/LifecycleRecordCounts"
         nextCursor:
           type: [string, "null"]
-          maxLength: 512
+          maxLength: 4096
     LifecycleRecordCounts:
       type: object
       additionalProperties: false
-      required: [connections, runs, oauthStates, idempotencyRecords, transitFiles]
+      required:
+        [
+          connections,
+          runs,
+          oauthStates,
+          idempotencyRecords,
+          transitFiles,
+          actionGrants,
+          actionPolicyAudit,
+          connectionRequests,
+          saasCleanup,
+          connectionRetirements,
+          triggerSubscriptions,
+          triggerSourceApplications,
+          triggerSecrets,
+          triggerExecutionLeases,
+        ]
       properties:
         connections: { type: integer, minimum: 0 }
         runs: { type: integer, minimum: 0 }
         oauthStates: { $ref: "#/components/schemas/LifecycleStatusSummary" }
         idempotencyRecords: { $ref: "#/components/schemas/LifecycleStatusSummary" }
         transitFiles: { $ref: "#/components/schemas/LifecycleStatusSummary" }
+        actionGrants: { type: integer, minimum: 0 }
+        actionPolicyAudit: { type: integer, minimum: 0 }
+        connectionRequests: { $ref: "#/components/schemas/LifecycleStatusSummary" }
+        saasCleanup: { $ref: "#/components/schemas/LifecycleStatusSummary" }
+        connectionRetirements: { type: integer, minimum: 0 }
+        triggerSubscriptions: { $ref: "#/components/schemas/LifecycleStatusSummary" }
+        triggerSourceApplications: { type: integer, minimum: 0 }
+        triggerSecrets: { type: integer, minimum: 0 }
+        triggerExecutionLeases: { type: integer, minimum: 0 }
     LifecycleStatusSummary:
       type: object
       additionalProperties: false
@@ -866,7 +1689,7 @@ components:
     LifecyclePurgeResult:
       type: object
       additionalProperties: false
-      required: [tenantId, workspaceId, subjectUserId, correlationId, status, deleted]
+      required: [tenantId, workspaceId, subjectUserId, correlationId, status, deleted, remoteRevocations]
       properties:
         tenantId: { type: string, minLength: 1, maxLength: 255 }
         workspaceId: { type: string, minLength: 1, maxLength: 255 }
@@ -875,6 +1698,14 @@ components:
         status: { type: string, const: purged }
         deleted:
           $ref: "#/components/schemas/LifecyclePurgeCounts"
+        remoteRevocations:
+          type: object
+          additionalProperties: false
+          required: [revoked, unsupported, unresolved]
+          properties:
+            revoked: { type: integer, minimum: 0 }
+            unsupported: { type: integer, minimum: 0 }
+            unresolved: { type: integer, minimum: 0 }
     LifecyclePurgeCounts:
       type: object
       additionalProperties: false
@@ -888,6 +1719,16 @@ components:
           connectionSecrets,
           oauthStateSecrets,
           transitObjects,
+          actionGrants,
+          actionPolicyAudit,
+          connectionRequests,
+          saasCleanup,
+          connectionRetirements,
+          requestSecrets,
+          triggerSubscriptions,
+          triggerSourceApplications,
+          triggerSecrets,
+          triggerExecutionLeases,
         ]
       properties:
         connections: { type: integer, minimum: 0 }
@@ -898,10 +1739,103 @@ components:
         connectionSecrets: { type: integer, minimum: 0 }
         oauthStateSecrets: { type: integer, minimum: 0 }
         transitObjects: { type: integer, minimum: 0 }
-    SafeError:
+        actionGrants: { type: integer, minimum: 0 }
+        actionPolicyAudit: { type: integer, minimum: 0 }
+        connectionRequests: { type: integer, minimum: 0 }
+        saasCleanup: { type: integer, minimum: 0 }
+        connectionRetirements: { type: integer, minimum: 0 }
+        requestSecrets: { type: integer, minimum: 0 }
+        triggerSubscriptions: { type: integer, minimum: 0 }
+        triggerSourceApplications: { type: integer, minimum: 0 }
+        triggerSecrets: { type: integer, minimum: 0 }
+        triggerExecutionLeases: { type: integer, minimum: 0 }
+    LifecycleStatusMetadata:
       type: object
       additionalProperties: false
-      required: [errorCode, message]
+      required: [id, status]
       properties:
-        errorCode: { type: string, minLength: 1, maxLength: 64 }
-        message: { type: string, minLength: 1, maxLength: 512 }
+        id: { type: string }
+        status: { type: string }
+    LifecycleConnectionRetirement:
+      type: object
+      additionalProperties: false
+      required: [localConnectionId, service, connectionName, generation]
+      properties:
+        localConnectionId: { type: string, format: uuid }
+        service: { type: string }
+        connectionName: { type: string }
+        generation: { type: string }
+    LifecycleTriggerSubscription:
+      type: object
+      additionalProperties: false
+      required: [id, service, triggerId, status]
+      properties:
+        id: { type: string }
+        service: { type: string }
+        triggerId: { type: string }
+        status: { type: string }
+    LifecycleTriggerSourceApplication:
+      type: object
+      additionalProperties: false
+      required: [id, revision]
+      properties:
+        id: { type: string }
+        revision: { type: integer, minimum: 0 }
+    LifecycleSubjectPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/ActionPolicyUserTarget" }
+        nextCursor: { type: [string, "null"], maxLength: 4096 }
+    NativeConfigurationPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/NativeConfigurationMetadata" }
+        nextCursor: { type: [string, "null"], maxLength: 4096 }
+    NativeConfigurationMetadata:
+      type: object
+      additionalProperties: false
+      required: [kind, tenantId, workspaceId, id, createdAt, updatedAt]
+      properties:
+        kind: { type: string, enum: [managed_project, oauth_source] }
+        tenantId: { type: string, format: uuid }
+        workspaceId: { type: string, format: uuid }
+        id: { type: string }
+        service: { type: string }
+        source: { type: string, enum: [local, saas] }
+        managedProjectId: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    NativeConfigurationPurgeResult:
+      type: object
+      additionalProperties: false
+      required: [correlationId, deletedProjects, deletedSources, deletedSecrets]
+      properties:
+        correlationId: { type: string, format: uuid }
+        deletedProjects: { type: integer, minimum: 0 }
+        deletedSources: { type: integer, minimum: 0 }
+        deletedSecrets: { type: integer, minimum: 0 }
+    SafeError:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [error]
+          properties:
+            error: { type: string, minLength: 1 }
+        - type: object
+          additionalProperties: false
+          required: [errorCode, message]
+          properties:
+            errorCode: { type: string, minLength: 1 }
+            message: { type: string }
+            executionId: { type: string }
+            retryable: { type: boolean }

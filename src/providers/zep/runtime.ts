@@ -1,18 +1,19 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
-  createProviderTimeout,
-  isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
+  runProviderRequest,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 export const zepApiBaseUrl = "https://api.getzep.com/api/v2";
 const validationEndpoint = "/projects/info";
-const requestTimeoutMs = 30_000;
 const maxResponseBytes = 10 * 1024 * 1024;
 
 interface ZepRequestInput {
@@ -23,7 +24,7 @@ interface ZepRequestInput {
   phase?: "validate" | "execute";
 }
 
-export const zepActionHandlers: Record<string, ProviderRuntimeHandler<ApiKeyProviderContext>> = {
+export const zepActionHandlers: ProviderActionHandlers<"zep", ProviderRuntimeHandler<ApiKeyProviderContext>> = {
   get_project(_input, context) {
     return requestZepJson(context, { path: validationEndpoint });
   },
@@ -180,31 +181,19 @@ async function requestZepJson(
     headers.set("content-type", "application/json");
     body = JSON.stringify(input.body);
   }
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
-  try {
+  return runProviderRequest({ signal: context.signal, label: "Zep" }, async (signal) => {
     const response = await context.fetcher(url, {
       method: input.method ?? "GET",
       headers,
       body,
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readZepPayload(response);
     if (!response.ok) {
       throw createZepError(response.status, payload, input.phase ?? "execute");
     }
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) throw error;
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Zep request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Zep request failed: ${error.message}` : "Zep request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 async function readZepPayload(response: Response): Promise<unknown> {
@@ -221,15 +210,15 @@ function createZepError(status: number, payload: unknown, phase: "validate" | "e
   const message = extractZepErrorMessage(payload) ?? `Zep request failed with status ${status}`;
   if (status === 429) return new ProviderRequestError(429, message);
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (status === 401 || status === 403) {
     return new ProviderRequestError(status, message);
   }
   if (status >= 400 && status < 500) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
-  return new ProviderRequestError(502, message);
+  return providerResponseError(message);
 }
 
 function extractZepErrorMessage(payload: unknown): string | undefined {

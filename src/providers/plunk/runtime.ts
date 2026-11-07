@@ -1,8 +1,10 @@
 import type { CredentialValidationResult, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { ProviderRequestError, providerUserAgent, requiredInputString } from "../provider-runtime.ts";
 
 type PlunkActionContext = ApiKeyProviderContext;
 type PlunkActionHandler = (input: Record<string, unknown>, context: PlunkActionContext) => Promise<unknown>;
@@ -18,7 +20,7 @@ interface PlunkRequestInput {
 
 export const plunkApiBaseUrl = "https://next-api.useplunk.com";
 
-export const plunkActionHandlers: Record<string, PlunkActionHandler> = {
+export const plunkActionHandlers: ProviderActionHandlers<"plunk", PlunkActionHandler> = {
   send_email(input, context) {
     return sendEmail(input, context);
   },
@@ -363,8 +365,4 @@ function readRequiredProviderString(value: unknown, message: string): string {
     throw new ProviderRequestError(502, message);
   }
   return value;
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }

@@ -6,7 +6,9 @@ import type {
 } from "../../core/types.ts";
 import type { SonarCloudActionContext } from "./runtime.ts";
 
-import { defineProviderExecutors, defineProviderProxy, requireApiKeyCredential } from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import { resolveSonarCloudApiBaseUrl, sonarCloudActionHandlers, validateSonarCloudCredential } from "./runtime.ts";
 
 const service = "sonarcloud";
@@ -14,7 +16,6 @@ const service = "sonarcloud";
 export const executors: ProviderExecutors = defineProviderExecutors<SonarCloudActionContext>({
   service,
   handlers: sonarCloudActionHandlers,
-  skipDnsValidation: true,
   async createContext(context: ExecutionContext, fetcher: typeof fetch): Promise<SonarCloudActionContext> {
     const credential = await requireApiKeyCredential(context, service);
     return {
@@ -34,7 +35,6 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
     return resolveSonarCloudApiBaseUrl(credential.metadata.apiBaseUrl ?? credential.values.apiBaseUrl);
   },
   auth: { type: "bearer" },
-  skipDnsValidation: true,
 });
 
 export const credentialValidators: CredentialValidators = {

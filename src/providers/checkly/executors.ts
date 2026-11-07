@@ -1,16 +1,25 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { optionalBoolean, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
-  defineProviderExecutors,
+  isAbortLikeError,
+  providerResponseError,
   providerUserAgent,
   ProviderRequestError,
-  requireApiKeyCredential,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "checkly";
 const apiBaseUrl = "https://api.checklyhq.com";
-const requestTimeoutMs = 30_000;
 
 type ChecklyPhase = "validate" | "execute";
 
@@ -23,7 +32,7 @@ interface ChecklyContext {
 
 type ChecklyHandler = (input: Record<string, unknown>, context: ChecklyContext) => Promise<unknown>;
 
-export const checklyActionHandlers: Record<string, ChecklyHandler> = {
+export const checklyActionHandlers: ProviderActionHandlers<"checkly", ChecklyHandler> = {
   async get_current_account(_input, context) {
     return { account: await requestChecklyJson({ context, path: "/v1/accounts/me", phase: "execute" }) };
   },
@@ -70,7 +79,7 @@ export const checklyActionHandlers: Record<string, ChecklyHandler> = {
           phase: "execute",
         }),
         "checkly check status response",
-        providerError,
+        providerResponseError,
       ),
     };
   },
@@ -95,7 +104,7 @@ export const checklyActionHandlers: Record<string, ChecklyHandler> = {
           phase: "execute",
         }),
         "checkly check result response",
-        providerError,
+        providerResponseError,
       ),
     };
   },
@@ -126,7 +135,7 @@ export const credentialValidators: CredentialValidators = {
     const account = requiredRecord(
       await requestChecklyJson({ context, path: "/v1/accounts/me", phase: "validate" }),
       "checkly account response",
-      providerError,
+      providerResponseError,
     );
     const accountId = optionalString(account.id) ?? context.accountId;
 
@@ -148,6 +157,26 @@ export const credentialValidators: CredentialValidators = {
   },
 };
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: apiBaseUrl,
+  auth: {
+    type: "credential_headers",
+    headers: [
+      { name: "authorization", source: { type: "api_key" }, prefix: "Bearer " },
+      { name: "x-checkly-account", source: { type: "credential_value", name: "accountId" }, optional: true },
+    ],
+  },
+  customizeRequest({ credential, headers }) {
+    if (!credential || credential.authType !== "api_key") {
+      throw new ProviderRequestError(401, "Configure Checkly credentials.");
+    }
+    headers.set("x-checkly-account", resolveAccountId(credential.values.accountId, credential.metadata.accountId));
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
+  skipDnsValidation: true,
+});
+
 async function requestChecklyJson(input: {
   context: ChecklyContext;
   path: string;
@@ -155,8 +184,8 @@ async function requestChecklyJson(input: {
   query?: URLSearchParams;
 }): Promise<unknown> {
   const signal = input.context.signal
-    ? AbortSignal.any([input.context.signal, AbortSignal.timeout(requestTimeoutMs)])
-    : AbortSignal.timeout(requestTimeoutMs);
+    ? AbortSignal.any([input.context.signal, AbortSignal.timeout(defaultProviderRequestTimeoutMs)])
+    : AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   let response: Response;
   let payload: unknown;
   try {
@@ -247,16 +276,8 @@ function requireArray(value: unknown, label: string): unknown[] {
   return value;
 }
 
-function resolveAccountId(value: unknown): string {
-  const accountId = optionalString(value);
+function resolveAccountId(value: unknown, fallback?: unknown): string {
+  const accountId = optionalString(value) ?? optionalString(fallback);
   if (!accountId) throw new ProviderRequestError(400, "checkly accountId is required");
   return accountId;
-}
-
-function providerError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
 }

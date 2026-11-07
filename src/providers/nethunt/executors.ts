@@ -5,6 +5,7 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { Buffer } from "node:buffer";
 import {
@@ -15,18 +16,16 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  ProviderRequestError,
-  providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  requireApiKeyCredential,
   toProviderProxyError,
-} from "../provider-runtime.ts";
+} from "../provider-proxy.ts";
+import { createProviderFetch, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "nethunt";
 const nethuntApiBaseUrl = "https://nethunt.com/api/v1/zapier";
@@ -44,7 +43,7 @@ interface NethuntContext {
 
 type NethuntActionHandler = (input: Record<string, unknown>, context: NethuntContext) => Promise<unknown>;
 
-export const nethuntActionHandlers: Record<string, NethuntActionHandler> = {
+export const nethuntActionHandlers: ProviderActionHandlers<"nethunt", NethuntActionHandler> = {
   async list_readable_folders(_input, context): Promise<unknown> {
     return {
       folders: await nethuntGetJson("/triggers/readable-folder", context, "execute"),

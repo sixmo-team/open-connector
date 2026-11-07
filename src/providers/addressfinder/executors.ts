@@ -1,16 +1,31 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
-import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
-  defineProviderExecutors,
+  compactObject,
+  optionalBoolean,
+  optionalBooleanOrNull,
+  optionalInteger,
+  optionalRecord,
+  optionalString,
+} from "../../core/cast.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
-  requireApiKeyCredential,
+  defaultProviderRequestTimeoutMs,
 } from "../provider-runtime.ts";
 
 const service = "addressfinder";
 const addressfinderApiBaseUrl = "https://api.addressfinder.io/api/";
-const addressfinderDefaultRequestTimeoutMs = 30_000;
 const addressfinderValidationEndpoint = "/nz/address/autocomplete";
 
 type AddressfinderCountry = "au" | "nz";
@@ -28,7 +43,7 @@ type AddressfinderActionHandler = (
   context: AddressfinderActionContext,
 ) => Promise<unknown>;
 
-export const addressfinderActionHandlers: Record<string, AddressfinderActionHandler> = {
+export const addressfinderActionHandlers: ProviderActionHandlers<"addressfinder", AddressfinderActionHandler> = {
   find_au_addresses(input, context) {
     return executeAutocomplete("au", "/au/address/autocomplete", input, context);
   },
@@ -60,6 +75,20 @@ export const executors: ProviderExecutors = defineProviderExecutors<Addressfinde
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: addressfinderApiBaseUrl,
+  auth: { type: "api_key_query", name: "key" },
+  skipDnsValidation: true,
+  customizeRequest({ credential, headers }) {
+    if (credential?.authType !== "api_key") throw new ProviderRequestError(400, "api_key credential is required");
+    const apiSecret = optionalString(credential?.values.apiSecret);
+    if (!apiSecret) throw new ProviderRequestError(400, "apiSecret is required");
+    headers.set("authorization", apiSecret);
+    if (!headers.has("accept")) headers.set("accept", "application/json");
   },
 });
 
@@ -190,7 +219,7 @@ function executeVerification(
       const record = requireRecord(payload, "Addressfinder verification response");
       return {
         success: readBoolean(record.success, true),
-        matched: readNullableBoolean(record.matched),
+        matched: optionalBooleanOrNull(record.matched),
         address: readNullableRecord(record.address),
         meta: { country, endpoint: path },
         raw: record,
@@ -227,7 +256,7 @@ async function requestAddressfinderJson(input: {
   fetcher: typeof fetch;
   signal?: AbortSignal;
 }): Promise<Record<string, unknown>> {
-  const timeoutSignal = AbortSignal.timeout(addressfinderDefaultRequestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(defaultProviderRequestTimeoutMs);
   const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
 
   try {
@@ -376,10 +405,6 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function readNullableBoolean(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
 function readNullableRecord(value: unknown): Record<string, unknown> | null {
   return optionalRecord(value) ?? null;
 }
@@ -390,11 +415,4 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
     throw new ProviderRequestError(502, `${label} is not a JSON object`);
   }
   return record;
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return (
-    error instanceof DOMException ||
-    (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
-  );
 }

@@ -5,26 +5,30 @@ import type {
   ProviderProxyExecutor,
   ProxyExecutionResult,
 } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { requireCustomCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
 import {
-  createProviderFetch,
   createProviderProxyUrl,
-  createProviderTimeout,
-  defineProviderExecutors,
   normalizeProviderProxyHeaders,
-  providerUserAgent,
-  ProviderRequestError,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
-  readProviderTextBody,
-  requireCustomCredential,
   toProviderProxyError,
+} from "../provider-proxy.ts";
+import {
+  createProviderFetch,
+  createProviderTimeout,
+  providerUserAgent,
+  ProviderRequestError,
+  readProviderTextBody,
+  providerInputError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 
 const hotjarApiBaseUrl = "https://api.hotjar.io";
 const hotjarTokenUrl = `${hotjarApiBaseUrl}/v1/oauth/token`;
-const hotjarRequestTimeoutMs = 30_000;
 const hotjarMaxResponseBytes = 10 * 1024 * 1024;
 const hotjarFetch = createProviderFetch({ skipDnsValidation: true });
 
@@ -59,7 +63,7 @@ interface HotjarPage {
   nextCursor: string | null;
 }
 
-export const hotjarActionHandlers: Record<string, HotjarActionHandler> = {
+export const hotjarActionHandlers: ProviderActionHandlers<"hotjar", HotjarActionHandler> = {
   async list_surveys(input, context) {
     const accessToken = await exchangeHotjarAccessToken(context.credential, context.fetcher, "execute", context.signal);
     const siteId = requiredString(input.siteId, "siteId");
@@ -286,7 +290,7 @@ async function fetchHotjarResponse(input: {
   operation: string;
   signal?: AbortSignal;
 }) {
-  const timeout = createProviderTimeout(input.signal, hotjarRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     return await input.fetcher(input.url, { ...input.init, signal: timeout.signal });
   } catch (error) {
@@ -333,7 +337,7 @@ function readHotjarPage(payload: unknown, label: string): HotjarPage {
 function requireObject(value: unknown, message: string) {
   const object = optionalRecord(value);
   if (!object) {
-    throw new ProviderRequestError(502, message);
+    throw providerResponseError(message);
   }
   return object;
 }
@@ -372,7 +376,7 @@ function requiredString(value: unknown, fieldName: string) {
 function mapHotjarError(status: number, payload: unknown, phase: "validate" | "execute", operation: string) {
   const message = readHotjarErrorMessage(payload) ?? `Hotjar ${operation} failed with status ${status}`;
   if (phase == "validate" && (status == 400 || status == 401 || status == 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   } else if (status == 401 || (operation == "access token exchange" && (status == 400 || status == 403))) {
     return new ProviderRequestError(401, message);
   } else if (status == 403) {
@@ -382,7 +386,7 @@ function mapHotjarError(status: number, payload: unknown, phase: "validate" | "e
   } else if (status == 400 || status == 404 || status == 409 || status == 422) {
     return new ProviderRequestError(status == 404 ? 404 : 400, message);
   } else {
-    return new ProviderRequestError(502, message);
+    return providerResponseError(message);
   }
 }
 

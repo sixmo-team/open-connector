@@ -43,6 +43,7 @@ export function createFeishuMarkdownActions(service: string): readonly ActionDef
   return [
     defineProviderAction(service, {
       name: "create_markdown_file",
+      operationType: "write",
       description: "Create a Markdown file from a JSON string in Feishu Drive root, a Drive folder, or a Wiki node.",
       requiredScopes: [feishuMarkdownProviderPermissions.upload, feishuMarkdownProviderPermissions.metadataRead],
       providerPermissions: [feishuMarkdownProviderPermissions.upload, feishuMarkdownProviderPermissions.metadataRead],
@@ -64,6 +65,7 @@ export function createFeishuMarkdownActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "fetch_markdown_file",
+      operationType: "read",
       description: "Fetch the latest or a specific version of a Markdown file from Feishu Drive.",
       requiredScopes: [feishuMarkdownProviderPermissions.download],
       providerPermissions: [feishuMarkdownProviderPermissions.download],
@@ -93,6 +95,7 @@ export function createFeishuMarkdownActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "diff_markdown_file",
+      operationType: "read",
       description:
         "Compute a unified line diff between Drive versions or between a Drive version and a JSON Markdown string.",
       requiredScopes: [feishuMarkdownProviderPermissions.download],
@@ -138,6 +141,7 @@ export function createFeishuMarkdownActions(service: string): readonly ActionDef
     }),
     defineProviderAction(service, {
       name: "patch_markdown_file",
+      operationType: "destructive",
       description:
         "Fetch a Markdown file, replace literal text or a JavaScript regular expression locally, and overwrite only when matches exist.",
       requiredScopes: [
@@ -154,16 +158,12 @@ export function createFeishuMarkdownActions(service: string): readonly ActionDef
         "Describe the replacement to apply to the remote Markdown file.",
         {
           fileToken: fileTokenSchema,
-          pattern: s.string("The non-empty literal text or regular expression to match.", {
-            minLength: 1,
-          }),
+          pattern: s.nonEmptyString("The non-empty literal text or regular expression to match."),
           replacement: s.string("The replacement Markdown string; it may be empty."),
           regex: s.boolean("Whether pattern is a JavaScript regular expression."),
           fileName: fileNameSchema,
         },
-        {
-          optional: ["regex", "fileName"],
-        },
+        { optional: ["regex", "fileName"] },
       ),
       outputSchema: s.object(
         "The Markdown patch result.",
@@ -176,13 +176,12 @@ export function createFeishuMarkdownActions(service: string): readonly ActionDef
           sizeBytesBefore: s.nonNegativeInteger("The UTF-8 size before replacement."),
           sizeBytesAfter: s.nonNegativeInteger("The UTF-8 size after replacement."),
         },
-        {
-          optional: ["version"],
-        },
+        { optional: ["version"] },
       ),
     }),
     defineProviderAction(service, {
       name: "overwrite_markdown_file",
+      operationType: "destructive",
       description: "Overwrite an existing Feishu Drive Markdown file with a complete JSON Markdown string.",
       requiredScopes: [feishuMarkdownProviderPermissions.upload, feishuMarkdownProviderPermissions.metadataRead],
       providerPermissions: [feishuMarkdownProviderPermissions.upload, feishuMarkdownProviderPermissions.metadataRead],
@@ -193,9 +192,7 @@ export function createFeishuMarkdownActions(service: string): readonly ActionDef
           markdown: markdownSchema,
           fileName: fileNameSchema,
         },
-        {
-          optional: ["fileName"],
-        },
+        { optional: ["fileName"] },
       ),
       outputSchema: writeOutputSchema,
     }),

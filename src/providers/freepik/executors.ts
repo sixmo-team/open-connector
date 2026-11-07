@@ -1,26 +1,26 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { FreepikActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
   isAbortLikeError,
-  providerUserAgent,
   ProviderRequestError,
+  providerUserAgent,
 } from "../provider-runtime.ts";
 
 const service = "freepik";
 const freepikApiBaseUrl = "https://api.magnific.com";
 const freepikResourcesPath = "/v1/resources";
-const freepikRequestTimeoutMs = 30_000;
 
 type FreepikPhase = "validate" | "execute";
 type FreepikActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
 type FreepikActionHandler = (input: Record<string, unknown>, context: FreepikActionContext) => Promise<unknown>;
 
-export const freepikActionHandlers: Record<FreepikActionName, FreepikActionHandler> = {
+export const freepikActionHandlers: ProviderActionHandlers<"freepik", FreepikActionHandler> = {
   async search_resources(input, context) {
     const payload = await requestFreepikJson({
       context,
@@ -173,7 +173,7 @@ async function requestFreepikJson(input: {
     }
   }
 
-  const timeout = createProviderTimeout(input.context.signal, freepikRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const response = await input.context.fetcher(url, {
       method: "GET",
@@ -324,3 +324,9 @@ function setOptionalQueryValue(query: Record<string, string>, key: string, value
     query[key] = value;
   }
 }
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://api.magnific.com",
+  auth: { type: "api_key_header", name: "x-magnific-api-key" },
+});

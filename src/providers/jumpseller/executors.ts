@@ -8,12 +8,10 @@ import type { JumpsellerActionContext } from "./runtime.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, requiredString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError } from "../provider-runtime.ts";
 import { jumpsellerActionHandlers, jumpsellerApiBaseUrl, validateJumpsellerCredential } from "./runtime.ts";
 
 const service = "jumpseller";
@@ -68,7 +66,3 @@ export const credentialValidators: CredentialValidators = {
     };
   },
 };
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}

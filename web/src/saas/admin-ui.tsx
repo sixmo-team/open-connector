@@ -1,5 +1,5 @@
 import type { ThemeMode } from "../theme";
-import type { AdminActor, AdminData, AdminScope, AdminScopes } from "./admin-model";
+import type { AdminActor, AdminActionMode, AdminData, AdminScope, AdminScopes } from "./admin-model";
 import type { AdminLang } from "./i18n";
 import type { ReactNode } from "react";
 
@@ -19,12 +19,12 @@ import {
   UserCog,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Navigate, NavLink, Route, Routes, useLocation } from "react-router";
+import { Navigate, NavLink, Route, Routes, useLocation, useSearchParams } from "react-router";
 import oomolConnectLogoUrl from "../assets/oomol-connect-logo.png";
 import { EmptyState, InlineError, StatusDot } from "../shared-ui";
 import { useThemeMode } from "../theme";
 import { AdminActionsPage } from "./actions-page";
-import { AdminApiError, getAdminScopes, loadAdminData, putAdminActionGrant, putAdminActionGrants } from "./admin-api";
+import { AdminApiError, getAdminScopes, getAdminActions, getAdminActionDefaults, loadAdminData, putAdminActionGrant, putAdminActionGrants, putAdminActionDefault, putAdminActionDefaults, putAdminActionApprovalOverride } from "./admin-api";
 import { emptyAdminData } from "./admin-model";
 import { AdminConnectionsPage } from "./connections-page";
 import { adminLangs, persistAdminLang } from "./i18n";
@@ -54,6 +54,10 @@ const themeOptions = [
 export function AdminApp(): ReactNode {
   const t = useTranslate();
   const { theme, setTheme } = useThemeMode();
+  const location = useLocation();
+  const [params] = useSearchParams();
+  const actionsPage = location.pathname === "/actions";
+  const mode: AdminActionMode | null = params.get("mode") === "defaults" ? "defaults" : params.get("mode") === "individual" ? "individual" : null;
   const [scopes, setScopes] = useState<AdminScopes | null>(null);
   const [scope, setScope] = useState<AdminScope>(emptyAdminScope);
   const [data, setData] = useState<AdminData>(emptyAdminData);
@@ -62,6 +66,10 @@ export function AdminApp(): ReactNode {
   const [error, setError] = useState<string | null>(null);
   const [refreshGeneration, setRefreshGeneration] = useState(0);
   const requestGeneration = useRef(0);
+  const contextKey = JSON.stringify([location.pathname, actionsPage ? mode : null, scope]);
+  const currentContext = useRef(contextKey);
+  currentContext.current = contextKey;
+  const [loadedContext, setLoadedContext] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,30 +93,33 @@ export function AdminApp(): ReactNode {
 
   useEffect(() => {
     const generation = ++requestGeneration.current;
+    const context = contextKey;
+    const current = () => generation === requestGeneration.current && currentContext.current === context;
     setData(emptyAdminData);
-    if (!isCompleteAdminScope(scope)) {
+    if (!scopes || (actionsPage ? mode === null || (mode === "individual" && !isCompleteAdminScope(scope)) : !isCompleteAdminScope(scope))) {
       setLoadingData(false);
       return;
     }
     setError(null);
-
     setLoadingData(true);
-    loadAdminData(scope)
-      .then((nextData) => {
-        if (generation === requestGeneration.current) setData(nextData);
-      })
-      .catch((caught: unknown) => {
-        if (generation !== requestGeneration.current) return;
-        setData(emptyAdminData);
-        if (caught instanceof AdminApiError && (caught.status === 401 || caught.status === 403)) {
-          setScope(emptyAdminScope);
-        }
-        setError(t("errors.loadData"));
-      })
-      .finally(() => {
-        if (generation === requestGeneration.current) setLoadingData(false);
-      });
-  }, [scope, refreshGeneration, t]);
+    const load = actionsPage
+      ? (mode === "defaults" ? getAdminActionDefaults() : getAdminActions(scope)).then((actions) => ({ ...emptyAdminData, actions }))
+      : loadAdminData(scope);
+    load.then((nextData) => {
+      if (current()) {
+        setData(nextData);
+        setLoadedContext(context);
+      }
+    }).catch((caught: unknown) => {
+      if (!current()) return;
+      setData(emptyAdminData);
+      if (caught instanceof AdminApiError && (caught.status === 401 || caught.status === 403)) setScope(emptyAdminScope);
+      setError(t("errors.loadData"));
+    }).finally(() => {
+      if (current()) setLoadingData(false);
+    });
+    return () => { requestGeneration.current += 1; };
+  }, [scope, scopes, actionsPage, mode, contextKey, refreshGeneration, t]);
 
   function changeScope(nextScope: AdminScope): void {
     requestGeneration.current += 1;
@@ -117,27 +128,50 @@ export function AdminApp(): ReactNode {
     setScope(nextScope);
   }
 
-  async function updateGrant(
-    actionId: string,
-    granted: boolean,
-    approvalOverride: "inherit" | "always",
-  ): Promise<void> {
-    if (!isCompleteAdminScope(scope)) return;
-    await putAdminActionGrant(actionId, scope, granted, approvalOverride);
-    setData((current) => ({
-      ...current,
-      actions: current.actions.map((action) => (action.actionId === actionId ? { ...action, granted } : action)),
-    }));
+  async function saveAndReread(write: () => Promise<void>): Promise<void> {
+    const context = contextKey;
+    const generation = ++requestGeneration.current;
+    const current = () => generation === requestGeneration.current && currentContext.current === context;
+    let failure: unknown;
+    try { await write(); } catch (caught) { failure = caught; }
+    if (!current()) {
+      if (currentContext.current === context) setRefreshGeneration((value) => value + 1);
+      return;
+    }
+    try {
+      const actions = await (mode === "defaults" ? getAdminActionDefaults() : getAdminActions(scope));
+      if (current()) setData((previous) => ({ ...previous, actions }));
+    } catch (caught) {
+      if (current()) {
+        setData((previous) => ({ ...previous, actions: [] }));
+        setError(t("errors.loadData"));
+      }
+      failure ??= caught;
+    }
+    if (current() && failure) throw failure;
   }
 
-  async function updateGrants(actionIds: string[], granted: boolean): Promise<void> {
-    if (!isCompleteAdminScope(scope)) return;
-    await putAdminActionGrants(actionIds, scope, granted, "inherit");
-    const changed = new Set(actionIds);
-    setData((current) => ({
-      ...current,
-      actions: current.actions.map((action) => (changed.has(action.actionId) ? { ...action, granted } : action)),
-    }));
+  async function updateGrant(actionId: string, enabled: boolean | null, reason: string): Promise<void> {
+    if (mode === "defaults") {
+      if (enabled === null) throw new Error("Defaults must be boolean");
+      await saveAndReread(() => putAdminActionDefault(actionId, enabled, reason));
+    } else if (mode === "individual" && isCompleteAdminScope(scope)) {
+      await saveAndReread(() => putAdminActionGrant(actionId, scope, enabled, reason));
+    } else throw new Error("Select permission mode and scope");
+  }
+
+  async function updateGrants(actionIds: string[], enabled: boolean | null, reason: string): Promise<void> {
+    if (mode === "defaults") {
+      if (enabled === null) throw new Error("Defaults must be boolean");
+      await saveAndReread(() => putAdminActionDefaults(actionIds, enabled, reason));
+    } else if (mode === "individual" && isCompleteAdminScope(scope)) {
+      await saveAndReread(() => putAdminActionGrants(actionIds, scope, enabled, reason));
+    } else throw new Error("Select permission mode and scope");
+  }
+
+  async function updateApproval(actionId: string, approvalOverride: "inherit" | "always", reason: string): Promise<void> {
+    if (mode !== "individual" || !isCompleteAdminScope(scope)) throw new Error("Select individual scope");
+    await saveAndReread(() => putAdminActionApprovalOverride(actionId, scope, approvalOverride, reason));
   }
 
   if (loadingScopes) {
@@ -155,7 +189,8 @@ export function AdminApp(): ReactNode {
     <AdminShell
       scopes={scopes}
       scope={scope}
-      data={data}
+      data={loadedContext === contextKey ? data : emptyAdminData}
+      mode={mode}
       theme={theme}
       loading={loadingData}
       error={error}
@@ -164,6 +199,7 @@ export function AdminApp(): ReactNode {
       onThemeChange={setTheme}
       onGrantChange={updateGrant}
       onBulkGrantChange={updateGrants}
+      onApprovalChange={updateApproval}
     />
   );
 }
@@ -172,14 +208,16 @@ interface AdminShellProps {
   scopes: AdminScopes | null;
   scope: AdminScope;
   data: AdminData;
+  mode: AdminActionMode | null;
   theme: ThemeMode;
   loading: boolean;
   error: string | null;
   onScopeChange(scope: AdminScope): void;
   onRefresh(): void;
   onThemeChange(theme: ThemeMode): void;
-  onGrantChange(actionId: string, granted: boolean, approvalOverride: "inherit" | "always"): Promise<void>;
-  onBulkGrantChange(actionIds: string[], granted: boolean): Promise<void>;
+  onGrantChange(actionId: string, enabled: boolean | null, reason: string): Promise<void>;
+  onBulkGrantChange(actionIds: string[], enabled: boolean | null, reason: string): Promise<void>;
+  onApprovalChange(actionId: string, approvalOverride: "inherit" | "always", reason: string): Promise<void>;
 }
 
 function AdminShell(props: AdminShellProps): ReactNode {
@@ -189,6 +227,10 @@ function AdminShell(props: AdminShellProps): ReactNode {
   const currentNavItem = navItems.find((item) => item.path === `/${heading}`) ?? navItems[0];
   const CurrentNavIcon = currentNavItem.icon;
   const completeScope = isCompleteAdminScope(props.scope);
+  const actionsPage = heading === "actions";
+  const globalActions = actionsPage && props.mode === "defaults";
+  const chooseMode = actionsPage && props.mode === null;
+  const [params, setParams] = useSearchParams();
 
   return (
     <div className="app-shell">
@@ -228,7 +270,7 @@ function AdminShell(props: AdminShellProps): ReactNode {
           <Button
             variant="outline"
             size="icon-sm"
-            disabled={!completeScope || props.loading}
+            disabled={(!globalActions && !completeScope) || chooseMode || props.loading}
             onClick={props.onRefresh}
             aria-label={t("shell.refreshData")}
           >
@@ -252,22 +294,36 @@ function AdminShell(props: AdminShellProps): ReactNode {
         </header>
 
         <main className={heading === "overview" ? "main overview-main" : "main"}>
-          {props.scopes && props.scopes.tenants.length > 0 ? (
+          {props.scopes ? (
             <div className="page-stack">
-              <ScopeSelector
+              {actionsPage ? (
+                <label className="grid gap-2">
+                  <span>{t("actions.mode")}</span>
+                  <select className="rounded-md border border-border bg-background p-2" value={props.mode ?? ""} onChange={(event) => {
+                    const next = new URLSearchParams(params);
+                    next.set("mode", event.target.value);
+                    setParams(next);
+                  }}>
+                    <option value="" disabled>{t("actions.chooseMode")}</option>
+                    <option value="defaults">{t("actions.defaults")}</option>
+                    <option value="individual">{t("actions.individual")}</option>
+                  </select>
+                </label>
+              ) : null}
+              {!globalActions && !chooseMode && props.scopes.tenants.length > 0 ? <ScopeSelector
                 tenants={props.scopes.tenants}
                 value={props.scope}
                 disabled={props.loading}
                 onChange={props.onScopeChange}
-              />
+              /> : null}
               {props.error ? <InlineError message={props.error} /> : null}
-              {!completeScope ? (
+              {chooseMode ? <EmptyState title={t("actions.chooseMode")} description={t("actions.modeHint")} icon={null} /> : !globalActions && !completeScope ? (
                 <EmptyState
-                  title={t("scope.incompleteTitle")}
-                  description={t("scope.incompleteDescription")}
+                  title={t(props.scopes.tenants.length > 0 ? "scope.incompleteTitle" : "scope.emptyTitle")}
+                  description={t(props.scopes.tenants.length > 0 ? "scope.incompleteDescription" : "scope.emptyDescription")}
                   icon={null}
                 />
-              ) : props.loading && props.data.overview === null ? (
+              ) : props.loading ? (
                 <div className="loading-panel">
                   <Loader2 className="spin" size={16} />
                   {t("common.loading")}
@@ -288,9 +344,12 @@ function AdminShell(props: AdminShellProps): ReactNode {
                     path="/actions"
                     element={
                       <AdminActionsPage
+                        key={JSON.stringify([props.mode, props.scope])}
+                        mode={props.mode ?? "individual"}
                         actions={props.data.actions}
                         onGrantChange={props.onGrantChange}
                         onBulkGrantChange={props.onBulkGrantChange}
+                        onApprovalChange={props.onApprovalChange}
                       />
                     }
                   />

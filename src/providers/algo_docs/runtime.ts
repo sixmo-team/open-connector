@@ -1,5 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalString } from "../../core/cast.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
@@ -10,7 +12,7 @@ const validationPath = "/me";
 type AlgoDocsRequestPhase = "validate" | "execute";
 type AlgoDocsActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const algoDocsActionHandlers: Record<string, AlgoDocsActionHandler> = {
+export const algoDocsActionHandlers: ProviderActionHandlers<"algo_docs", AlgoDocsActionHandler> = {
   async get_me(_input, context) {
     const record = readRecord(
       await requestAlgoDocsJson({

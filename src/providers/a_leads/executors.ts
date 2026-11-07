@@ -1,12 +1,16 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineProviderExecutors,
-  providerUserAgent,
-  ProviderRequestError,
-  requireApiKeyCredential,
-} from "../provider-runtime.ts";
+import { requireApiKeyCredential } from "../provider-credentials.ts";
+import { defineProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 const service = "a_leads";
 const aLeadsApiBaseUrl = "https://api.a-leads.co/gateway/v1";
@@ -18,10 +22,9 @@ interface ALeadsActionContext {
   signal?: AbortSignal;
 }
 
-type ALeadsActionName = "find_email" | "find_personal_email" | "find_phone" | "verify_email";
 type ALeadsActionHandler = (input: Record<string, unknown>, context: ALeadsActionContext) => Promise<unknown>;
 
-export const aLeadsActionHandlers: Record<ALeadsActionName, ALeadsActionHandler> = {
+export const aLeadsActionHandlers: ProviderActionHandlers<"a_leads", ALeadsActionHandler> = {
   async find_email(input, context): Promise<unknown> {
     const payload = await aLeadsRequest(context, "/find-email", buildDataBody(input));
     return {
@@ -66,6 +69,16 @@ export const executors: ProviderExecutors = defineProviderExecutors<ALeadsAction
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: aLeadsApiBaseUrl,
+  auth: { type: "api_key_header", name: "x-api-key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 

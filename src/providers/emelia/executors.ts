@@ -1,25 +1,26 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
 import {
   createProviderTimeout,
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   readProviderJsonBody,
+  providerInputError,
 } from "../provider-runtime.ts";
 
 const service = "emelia";
 const emeliaApiBaseUrl = "https://api.emelia.io";
-const emeliaRequestTimeoutMs = 30_000;
 
 type EmeliaRequestPhase = "validate" | "execute";
 
 type EmeliaActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const emeliaActionHandlers: Record<string, EmeliaActionHandler> = {
+export const emeliaActionHandlers: ProviderActionHandlers<"emelia", EmeliaActionHandler> = {
   list_campaigns(input, context) {
     return requestEmeliaList(
       "/emails/campaigns",
@@ -135,7 +136,7 @@ async function requestEmeliaJson(
     url.searchParams.append(key, value);
   }
 
-  const timeout = createProviderTimeout(context.signal, emeliaRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: input.method,
@@ -180,7 +181,7 @@ function createEmeliaError(response: Response, payload: unknown, phase: EmeliaRe
     return new ProviderRequestError(401, message);
   }
   if (response.status === 400 || response.status === 404 || response.status === 422) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   return new ProviderRequestError(response.status || 502, message);
 }

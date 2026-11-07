@@ -1,18 +1,22 @@
-import type { BlazeMeterActionHandler, BlazeMeterContext, BlazeMeterRequestInput } from "../blaze-meter-runtime.ts";
-import type { BlazeMeterServiceVirtualizationActionName } from "./actions.ts";
+import type {
+  BlazeMeterActionHandler,
+  BlazeMeterContext,
+  BlazeMeterRequestInput,
+} from "../blaze_meter_performance/shared-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
 
 import { compactObject, optionalString } from "../../core/cast.ts";
 import {
   requestBlazeMeterJson,
   requireStoredBlazeMeterApiKeyId,
   validateBlazeMeterCredential,
-} from "../blaze-meter-runtime.ts";
+} from "../blaze_meter_performance/shared-runtime.ts";
 import { ProviderRequestError } from "../provider-runtime.ts";
 
 const blazeMeterJsonHeaders = { "content-type": "application/json" };
 
-export const blazeMeterServiceVirtualizationActionHandlers: Record<
-  BlazeMeterServiceVirtualizationActionName,
+export const blazeMeterServiceVirtualizationActionHandlers: ProviderActionHandlers<
+  "blaze_meter_service_virtualization",
   BlazeMeterActionHandler
 > = {
   list_service_mock_templates(input, context) {

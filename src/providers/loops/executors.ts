@@ -4,16 +4,13 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { LoopsActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  providerUserAgent,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { ProviderRequestError, providerUserAgent, providerInputError } from "../provider-runtime.ts";
 
 const service = "loops";
 const loopsApiOrigin = "https://app.loops.so";
@@ -22,7 +19,7 @@ const loopsApiVersion = "v1";
 
 type LoopsActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const loopsActionHandlers: Record<LoopsActionName, LoopsActionHandler> = {
+export const loopsActionHandlers: ProviderActionHandlers<"loops", LoopsActionHandler> = {
   create_contact(input, context) {
     return loopsRequest(context, "/contacts/create", { method: "POST", body: buildContactBody(input) });
   },
@@ -274,7 +271,7 @@ function createLoopsError(response: Response, payload: unknown, phase: "validate
     return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(400, message);
+    return providerInputError(message);
   }
   if (phase === "execute" && (response.status === 401 || response.status === 403)) {
     return new ProviderRequestError(401, message);

@@ -1,5 +1,7 @@
 import type { CredentialValidationResult, TransitFileWriter } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { readBoundedResponseBytes } from "../../core/request.ts";
@@ -10,7 +12,7 @@ import {
   ProviderRequestError,
 } from "../provider-runtime.ts";
 
-const browserlessApiBaseUrl = "https://production-sfo.browserless.io";
+export const browserlessApiBaseUrl = "https://production-sfo.browserless.io";
 const browserlessRequestTimeoutMs = 60_000;
 const browserlessValidationUrl = "https://example.com";
 
@@ -41,7 +43,7 @@ interface BrowserlessBinaryResponse {
   contentType: string;
 }
 
-export const browserlessActionHandlers: Record<string, BrowserlessActionHandler> = {
+export const browserlessActionHandlers: ProviderActionHandlers<"browserless", BrowserlessActionHandler> = {
   fetch_content(input, context) {
     return fetchBrowserlessContent(input, context);
   },

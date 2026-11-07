@@ -1,6 +1,7 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
-import type { MapboxActionName } from "./actions.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
+import type { ProviderFetch } from "../provider-runtime.ts";
 
 import {
   compactObject,
@@ -18,7 +19,7 @@ const mapboxValidationPath = "/tokens/v2";
 
 type MapboxActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const mapboxActionHandlers: Record<MapboxActionName, MapboxActionHandler> = {
+export const mapboxActionHandlers: ProviderActionHandlers<"mapbox", MapboxActionHandler> = {
   forward_geocode(input, context) {
     assertBoundingBox(input.bbox);
     return requestMapboxJson({

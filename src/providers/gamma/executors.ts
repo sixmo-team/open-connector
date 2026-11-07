@@ -1,22 +1,22 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
-import type { GammaActionName } from "./actions.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
-import {
-  compactObject,
-  optionalInteger,
-  optionalNumber,
-  optionalRecord,
-  optionalString,
-  requiredString,
-} from "../../core/cast.ts";
+import { compactObject, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import { compactJson } from "../../core/request.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import {
+  isAbortLikeError,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredInputString,
+  defaultProviderRequestTimeoutMs,
+} from "../provider-runtime.ts";
 
 const service = "gamma";
 const gammaApiBaseUrl = "https://public-api.gamma.app";
 const gammaApiVersionPath = "/v1.0";
-const gammaDefaultRequestTimeoutMs = 30_000;
 
 type GammaRequestPhase = "validate" | "execute";
 type GammaActionContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
@@ -37,7 +37,7 @@ interface GammaGeneration {
   status?: string;
 }
 
-export const gammaActionHandlers: Record<GammaActionName, GammaActionHandler> = {
+export const gammaActionHandlers: ProviderActionHandlers<"gamma", GammaActionHandler> = {
   create_generation(input, context) {
     return createGeneration(input, context);
   },
@@ -112,7 +112,7 @@ async function createGeneration(input: Record<string, unknown>, context: GammaAc
 
 async function getGeneration(input: Record<string, unknown>, context: GammaActionContext): Promise<unknown> {
   return {
-    generation: await fetchGeneration(readInputString(input.generationId, "generationId"), context),
+    generation: await fetchGeneration(requiredInputString(input.generationId, "generationId"), context),
   };
 }
 
@@ -161,7 +161,7 @@ async function createGenerationFromTemplateAndWait(
 }
 
 async function waitForGeneration(input: Record<string, unknown>, context: GammaActionContext): Promise<unknown> {
-  const generationId = readInputString(input.generationId, "generationId");
+  const generationId = requiredInputString(input.generationId, "generationId");
   const timeoutMs = toMilliseconds(input.timeoutSeconds, 120_000);
   const pollIntervalMs = toMilliseconds(input.pollIntervalSeconds, 5_000);
   const startedAt = Date.now();
@@ -232,9 +232,9 @@ async function listFolders(input: Record<string, unknown>, context: GammaActionC
 
 function buildCreateGenerationBody(input: Record<string, unknown>): Record<string, unknown> {
   return compactJson({
-    inputText: readInputString(input.inputText, "inputText"),
+    inputText: requiredInputString(input.inputText, "inputText"),
     additionalInstructions: optionalString(input.additionalInstructions),
-    textMode: readInputString(input.textMode, "textMode"),
+    textMode: requiredInputString(input.textMode, "textMode"),
     format: optionalString(input.format),
     numCards: optionalInteger(input.numCards),
     cardSplit: optionalString(input.cardSplit),
@@ -250,8 +250,8 @@ function buildCreateGenerationBody(input: Record<string, unknown>): Record<strin
 
 function buildCreateGenerationFromTemplateBody(input: Record<string, unknown>): Record<string, unknown> {
   return compactJson({
-    prompt: readInputString(input.prompt, "prompt"),
-    gammaId: readInputString(input.gammaId, "gammaId"),
+    prompt: requiredInputString(input.prompt, "prompt"),
+    gammaId: requiredInputString(input.gammaId, "gammaId"),
     themeId: optionalString(input.themeId),
     imageOptions: optionalRecord(input.imageOptions),
     sharingOptions: optionalRecord(input.sharingOptions),
@@ -290,7 +290,9 @@ function isTerminalGenerationStatus(status: string | undefined): boolean {
 
 async function gammaRequest(input: GammaRequestInput): Promise<unknown> {
   const requestTimeoutMs =
-    input.timeoutMs == null ? gammaDefaultRequestTimeoutMs : Math.min(gammaDefaultRequestTimeoutMs, input.timeoutMs);
+    input.timeoutMs == null
+      ? defaultProviderRequestTimeoutMs
+      : Math.min(defaultProviderRequestTimeoutMs, input.timeoutMs);
   const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
   const signal = input.context.signal ? AbortSignal.any([input.context.signal, timeoutSignal]) : timeoutSignal;
   const url = new URL(`${gammaApiVersionPath}${input.path}`, gammaApiBaseUrl);
@@ -320,7 +322,7 @@ async function gammaRequest(input: GammaRequestInput): Promise<unknown> {
     if (error instanceof ProviderRequestError) {
       throw error;
     }
-    if (timeoutSignal.aborted && isAbortError(error)) {
+    if (timeoutSignal.aborted && isAbortLikeError(error)) {
       throw new ProviderRequestError(504, "Gamma request timed out", error);
     }
     const message = error instanceof Error ? `Gamma request failed: ${error.message}` : "Gamma request failed";
@@ -448,10 +450,6 @@ function requireResponseObject(value: unknown, fieldName: string): Record<string
   return record;
 }
 
-function readInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function readResponseString(input: Record<string, unknown>, key: string): string {
   const value = optionalString(input[key]);
   if (!value) {
@@ -474,6 +472,8 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://public-api.gamma.app",
+  auth: { type: "api_key_header", name: "x-api-key" },
+});

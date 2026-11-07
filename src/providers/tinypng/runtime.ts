@@ -1,5 +1,6 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 import type { TinypngActionName } from "./actions.ts";
 
 import {
@@ -10,7 +11,7 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { assertPublicHttpUrl, readBoundedResponseBytes } from "../../core/request.ts";
+import { assertPublicHttpUrl, storeResponseInTransit } from "../../core/request.ts";
 import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 export const tinypngApiBaseUrl: string = "https://api.tinify.com";
@@ -26,7 +27,7 @@ interface TinypngImageInfo {
   url?: unknown;
 }
 
-export const tinypngActionHandlers: Record<TinypngActionName, TinypngActionHandler> = {
+export const tinypngActionHandlers: ProviderActionHandlers<"tinypng", TinypngActionHandler> = {
   shrink_image(input, context) {
     return shrinkImage(input, context);
   },
@@ -134,27 +135,27 @@ async function outputImage(input: Record<string, unknown>, context: ApiKeyProvid
   });
 
   await assertTinypngResponse(response, "execute");
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
-    fieldName: "TinyPNG output image",
-    createError: (message) => new ProviderRequestError(413, message),
-  });
   const mimeType = response.headers.get("content-type") ?? "image/png";
   const name = buildTinypngTransitFileName(imageId, mimeType);
-  const upload = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
+  const upload = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
+    fieldName: "TinyPNG output image",
+    createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
+  });
 
   return compactObject({
     imageId,
     compressionCount: readHeaderInteger(response.headers, "Compression-Count"),
     contentType: mimeType,
-    contentLength: readHeaderInteger(response.headers, "content-length") ?? bytes.byteLength,
+    contentLength: readHeaderInteger(response.headers, "content-length") ?? upload.sizeBytes,
     imageWidth: readHeaderInteger(response.headers, "Image-Width"),
     imageHeight: readHeaderInteger(response.headers, "Image-Height"),
     image: {
       name,
-      mimetype: mimeType,
+      mimeType,
       downloadUrl: upload.downloadUrl,
-      fileId: upload.fileId,
       sizeBytes: upload.sizeBytes,
     },
   });

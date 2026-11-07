@@ -1,13 +1,11 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-executors.ts";
+import type { ApiKeyProviderContext } from "../provider-executors.ts";
 
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import {
-  defineApiKeyProviderExecutors,
-  defineProviderProxy,
-  ProviderRequestError,
-  providerUserAgent,
-} from "../provider-runtime.ts";
+import { defineApiKeyProviderExecutors } from "../provider-executors.ts";
+import { defineProviderProxy } from "../provider-proxy.ts";
+import { providerInputError, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 const service = "anthropic_admin";
 const anthropicAdminApiBaseUrl = "https://api.anthropic.com";
@@ -17,7 +15,7 @@ const anthropicAdminValidationPath = "/v1/organizations/me";
 type AnthropicAdminRequestPhase = "validate" | "execute";
 type AnthropicAdminActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const anthropicAdminActionHandlers: Record<string, AnthropicAdminActionHandler> = {
+export const anthropicAdminActionHandlers: ProviderActionHandlers<"anthropic_admin", AnthropicAdminActionHandler> = {
   get_organization(_input, context) {
     return anthropicAdminRequest({ path: anthropicAdminValidationPath }, context);
   },
@@ -174,8 +172,4 @@ async function readAnthropicAdminError(response: Response) {
       message: raw || `anthropic_admin request failed with ${response.status}`,
     };
   }
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
