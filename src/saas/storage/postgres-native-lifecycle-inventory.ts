@@ -20,7 +20,7 @@ export const nativeCustomerOwnerRowsSql: string = [
   "saas_cleanup",
   "trigger_subscriptions",
   "trigger_source_applications",
-  "trigger_secret_cleanup",
+  "secret_custody",
   "trigger_execution_leases",
 ]
   .map((table) => `SELECT tenant_id, workspace_id, subject_user_id AS user_id FROM integration_runtime.${table}`)
@@ -28,6 +28,15 @@ export const nativeCustomerOwnerRowsSql: string = [
     ["trigger_subscriptions", "trigger_source_applications", "trigger_execution_leases"].map(
       (table) => `SELECT tenant_id, workspace_id, credential_owner_id AS user_id FROM integration_runtime.${table}`,
     ),
+  )
+  .concat(
+    ["actor_user_id", "credential_owner_id"].map(
+      (column) => `SELECT tenant_id, workspace_id, ${column} AS user_id FROM integration_runtime.secret_custody`,
+    ),
+  )
+  .concat(
+    `SELECT tenant_id, workspace_id, COALESCE(identity->>'ownerActorUserId',identity->>'actorUserId') AS user_id
+     FROM integration_runtime.secret_custody WHERE kind IN ('trigger-subscription','trigger-source')`,
   )
   .join(" UNION ALL ");
 

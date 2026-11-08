@@ -65,7 +65,7 @@ async function setup() {
     baseUrl: "https://saas.example",
     apiKey: "workspace-project-key",
   };
-  await db.saasProjects.saveProject(project);
+  await db.saasProjects.saveProject(project, null);
   await db.saasProjects.setSource("example", { managedProjectId: project.id, providerConfigId: "selected-config" });
   let link: { providerConfigId: string; userId: string; alias: string } | undefined;
   let connected = false;

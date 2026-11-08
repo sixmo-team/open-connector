@@ -9,11 +9,12 @@ import type { CredentialDefinition } from "../../core/types.ts";
 import type { MarketplaceService } from "../../marketplace/marketplace-service.ts";
 import type { IOAuthCredentialRefresher } from "../../oauth/oauth-credential-refresh-service.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
-import type { ActionPolicyJwtVerifier, SaasJwtVerifier } from "../auth/saas-jwt-verifier.ts";
+import type { ControlJwtVerifier, SaasJwtVerifier } from "../auth/saas-jwt-verifier.ts";
 import type { SaasHonoEnvironment } from "../auth/scoped-request.ts";
 import type { SaasProviderCredentialRevoker } from "../connections/provider-credential-revoker.ts";
 import type { OAuthClientConfigReadiness } from "../contracts.ts";
 import type {
+  ConfigurationControlPrincipal,
   ConnectionTransferInput,
   ConnectionVisibilityInput,
   LifecyclePurgeInput,
@@ -29,6 +30,7 @@ import type {
 import type { ScopedLifecycleService } from "../lifecycle/scoped-lifecycle-service.ts";
 import type { SaasOAuthService } from "../oauth/saas-oauth-service.ts";
 import type { SaasExecutionService } from "../saas-execution-service.ts";
+import type { SaasProjectService } from "../saas-project-service.ts";
 import type { SaasRuntimeDatabase, SaasRuntimeDatabaseFactory } from "../storage/postgres-runtime-database.ts";
 import type { RunLog, RunLogCaller, RunLogListInput } from "../storage/run-store.ts";
 import type { TriggerLifecycleCleanup } from "../triggers/postgres-trigger-store.ts";
@@ -65,6 +67,7 @@ import { SaasError } from "../saas-client.ts";
 import { decodeRunLogCursor } from "../storage/run-store.ts";
 import { registerScopedTriggerRoutes } from "../triggers/scoped-trigger-routes.ts";
 import { registerActionPolicyRoutes } from "./action-policy-routes.ts";
+import { registerConfigurationRoutes } from "./configuration-routes.ts";
 import { exactQuery, JsonBodyTooLargeError, readBoundedJson, runScopedHttpOperation } from "./http-input.ts";
 import { registerMaintenanceRoutes } from "./maintenance-routes.ts";
 import { registerMarketplaceRoutes } from "./marketplace-routes.ts";
@@ -83,7 +86,7 @@ export interface SaasConnectServerOptions {
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
   verifyJwt: SaasJwtVerifier;
-  verifyActionPolicyJwt?: ActionPolicyJwtVerifier;
+  verifyControlJwt?: ControlJwtVerifier;
   policyControlActiveKid?: string;
   readiness: () => Promise<Readonly<SaasDependencyReadiness>>;
   oauthCredentials?: IOAuthCredentialRefresher;
@@ -103,6 +106,7 @@ export interface SaasConnectServerOptions {
   triggerRunnerForScope?: (scope: Readonly<SaasRequestScope>) => Pick<SaasTriggerRunner, "run">;
   triggerCleanupForScope?: (scope: Readonly<SaasRequestScope>) => TriggerLifecycleCleanup;
   maintenanceForScope?: (scope: Readonly<SaasRequestScope>) => Promise<void>;
+  projectsForControl?: (principal: Readonly<ConfigurationControlPrincipal>) => SaasProjectService;
   runtimeDatabaseFactory?: Pick<SaasRuntimeDatabaseFactory, "forScope" | "actionPolicy"> &
     Partial<Pick<SaasRuntimeDatabaseFactory, "nativeConfiguration" | "nativeLifecycleInventory">> & {
       lifecycleForScope?: (
@@ -199,6 +203,7 @@ export class SaasConnectServer {
       });
     });
     registerActionPolicyRoutes(app, this.options);
+    registerConfigurationRoutes(app, this.options);
     registerNativeLifecycleRoutes(app, this.options);
     registerMarketplaceRoutes(app, this.options);
     registerMaintenanceRoutes(app, this.options);

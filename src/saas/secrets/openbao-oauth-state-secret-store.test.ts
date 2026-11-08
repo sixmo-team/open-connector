@@ -38,6 +38,55 @@ const expectedPath =
   "client-secrets/data/tenants/tenant-a/workspaces/workspace-a/integrations/oauth-sessions/oauth-session-1";
 
 describe("OpenBaoOAuthStateSecretStore", () => {
+  it("awaits exact reference reservation acknowledgement before writing a private envelope", async () => {
+    const bao = new FakeOpenBao();
+    const codec = new OpenBaoSecretCodec(
+      new OpenBaoClient({
+        address: "https://openbao.test",
+        token: "test-token",
+        fetchFn: bao.fetch,
+      }),
+      scope,
+    );
+    const entered = Promise.withResolvers<string>();
+    const acknowledged = Promise.withResolvers<void>();
+    const encoded = codec.encode("reserved-private-payload", async (ref) => {
+      entered.resolve(ref);
+      await acknowledged.promise;
+    });
+    const ref = await entered.promise;
+    expect(ref).toMatch(
+      /^client-secrets\/data\/tenants\/tenant-a\/workspaces\/workspace-a\/integrations\/oauth-sessions\/[a-f0-9-]{36}$/,
+    );
+    expect(bao.records.has(ref)).toBe(false);
+    acknowledged.resolve();
+    expect(await encoded).toBe(ref);
+    expect(await codec.decode(ref)).toBe("reserved-private-payload");
+  });
+
+  it.each(["rejected", "cancelled"] as const)("never dispatches after a %s reservation callback", async (failure) => {
+    const bao = new FakeOpenBao();
+    const controller = new AbortController();
+    const codec = new OpenBaoSecretCodec(
+      new OpenBaoClient({
+        address: "https://openbao.test",
+        token: "test-token",
+        fetchFn: bao.fetch,
+      }),
+      { ...scope, requestSignal: controller.signal },
+    );
+    let ref = "";
+    await expect(
+      codec.encode("never-written", async (allocated) => {
+        ref = allocated;
+        if (failure === "rejected") throw new Error("Reservation rejected");
+        controller.abort(new DOMException("Cancelled after reservation", "AbortError"));
+      }),
+    ).rejects.toThrow();
+    expect(ref).not.toBe("");
+    expect(bao.records.has(ref)).toBe(false);
+  });
+
   it("stores only PKCE under the exact scoped path and atomically takes it once", async () => {
     const bao = new FakeOpenBao();
     const store = createStore(bao);

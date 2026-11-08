@@ -6,6 +6,7 @@ import type { SaasRequestScope } from "../contracts.ts";
 import type { ISecretCodec } from "../secrets/secret-codec.ts";
 import type { PostgresActionPolicyStore } from "../storage/postgres-action-policy-store.ts";
 import type { ConnectionSecretStore } from "../storage/postgres-connection-store.ts";
+import type { SecretCustodyTarget } from "../storage/postgres-secret-custody.ts";
 import type { Pool, PoolClient } from "pg";
 
 import { randomUUID } from "node:crypto";
@@ -14,9 +15,9 @@ import { z } from "zod";
 import { assertProcessingActive, captureRequestProcessing, remainingProcessingMs } from "../../core/cancellation.ts";
 import { ExecutionError } from "../../core/execution-error.ts";
 import { withSubscription } from "../../triggers/subscriptions.ts";
-import { OpenBaoError } from "../secrets/openbao-client.ts";
 import { withSecretCleanup } from "../secrets/secret-codec.ts";
 import { mergeCredential } from "../storage/postgres-connection-store.ts";
+import { PostgresSecretCustodyStore } from "../storage/postgres-secret-custody.ts";
 import { encodeScopedCursor, readScopedPage } from "../storage/scoped-page.ts";
 import { withScopedClient } from "../storage/scoped-query.ts";
 
@@ -124,12 +125,14 @@ export class PostgresTriggerStore implements TriggerStore {
   private readonly dataUserId: string;
   private readonly pool: Pool;
   private readonly codec: ISecretCodec;
+  private readonly custody: PostgresSecretCustodyStore;
   constructor(pool: Pool, scope: Readonly<SaasRequestScope>, codec: ISecretCodec) {
     this.pool = pool;
     this.codec = codec;
     const captured = { ...captureRequestProcessing(scope), permissions: [...scope.permissions] };
     Object.freeze(captured.permissions);
     this.scope = Object.freeze(captured);
+    this.custody = new PostgresSecretCustodyStore(pool, this.scope, codec);
     this.ownerId = scopedTriggerOwner(this.scope);
     this.dataUserId = ["lifecycle:read", "lifecycle:delete"].includes(scope.purpose)
       ? scope.subjectUserId
@@ -455,32 +458,55 @@ export class PostgresTriggerStore implements TriggerStore {
     if (!this.maintenance() && record.ownerId !== this.ownerId)
       throw new Error("Trigger owner does not match verified authority");
     if (this.maintenance() && record.mode !== "resource-set") throw new Error("Lifecycle cannot create a new consumer");
-    let ref: string | undefined;
+    const staged = await withScopedClient(this.pool, this.scope, async (client) => {
+      const binding = await this.binding(client, record.connectionId, record.service, record.providerAccountId, true);
+      const owner = z.tuple([z.string(), z.string(), z.uuid(), z.uuid()]).parse(JSON.parse(record.ownerId));
+      if (
+        owner[0] !== this.scope.tenantId ||
+        owner[1] !== this.scope.workspaceId ||
+        owner[2] !== binding.credentialOwnerId
+      )
+        throw new Error("Trigger owner and credential lineage differ");
+      const existing = await this.subscription(client, record.id);
+      return { binding, owner, existing: existing ? await this.decodeSubscription(client, existing) : null };
+    });
+    if (staged.existing) return staged.existing;
+    const target: SecretCustodyTarget = {
+      kind: "trigger-subscription",
+      id: record.id,
+      dataUserId: record.mode === "resource-set" ? staged.binding.credentialOwnerId : staged.owner[3],
+      credentialOwnerId: staged.binding.credentialOwnerId,
+      connectionId: record.connectionId,
+      identity: {
+        ownerId: record.ownerId,
+        actorUserId: this.scope.actorUserId,
+        mode: record.mode,
+        service: record.service,
+        triggerId: record.triggerId,
+        ownerActorUserId: staged.owner[3],
+        requestKey: record.requestKey,
+        binding: staged.binding,
+        revision: null,
+      },
+    };
+    const ref = await this.encode(record, target);
     try {
-      return await withScopedClient(this.pool, this.scope, async (client) => {
+      const result = await withScopedClient(this.pool, this.scope, async (client) => {
         const binding = await this.binding(client, record.connectionId, record.service, record.providerAccountId, true);
-        const owner = z.tuple([z.string(), z.string(), z.uuid(), z.uuid()]).parse(JSON.parse(record.ownerId));
-        if (
-          owner[0] !== this.scope.tenantId ||
-          owner[1] !== this.scope.workspaceId ||
-          owner[2] !== binding.credentialOwnerId
-        )
-          throw new Error("Trigger owner and credential lineage differ");
-        const dataOwner = record.mode === "resource-set" ? binding.credentialOwnerId : owner[3];
+        if (!isDeepStrictEqual(binding, staged.binding)) throw new Error("Trigger connection lineage changed");
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
           JSON.stringify([this.scope.tenantId, this.scope.workspaceId, record.id]),
         ]);
         const existing = await this.subscription(client, record.id, true);
-        if (existing) return this.decodeSubscription(client, existing);
-        ref = await this.encode(record);
+        if (existing) return { record: await this.decodeSubscription(client, existing), inserted: false };
         await client.query(
           `INSERT INTO integration_runtime.trigger_subscriptions (tenant_id,workspace_id,subject_user_id,actor_user_id,credential_owner_id,id,owner_id,mode,service,trigger_id,connection_id,local_connection_id,account_binding,request_key,status,secret_ref,reconcile_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
           [
             this.scope.tenantId,
             this.scope.workspaceId,
-            dataOwner,
-            owner[3],
+            target.dataUserId,
+            staged.owner[3],
             binding.credentialOwnerId,
             record.id,
             record.ownerId,
@@ -496,10 +522,13 @@ export class PostgresTriggerStore implements TriggerStore {
             record.reconcileAt,
           ],
         );
-        return record;
+        await this.custody.consume(client, ref, target);
+        return { record, inserted: true };
       });
+      if (!result.inserted) await this.custody.abandonWritten(ref, target);
+      return result.record;
     } catch (error) {
-      await this.recoverFailure(error, ref);
+      await this.custody.abandonWritten(ref, target);
       throw error;
     }
   }
@@ -529,28 +558,47 @@ export class PostgresTriggerStore implements TriggerStore {
     });
   }
   async saveFlowTrigger(record: TriggerSubscription, owner: string, _now: number): Promise<boolean> {
-    let ref: string | undefined;
+    const staged = await withScopedClient(this.pool, this.scope, async (client) => {
+      const row = await this.subscription(client, record.id);
+      if (!row || row.lease_id !== owner || !row.lease_until || row.lease_until.getTime() <= Date.now()) return null;
+      const original = await this.decodeSubscription(client, row);
+      for (const key of [
+        "ownerId",
+        "mode",
+        "service",
+        "triggerId",
+        "connectionId",
+        "providerAccountId",
+        "requestKey",
+      ] as const)
+        if (record[key] !== original[key]) throw new Error("Trigger identity is immutable");
+      return row;
+    });
+    if (!staged) return false;
+    const target = this.subscriptionTarget(staged);
+    target.identity = {
+      ...target.identity,
+      ownerActorUserId: staged.actor_user_id,
+      actorUserId: this.scope.actorUserId,
+    };
+    const ref = await this.encode(record, target);
     try {
       const saved = await withScopedClient(this.pool, this.scope, async (client) => {
         const row = await this.subscription(client, record.id, true);
-        if (!row || row.lease_id !== owner || !row.lease_until || row.lease_until.getTime() <= Date.now()) return false;
-        const original = await this.decodeSubscription(client, row);
-        for (const key of [
-          "ownerId",
-          "mode",
-          "service",
-          "triggerId",
-          "connectionId",
-          "providerAccountId",
-          "requestKey",
-        ] as const)
-          if (record[key] !== original[key]) throw new Error("Trigger identity is immutable");
-        ref = await this.encode(record);
-        return (
+        if (
+          !row ||
+          !isDeepStrictEqual(this.subscriptionTarget(row), this.subscriptionTarget(staged)) ||
+          row.lease_id !== owner ||
+          !row.lease_until ||
+          row.lease_until.getTime() <= Date.now()
+        )
+          return false;
+        await this.decodeSubscription(client, row);
+        const changed =
           (
             await client.query(
               `UPDATE integration_runtime.trigger_subscriptions SET secret_ref=$6,retired_secret_refs=array_append(retired_secret_refs,secret_ref),revision=revision+1,status=$7,reconcile_at=$8
-        WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND subject_user_id=$4 AND credential_owner_id=$5 AND revision=$9 AND lease_id=$10 AND lease_until>clock_timestamp()`,
+           WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND subject_user_id=$4 AND credential_owner_id=$5 AND revision=$9 AND lease_id=$10 AND lease_until>clock_timestamp()`,
               [
                 this.scope.tenantId,
                 this.scope.workspaceId,
@@ -564,14 +612,15 @@ export class PostgresTriggerStore implements TriggerStore {
                 owner,
               ],
             )
-          ).rowCount === 1
-        );
+          ).rowCount === 1;
+        if (changed) await this.custody.consume(client, ref, target);
+        return changed;
       });
-      if (!saved && ref) await this.recover(ref);
+      if (!saved) await this.custody.abandonWritten(ref, target);
       if (saved) await this.drainRetired("trigger_subscriptions", record.id);
       return saved;
     } catch (error) {
-      await this.recoverFailure(error, ref);
+      await this.custody.abandonWritten(ref, target);
       throw error;
     }
   }
@@ -620,24 +669,71 @@ export class PostgresTriggerStore implements TriggerStore {
     application: SourceApplication,
   ): Promise<boolean> {
     const { service, triggerId } = this.namespace(namespace);
-    let ref: string | undefined;
+    const read = async (client: PoolClient): Promise<ApplicationRow | undefined> =>
+      (
+        await client.query<ApplicationRow>(
+          `SELECT * FROM integration_runtime.trigger_source_applications WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND namespace=$4 AND id=$5 AND credential_owner_id=$6 FOR UPDATE`,
+          [...this.values(), namespace, id, this.scope.subjectUserId],
+        )
+      ).rows[0];
+    const bindingsForApplication = async (client: PoolClient): Promise<Binding[]> => {
+      const bindings: Binding[] = [];
+      for (const source of Object.values(application.sources))
+        if (!source.deleted) bindings.push(await this.binding(client, source.connectionId, service, source.accountId));
+      return bindings;
+    };
+    const staged = await withScopedClient(this.pool, this.scope, async (client) => {
+      const row = await read(client);
+      if (row?.retired || (row ? Number(row.revision) : null) !== revision) return null;
+      if (row) {
+        if (row.owner_id !== this.ownerId) throw new Error("Source envelope scope mismatch");
+        for (const binding of row.bindings)
+          if (!isDeepStrictEqual(await this.binding(client, binding.connectionId, service), binding))
+            throw new Error("Source connection lineage changed");
+        const payload = JSON.parse(await this.codec.decode(row.secret_ref)) as { namespace: string; id: string };
+        if (payload.namespace !== namespace || payload.id !== id) throw new Error("Source envelope scope mismatch");
+      }
+      return { row, bindings: await bindingsForApplication(client) };
+    });
+    if (!staged) return false;
+    const target: SecretCustodyTarget = {
+      kind: "trigger-source",
+      id,
+      dataUserId: this.dataUserId,
+      credentialOwnerId: this.scope.subjectUserId,
+      identity: {
+        namespace,
+        ownerId: this.ownerId,
+        actorUserId: this.scope.actorUserId,
+        service,
+        triggerId,
+        revision,
+        ownerActorUserId: staged.row?.actor_user_id ?? this.dataUserId,
+        previousRef: staged.row?.secret_ref ?? null,
+        bindings: staged.bindings,
+      },
+    };
+    const ref = await this.encode({ namespace, id, application }, target);
     try {
       const saved = await withScopedClient(this.pool, this.scope, async (client) => {
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
           JSON.stringify([this.scope.tenantId, this.scope.workspaceId, namespace, id]),
         ]);
-        const row = (
-          await client.query<ApplicationRow>(
-            `SELECT * FROM integration_runtime.trigger_source_applications WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND namespace=$4 AND id=$5 AND credential_owner_id=$6 FOR UPDATE`,
-            [...this.values(), namespace, id, this.scope.subjectUserId],
-          )
-        ).rows[0];
-        if (row?.retired || (row ? Number(row.revision) : null) !== revision) return false;
-        const bindings: Binding[] = [];
-        for (const source of Object.values(application.sources))
-          if (!source.deleted)
-            bindings.push(await this.binding(client, source.connectionId, service, source.accountId));
-        ref = await this.encode({ namespace, id, application });
+        const row = await read(client);
+        if (
+          row?.retired ||
+          (row ? Number(row.revision) : null) !== revision ||
+          (row?.secret_ref ?? null) !== (staged.row?.secret_ref ?? null)
+        )
+          return false;
+        if (row && (row.owner_id !== this.ownerId || !isDeepStrictEqual(row.bindings, staged.row?.bindings)))
+          throw new Error("Source identity changed");
+        if (row)
+          for (const binding of row.bindings)
+            if (!isDeepStrictEqual(await this.binding(client, binding.connectionId, service), binding))
+              throw new Error("Source connection lineage changed");
+        const bindings = await bindingsForApplication(client);
+        if (!isDeepStrictEqual(bindings, staged.bindings)) throw new Error("Source connection lineage changed");
         if (row)
           await client.query(
             `UPDATE integration_runtime.trigger_source_applications SET revision=revision+1,secret_ref=$6,retired_secret_refs=array_append(retired_secret_refs,secret_ref),bindings=$7 WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND namespace=$4 AND id=$5 AND credential_owner_id=$8`,
@@ -658,53 +754,71 @@ export class PostgresTriggerStore implements TriggerStore {
               JSON.stringify(bindings),
             ],
           );
+        await this.custody.consume(client, ref, target);
         return true;
       });
+      if (!saved) await this.custody.abandonWritten(ref, target);
       if (saved) await this.drainRetired("trigger_source_applications", id, namespace);
       return saved;
     } catch (error) {
-      await this.recoverFailure(error, ref);
+      await this.custody.abandonWritten(ref, target);
       throw error;
     }
   }
-  private async encode(value: unknown): Promise<string> {
+  private async encode(value: unknown, target: SecretCustodyTarget): Promise<string> {
     assertProcessingActive(this.scope);
     const json = JSON.stringify(value);
     if (Buffer.byteLength(json) > 1048576) throw new Error("Trigger private state exceeds 1 MiB");
-    return this.codec.encode(json);
+    return this.custody.encode(json, target);
   }
-  private async recoverFailure(error: unknown, ref: string | undefined): Promise<void> {
-    if (ref) await this.recover(ref);
-    else if (error instanceof OpenBaoError && error.code !== "OPENBAO_CONFLICT") await this.recover(error.path);
+  private subscriptionTarget(row: SubscriptionRow): SecretCustodyTarget {
+    return {
+      kind: "trigger-subscription",
+      id: row.id,
+      dataUserId: row.subject_user_id,
+      credentialOwnerId: row.credential_owner_id,
+      connectionId: row.connection_id,
+      identity: {
+        ownerId: row.owner_id,
+        actorUserId: row.actor_user_id,
+        mode: row.mode,
+        service: row.service,
+        triggerId: row.trigger_id,
+        requestKey: row.request_key,
+        localConnectionId: row.local_connection_id,
+        account: row.account_binding,
+        revision: row.revision,
+        previousRef: row.secret_ref,
+        leaseId: row.lease_id,
+        leaseUntil: row.lease_until?.toISOString() ?? null,
+      },
+    };
   }
-  private async recover(ref: string): Promise<void> {
-    await withSecretCleanup(this.scope, (scope) =>
-      withScopedClient(this.pool, scope, async (client) => {
-        const used = (
-          await client.query<{ used: boolean }>("SELECT integration_runtime.is_trigger_secret_referenced($1) AS used", [
-            ref,
-          ])
-        ).rows[0]?.used;
-        if (typeof used !== "boolean") throw new Error("Trigger secret reference proof is unavailable");
-        if (used) return;
-        try {
-          await this.codec.delete(ref);
-        } catch {
-          await client.query(
-            `INSERT INTO integration_runtime.trigger_secret_cleanup (tenant_id,workspace_id,subject_user_id,secret_ref) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
-            [...this.values(), ref],
-          );
-        }
-      }),
-    );
+  private applicationTarget(row: ApplicationRow): SecretCustodyTarget {
+    return {
+      kind: "trigger-source",
+      id: row.id,
+      dataUserId: row.subject_user_id,
+      credentialOwnerId: row.credential_owner_id,
+      identity: {
+        namespace: row.namespace,
+        ownerId: row.owner_id,
+        actorUserId: row.actor_user_id,
+        service: row.service,
+        triggerId: row.trigger_id,
+        revision: row.revision,
+        bindings: row.bindings,
+      },
+    };
   }
   private async drainRetired(
     table: "trigger_subscriptions" | "trigger_source_applications",
     id: string,
     namespace?: string,
   ): Promise<void> {
-    await withSecretCleanup(this.scope, (scope) =>
-      withScopedClient(this.pool, scope, async (client) => {
+    await withSecretCleanup(this.scope, async (scope) => {
+      const custody = new PostgresSecretCustodyStore(this.pool, scope, this.codec);
+      await withScopedClient(this.pool, scope, async (client) => {
         const row =
           table === "trigger_subscriptions"
             ? await this.subscription(client, id, true)
@@ -714,14 +828,19 @@ export class PostgresTriggerStore implements TriggerStore {
                   [...this.values(), id, namespace],
                 )
               ).rows[0];
-        if (!row) return;
-        for (const ref of row.retired_secret_refs) await this.codec.delete(ref);
+        if (!row || !row.retired_secret_refs.length) return;
+        const target =
+          table === "trigger_subscriptions"
+            ? this.subscriptionTarget(row as SubscriptionRow)
+            : this.applicationTarget(row as ApplicationRow);
+        await custody.adoptDeleting(client, row.retired_secret_refs, target);
         await client.query(
           `UPDATE integration_runtime.${table} SET retired_secret_refs='{}' WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND id=$4 ${namespace ? "AND namespace=$5" : ""}`,
           [scope.tenantId, scope.workspaceId, row.subject_user_id, id, ...(namespace ? [namespace] : [])],
         );
-      }),
-    );
+      });
+      await custody.drain(["trigger-subscription", "trigger-source"]);
+    });
   }
   /** Narrow internal read: proof comes from persisted actor↔owner↔connection lineage, not a caller owner parameter. */
   async getCleanupConnection(
@@ -841,10 +960,10 @@ export class PostgresTriggerStore implements TriggerStore {
       UNION SELECT unnest(retired_secret_refs) FROM integration_runtime.trigger_subscriptions WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3
       UNION SELECT secret_ref FROM integration_runtime.trigger_source_applications WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3
       UNION SELECT unnest(retired_secret_refs) FROM integration_runtime.trigger_source_applications WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3
-      UNION SELECT secret_ref FROM integration_runtime.trigger_secret_cleanup WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND NOT integration_runtime.is_trigger_secret_referenced(secret_ref)
+      UNION SELECT secret_ref FROM integration_runtime.secret_custody WHERE tenant_id=$1 AND workspace_id=$2 AND kind IN ('trigger-subscription','trigger-source') AND (subject_user_id=$3 OR actor_user_id=$3 OR credential_owner_id=$3 OR identity->>'ownerActorUserId'=$3::text OR identity->>'actorUserId'=$3::text)
     ) SELECT (SELECT count(*) FROM owned_refs) AS secrets,
       (SELECT count(*) FROM integration_runtime.trigger_source_applications WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3) AS sources,
-      ((SELECT count(*) FROM integration_runtime.trigger_secret_cleanup WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3)+(SELECT COALESCE(sum(cardinality(retired_secret_refs)),0) FROM integration_runtime.trigger_subscriptions WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3)+(SELECT COALESCE(sum(cardinality(retired_secret_refs)),0) FROM integration_runtime.trigger_source_applications WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3)) AS pending,
+      ((SELECT count(*) FROM integration_runtime.secret_custody WHERE tenant_id=$1 AND workspace_id=$2 AND kind IN ('trigger-subscription','trigger-source') AND (subject_user_id=$3 OR actor_user_id=$3 OR credential_owner_id=$3 OR identity->>'ownerActorUserId'=$3::text OR identity->>'actorUserId'=$3::text))+(SELECT COALESCE(sum(cardinality(retired_secret_refs)),0) FROM integration_runtime.trigger_subscriptions WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3)+(SELECT COALESCE(sum(cardinality(retired_secret_refs)),0) FROM integration_runtime.trigger_source_applications WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3)) AS pending,
       (SELECT count(*) FROM integration_runtime.trigger_execution_leases WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3) AS executions,
       (SELECT count(*) FROM integration_runtime.trigger_execution_leases WHERE tenant_id=$1 AND workspace_id=$2 AND (subject_user_id=$3 OR credential_owner_id=$3) AND lease_until>clock_timestamp()) AS active,
       (EXISTS(SELECT 1 FROM integration_runtime.trigger_subscriptions WHERE tenant_id=$1 AND workspace_id=$2 AND (subject_user_id=$3 OR credential_owner_id=$3) AND status<>'deleted') OR EXISTS(SELECT 1 FROM integration_runtime.trigger_source_applications WHERE tenant_id=$1 AND workspace_id=$2 AND (subject_user_id=$3 OR credential_owner_id=$3) AND NOT retired)) AS cleanup`,
@@ -933,7 +1052,8 @@ export class PostgresTriggerStore implements TriggerStore {
   }
   async purgeExactOwnedForLifecycle(): Promise<TriggerPurgeResult> {
     this.lifecycle(true);
-    return withScopedClient(this.pool, this.scope, async (client) => {
+    const detached = await withScopedClient(this.pool, this.scope, async (client) => {
+      await this.custody.assertNoPending(client, ["trigger-subscription", "trigger-source"]);
       const subscriptions = (
         await client.query<SubscriptionRow>(
           `SELECT * FROM integration_runtime.trigger_subscriptions WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 FOR UPDATE`,
@@ -960,28 +1080,18 @@ export class PostgresTriggerStore implements TriggerStore {
         ).rowCount
       )
         throw new Error("Trigger execution must drain before private state purge");
-      const pending = (
-        await client.query<{ secret_ref: string }>(
-          `SELECT secret_ref FROM integration_runtime.trigger_secret_cleanup WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 FOR UPDATE`,
-          this.values(),
-        )
-      ).rows;
-      let deletedTriggerSecrets = 0;
-      const ownedRefs = new Set(
-        [...subscriptions, ...applications].flatMap((row) => [row.secret_ref, ...row.retired_secret_refs]),
-      );
-      for (const ref of ownedRefs) if (await this.codec.delete(ref)) deletedTriggerSecrets++;
-      for (const { secret_ref: ref } of pending)
-        if (!ownedRefs.has(ref)) {
-          const used = (
-            await client.query<{ used: boolean }>(
-              "SELECT integration_runtime.is_trigger_secret_referenced($1) AS used",
-              [ref],
-            )
-          ).rows[0]?.used;
-          if (typeof used !== "boolean") throw new Error("Trigger secret reference proof is unavailable");
-          if (!used && (await this.codec.delete(ref))) deletedTriggerSecrets++;
-        }
+      for (const row of subscriptions)
+        await this.custody.adoptDeleting(
+          client,
+          [row.secret_ref, ...row.retired_secret_refs],
+          this.subscriptionTarget(row),
+        );
+      for (const row of applications)
+        await this.custody.adoptDeleting(
+          client,
+          [row.secret_ref, ...row.retired_secret_refs],
+          this.applicationTarget(row),
+        );
       const deletedSubscriptions =
         (
           await client.query(
@@ -996,10 +1106,6 @@ export class PostgresTriggerStore implements TriggerStore {
             this.values(),
           )
         ).rowCount ?? 0;
-      await client.query(
-        `DELETE FROM integration_runtime.trigger_secret_cleanup WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3`,
-        this.values(),
-      );
       const deletedExecutionLeases =
         (
           await client.query(
@@ -1007,7 +1113,9 @@ export class PostgresTriggerStore implements TriggerStore {
             this.values(),
           )
         ).rowCount ?? 0;
-      return { deletedSubscriptions, deletedSourceApplications, deletedTriggerSecrets, deletedExecutionLeases };
+      return { deletedSubscriptions, deletedSourceApplications, deletedExecutionLeases };
     });
+    const deletedTriggerSecrets = await this.custody.drain(["trigger-subscription", "trigger-source"]);
+    return { ...detached, deletedTriggerSecrets };
   }
 }

@@ -11,22 +11,29 @@ import type {
   SaasCandidate,
 } from "./connection-request-store.ts";
 import type { PostgresConnectionStore } from "./postgres-connection-store.ts";
+import type { SecretCustodyTarget } from "./postgres-secret-custody.ts";
 import type { Pool, PoolClient } from "pg";
 
 import { createHash, randomUUID } from "node:crypto";
 import { assertProcessingActive } from "../../core/cancellation.ts";
-import { OpenBaoError } from "../secrets/openbao-client.ts";
 import { withSecretCleanup } from "../secrets/secret-codec.ts";
+import { lockActiveManagedProject } from "./managed-project-admission.ts";
 import {
   queueSaasConnectionCleanup,
   scopedExternalUserId,
   lockManagedAccount,
   retireManagedAccount,
 } from "./postgres-saas-project-store.ts";
+import { PostgresSecretCustodyStore } from "./postgres-secret-custody.ts";
 import { withScopedClient } from "./scoped-query.ts";
+
+const requestSecretKinds = ["connection-request", "connection-candidate"] as const;
 
 interface RequestRow {
   id: string;
+  kind: "local" | "saas";
+  local_connection_id: string;
+  oauth_session_id: string;
   service: string;
   connection_name: string;
   retirement_generation: string;
@@ -54,6 +61,7 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
   private readonly scope: Readonly<SaasRequestScope>;
   private readonly codec: ISecretCodec;
   private readonly connections: PostgresConnectionStore;
+  private readonly custody: PostgresSecretCustodyStore;
   constructor(
     pool: Pool,
     scope: Readonly<SaasRequestScope>,
@@ -64,9 +72,27 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
     this.scope = scope;
     this.codec = codec;
     this.connections = connections;
+    this.custody = new PostgresSecretCustodyStore(pool, scope, codec);
   }
   private values(): unknown[] {
     return [this.scope.tenantId, this.scope.workspaceId, this.scope.subjectUserId];
+  }
+  private secretTarget(row: RequestRow): SecretCustodyTarget {
+    return {
+      kind: "connection-request",
+      id: row.id,
+      dataUserId: this.scope.subjectUserId,
+      credentialOwnerId: this.scope.subjectUserId,
+      identity: {
+        requestKind: row.kind,
+        service: row.service,
+        connectionName: row.connection_name,
+        retirementGeneration: row.retirement_generation,
+        localConnectionId: row.local_connection_id,
+        oauthSessionId: row.oauth_session_id,
+        actorUserId: this.scope.subjectUserId,
+      },
+    };
   }
   private interactive(owner?: string): void {
     assertProcessingActive(this.scope);
@@ -88,32 +114,31 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
     generation: string,
     state: string,
   ): Promise<void> {
-    let ref: string;
-    try {
-      ref = await this.codec.encode(JSON.stringify(pending));
-    } catch (error) {
-      if (error instanceof OpenBaoError && error.code !== "OPENBAO_CONFLICT")
-        await this.cleanupFailedPending(pending, kind, generation, state, error.path);
-      throw error;
-    }
+    const managed = kind === "saas" && "managedProjectId" in pending ? pending : undefined;
+    if (kind === "saas" && !managed) throw new Error("Managed request identity is missing");
+    const target: SecretCustodyTarget = {
+      kind: "connection-request",
+      id: pending.connectionRequestId,
+      dataUserId: this.scope.subjectUserId,
+      credentialOwnerId: this.scope.subjectUserId,
+      identity: {
+        requestKind: kind,
+        service: pending.service,
+        connectionName: pending.connectionName,
+        retirementGeneration: generation,
+        localConnectionId: this.scope.localConnectionId,
+        oauthSessionId: this.scope.oauthSessionId,
+        stateHash: hash(state),
+      },
+    };
+    const ref = await this.custody.encode(JSON.stringify(pending), target);
     let committed = false;
     try {
       await withScopedClient(this.pool, this.scope, async (client) => {
-        await client.query(
-          `SELECT generation FROM integration_runtime.connection_retirements WHERE tenant_id=$1 AND workspace_id=$2
-        AND local_connection_id=$3 AND service=$4 AND connection_name=$5 FOR UPDATE`,
-          [
-            this.scope.tenantId,
-            this.scope.workspaceId,
-            this.scope.localConnectionId,
-            pending.service,
-            pending.connectionName,
-          ],
-        );
         const current = (
           await client.query<{ generation: string }>(
             `SELECT generation FROM integration_runtime.connection_retirements WHERE tenant_id=$1 AND workspace_id=$2
-        AND local_connection_id=$3 AND service=$4 AND connection_name=$5`,
+        AND local_connection_id=$3 AND service=$4 AND connection_name=$5 FOR UPDATE`,
             [
               this.scope.tenantId,
               this.scope.workspaceId,
@@ -124,15 +149,16 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
           )
         ).rows[0];
         if (current?.generation !== generation) throw new Error("Connection retired during authorization");
-        await this.queueRequests(client, `local_connection_id=$4 AND phase<>'completed'`, [
+        if (managed && !(await lockActiveManagedProject(client, managed.managedProjectId)))
+          throw new Error("Managed project is unavailable for new authorization");
+        await this.queueRequests(client, `local_connection_id=$4 AND phase IN ('pending','processing')`, [
           this.scope.localConnectionId,
         ]);
         await client.query(
           `UPDATE integration_runtime.connection_requests SET phase='completed',status='failed',error_code='request_superseded',lease_id=NULL,lease_until=NULL,updated_at=now()
-        WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND local_connection_id=$4 AND phase<>'completed'`,
+        WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND local_connection_id=$4 AND phase IN ('pending','processing')`,
           [...this.values(), this.scope.localConnectionId],
         );
-        const managed = kind === "saas" ? (pending as PendingSaasRequest) : undefined;
         await client.query(
           `INSERT INTO integration_runtime.connection_requests
         (id,tenant_id,workspace_id,subject_user_id,local_connection_id,oauth_session_id,service,connection_name,retirement_generation,state_hash,kind,phase,status,secret_ref,expires_at,created_at,managed_project_id,provider_config_id,external_user_id,saas_phase)
@@ -156,52 +182,12 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
             managed ? "creating" : null,
           ],
         );
+        await this.custody.consume(client, ref, target);
       });
       committed = true;
     } finally {
-      if (!committed) await this.cleanupFailedPending(pending, kind, generation, state, ref);
+      if (!committed) await this.custody.abandonWritten(ref, target);
     }
-  }
-  private async cleanupFailedPending(
-    pending: PendingConnectionRequest | PendingSaasRequest,
-    kind: "local" | "saas",
-    generation: string,
-    state: string,
-    ref: string,
-  ): Promise<void> {
-    await withSecretCleanup(this.scope, async (cleanupScope) => {
-      let cleanupFailed = false;
-      try {
-        await this.codec.delete(ref);
-      } catch {
-        cleanupFailed = true;
-      }
-      await withScopedClient(this.pool, cleanupScope, async (client) => {
-        await client.query(
-          `INSERT INTO integration_runtime.connection_requests
-        (id,tenant_id,workspace_id,subject_user_id,local_connection_id,oauth_session_id,service,connection_name,retirement_generation,state_hash,kind,phase,status,secret_ref,expires_at,error_code)
-        VALUES ($4,$1,$2,$3,$5,$6,$7,$8,$9,$10,$11,'completed','failed',$12,$13,$14)
-        ON CONFLICT (id) DO UPDATE SET retired_secret_refs=array_append(connection_requests.retired_secret_refs,EXCLUDED.secret_ref),
-          phase=CASE WHEN connection_requests.secret_ref=EXCLUDED.secret_ref THEN 'completed' ELSE connection_requests.phase END,
-          status=CASE WHEN connection_requests.secret_ref=EXCLUDED.secret_ref THEN 'failed' ELSE connection_requests.status END,
-          error_code=CASE WHEN connection_requests.secret_ref=EXCLUDED.secret_ref THEN EXCLUDED.error_code ELSE connection_requests.error_code END`,
-          [
-            ...this.values(),
-            pending.connectionRequestId,
-            this.scope.localConnectionId,
-            this.scope.oauthSessionId,
-            pending.service,
-            pending.connectionName,
-            generation,
-            hash(state),
-            kind,
-            ref,
-            pending.expiresAt,
-            cleanupFailed ? "secret_cleanup_pending" : "metadata_write_failed",
-          ],
-        );
-      });
-    });
   }
   async get(id: string, owner: string): Promise<ConnectionRequest | undefined> {
     this.interactive(owner);
@@ -340,46 +326,38 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
     );
   }
   async saveSaasCandidate(lease: SaasRequestLease, candidate: SaasCandidate): Promise<boolean> {
-    let ref: string;
-    try {
-      ref = await this.codec.encode(JSON.stringify(candidate));
-    } catch (error) {
-      if (error instanceof OpenBaoError && error.code !== "OPENBAO_CONFLICT")
-        await this.cleanupCandidateRef(lease, error.path);
-      throw error;
-    }
+    this.interactive(lease.pending.owner);
+    const target: SecretCustodyTarget = {
+      kind: "connection-candidate",
+      id: lease.pending.connectionRequestId,
+      dataUserId: this.scope.subjectUserId,
+      credentialOwnerId: this.scope.subjectUserId,
+      identity: {
+        leaseId: lease.leaseId,
+        service: lease.pending.service,
+        connectionName: lease.pending.connectionName,
+        localConnectionId: this.scope.localConnectionId,
+        oauthSessionId: this.scope.oauthSessionId,
+      },
+    };
+    const ref = await this.custody.encode(JSON.stringify(candidate), target);
     let saved = false;
     try {
-      saved = await this.mutateLease(
-        lease,
-        `remote_account_id=$6,retired_secret_refs=CASE WHEN candidate_ref IS NULL THEN retired_secret_refs ELSE array_append(retired_secret_refs,candidate_ref) END,candidate_ref=$7,saas_phase='candidate'`,
-        [candidate.connectedAccountId, ref],
-        "AND saas_phase='pending'",
-      );
+      saved = await withScopedClient(this.pool, this.scope, async (client) => {
+        const changed = await this.mutateLeaseWithClient(
+          client,
+          lease,
+          `remote_account_id=$6,retired_secret_refs=CASE WHEN candidate_ref IS NULL THEN retired_secret_refs ELSE array_append(retired_secret_refs,candidate_ref) END,candidate_ref=$7,saas_phase='candidate'`,
+          [candidate.connectedAccountId, ref],
+          "AND saas_phase='pending'",
+        );
+        if (changed) await this.custody.consume(client, ref, target);
+        return changed;
+      });
       return saved;
     } finally {
-      if (!saved) await this.cleanupCandidateRef(lease, ref);
+      if (!saved) await this.custody.abandonWritten(ref, target);
     }
-  }
-  private async cleanupCandidateRef(lease: SaasRequestLease, ref: string): Promise<void> {
-    await withSecretCleanup(this.scope, async (cleanupScope) => {
-      let cleanupFailed = false;
-      try {
-        await this.codec.delete(ref);
-      } catch {
-        cleanupFailed = true;
-      }
-      await withScopedClient(this.pool, cleanupScope, async (client) => {
-        await client.query(
-          `UPDATE integration_runtime.connection_requests
-        SET retired_secret_refs=CASE WHEN $6 THEN array_append(retired_secret_refs,$5) ELSE retired_secret_refs END,
-          saas_phase=CASE WHEN candidate_ref=$5 THEN 'pending' ELSE saas_phase END,
-          candidate_ref=CASE WHEN candidate_ref=$5 THEN NULL ELSE candidate_ref END
-        WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND id=$4`,
-          [...this.values(), lease.pending.connectionRequestId, ref, cleanupFailed],
-        );
-      });
-    });
   }
   async releaseSaas(lease: SaasRequestLease, nextPollAt: number, failed = false): Promise<boolean> {
     return this.mutateLease(lease, `lease_id=NULL,lease_until=NULL,next_poll_at=$6,poll_attempts=$7`, [
@@ -407,65 +385,75 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
   async getSaasReturnUri(id: string, owner: string): Promise<string | undefined> {
     this.interactive(owner);
     const row = await this.row(id);
-    if (!row || row.phase !== "completed") return undefined;
+    if (!row || row.kind !== "saas" || row.phase !== "completed") return undefined;
     return (JSON.parse(await this.codec.decode(row.secret_ref)) as PendingSaasRequest).returnUri;
   }
   async cancelSaas(id: string, owner: string): Promise<void> {
     this.interactive(owner);
     if (!(await this.row(id))) return;
     await withScopedClient(this.pool, this.scope, async (client) => {
-      await this.queueRequests(client, `id=$4 AND phase<>'completed'`, [id]);
+      await this.queueRequests(client, `id=$4 AND phase IN ('pending','processing')`, [id]);
       await client.query(
         `UPDATE integration_runtime.connection_requests SET phase='completed',status='failed',error_code='request_cancelled',lease_id=NULL,lease_until=NULL,updated_at=now()
-      WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND id=$4 AND local_connection_id=$5 AND oauth_session_id=$6 AND kind='saas' AND phase<>'completed'`,
+      WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND id=$4 AND local_connection_id=$5 AND oauth_session_id=$6 AND kind='saas' AND phase IN ('pending','processing')`,
         [...this.values(), id, this.scope.localConnectionId, this.scope.oauthSessionId],
       );
     });
   }
   async expireSaas(now: number = Date.now()): Promise<void> {
     await withScopedClient(this.pool, this.scope, async (client) => {
-      await this.queueRequests(client, `expires_at<=to_timestamp($4::double precision/1000) AND phase<>'completed'`, [
-        now,
-      ]);
+      await this.queueRequests(
+        client,
+        `expires_at<=to_timestamp($4::double precision/1000) AND phase IN ('pending','processing')`,
+        [now],
+      );
       await client.query(
         `UPDATE integration_runtime.connection_requests SET phase='completed',status='expired',error_code='request_expired',lease_id=NULL,lease_until=NULL,updated_at=now()
-      WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND phase<>'completed' AND expires_at<=to_timestamp($4::double precision/1000)`,
+      WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND phase IN ('pending','processing') AND expires_at<=to_timestamp($4::double precision/1000)`,
         [...this.values(), now],
       );
     });
     const cutoff = now - 86400000;
-    const expired = await withScopedClient(
-      this.pool,
-      this.scope,
-      async (client) =>
-        (
-          await client.query<RequestRow>(
-            `SELECT * FROM integration_runtime.connection_requests WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3
-      AND phase='completed' AND expires_at<=to_timestamp($4::double precision/1000) ORDER BY id`,
-            [...this.values(), cutoff],
-          )
-        ).rows,
-    );
-    for (const row of expired) {
-      for (const ref of new Set([row.secret_ref, row.candidate_ref, ...row.retired_secret_refs])) {
-        assertProcessingActive(this.scope);
-        if (ref) await this.codec.delete(ref);
+    const retired = await withScopedClient(this.pool, this.scope, async (client) => {
+      const rows = (
+        await client.query<RequestRow>(
+          `SELECT * FROM integration_runtime.connection_requests WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3
+      AND phase IN ('completed','purging') AND expires_at<=to_timestamp($4::double precision/1000) ORDER BY id FOR UPDATE`,
+          [...this.values(), cutoff],
+        )
+      ).rows;
+      for (const row of rows) {
+        await this.custody.adoptDeleting(
+          client,
+          [row.secret_ref, ...row.retired_secret_refs, ...(row.candidate_ref ? [row.candidate_ref] : [])],
+          this.secretTarget(row),
+        );
       }
+      if (rows.length)
+        await client.query(
+          `UPDATE integration_runtime.connection_requests SET phase='purging',lease_id=NULL,lease_until=NULL,updated_at=now()
+      WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND id=ANY($4::uuid[])`,
+          [...this.values(), rows.map((row) => row.id)],
+        );
+      return rows.map((row) => row.id);
+    });
+    await this.custody.drain(requestSecretKinds);
+    if (retired.length)
       await withScopedClient(this.pool, this.scope, async (client) => {
         await client.query(
           `DELETE FROM integration_runtime.connection_requests WHERE tenant_id=$1 AND workspace_id=$2
-        AND subject_user_id=$3 AND id=$4 AND phase='completed' AND expires_at<=to_timestamp($5::double precision/1000)`,
-          [...this.values(), row.id, cutoff],
+        AND subject_user_id=$3 AND id=ANY($4::uuid[]) AND phase='purging' AND expires_at<=to_timestamp($5::double precision/1000)`,
+          [...this.values(), retired, cutoff],
         );
       });
-    }
   }
   async completeSaas(lease: SaasRequestLease): Promise<"connected" | "conflict" | "lease_lost"> {
     this.interactive(lease.pending.owner);
     const candidate = lease.candidate;
     if (!candidate) {
       const row = await this.row(lease.pending.connectionRequestId);
-      if (!row?.candidate_ref) return "lease_lost";
+      if (!row?.candidate_ref || row.kind !== "saas" || row.phase !== "pending" || row.lease_id !== lease.leaseId)
+        return "lease_lost";
       lease = { ...lease, candidate: JSON.parse(await this.codec.decode(row.candidate_ref)) as SaasCandidate };
     }
     const pending = lease.pending;
@@ -643,18 +631,32 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
     );
   }
   private async cleanupTerminal(id: string): Promise<void> {
-    const row = await this.row(id);
-    if (!row || row.phase !== "completed") return;
-    // Keep the return URI with managed requests until lifecycle retention cleanup.
-    const refs = row.saas_phase
-      ? [...row.retired_secret_refs, ...(row.candidate_ref ? [row.candidate_ref] : [])]
-      : [row.secret_ref, ...row.retired_secret_refs];
-    for (const ref of refs) if (ref) await this.codec.delete(ref);
-    await withScopedClient(this.pool, this.scope, async (client) => {
-      await client.query(
-        `UPDATE integration_runtime.connection_requests SET retired_secret_refs='{}',candidate_ref=NULL WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND id=$4 AND phase='completed'`,
-        [...this.values(), id],
-      );
+    await withSecretCleanup(this.scope, async (scope) => {
+      const custody = new PostgresSecretCustodyStore(this.pool, scope, this.codec);
+      await withScopedClient(this.pool, scope, async (client) => {
+        const row = (
+          await client.query<RequestRow>(
+            `SELECT * FROM integration_runtime.connection_requests
+          WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND id=$4
+            AND local_connection_id=$5 AND oauth_session_id=$6 AND phase='completed' FOR UPDATE`,
+            [...this.values(), id, this.scope.localConnectionId, this.scope.oauthSessionId],
+          )
+        ).rows[0];
+        if (!row) return;
+        // Managed callbacks retain their original return URI until the retention boundary.
+        const refs =
+          row.kind === "saas"
+            ? [...row.retired_secret_refs, ...(row.candidate_ref ? [row.candidate_ref] : [])]
+            : [row.secret_ref, ...row.retired_secret_refs];
+        await custody.adoptDeleting(client, refs, this.secretTarget(row));
+        await client.query(
+          `UPDATE integration_runtime.connection_requests
+          SET retired_secret_refs='{}',candidate_ref=NULL,phase=CASE WHEN kind='local' THEN 'purging' ELSE phase END,updated_at=now()
+          WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND id=$4 AND phase='completed'`,
+          [...this.values(), id],
+        );
+      });
+      await custody.drain(requestSecretKinds);
     });
   }
   async listExactOwnedForLifecycle(
@@ -675,7 +677,8 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
   }
   async purgeExactOwnedForLifecycle(): Promise<{ deletedRequests: number; deletedRequestSecrets: number }> {
     const rows = await withScopedClient(this.pool, this.scope, async (client) => {
-      await this.queueRequests(client, `phase<>'completed'`, []);
+      await this.custody.assertNoPending(client, requestSecretKinds);
+      await this.queueRequests(client, `phase IN ('pending','processing')`, []);
       await client.query(
         `UPDATE integration_runtime.connection_retirements r SET generation=gen_random_uuid()::text
       WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND EXISTS (SELECT 1 FROM integration_runtime.connection_requests q
@@ -683,35 +686,44 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
           AND q.service=r.service AND q.connection_name=r.connection_name AND q.subject_user_id=$3)`,
         this.values(),
       );
-      return (
+      const fenced = (
         await client.query<RequestRow>(
-          `UPDATE integration_runtime.connection_requests SET phase='completed',status='failed',lease_id=NULL,lease_until=NULL,error_code='owner_purged'
+          `UPDATE integration_runtime.connection_requests SET phase='purging',status='failed',lease_id=NULL,lease_until=NULL,error_code='owner_purged'
       WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 RETURNING *`,
           this.values(),
         )
       ).rows;
+      for (const row of fenced)
+        await this.custody.adoptDeleting(
+          client,
+          [row.secret_ref, ...row.retired_secret_refs, ...(row.candidate_ref ? [row.candidate_ref] : [])],
+          this.secretTarget(row),
+        );
+      return fenced.map((row) => row.id);
     });
-    let deletedRequestSecrets = 0;
-    for (const row of rows)
-      for (const ref of new Set([row.secret_ref, row.candidate_ref, ...row.retired_secret_refs])) {
-        this.scope.requestSignal?.throwIfAborted();
-        if (ref && (await this.codec.delete(ref))) deletedRequestSecrets++;
-      }
-    const deletedRequests = await withScopedClient(
-      this.pool,
-      this.scope,
-      async (client) =>
-        (
-          await client.query(
-            `DELETE FROM integration_runtime.connection_requests WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND error_code='owner_purged'`,
-            this.values(),
-          )
-        ).rowCount ?? 0,
-    );
+    const deletedRequestSecrets = await this.custody.drain(requestSecretKinds);
+    const deletedRequests = rows.length
+      ? await withScopedClient(
+          this.pool,
+          this.scope,
+          async (client) =>
+            (
+              await client.query(
+                `DELETE FROM integration_runtime.connection_requests WHERE tenant_id=$1 AND workspace_id=$2
+          AND subject_user_id=$3 AND id=ANY($4::uuid[]) AND phase='purging' AND error_code='owner_purged'`,
+                [...this.values(), rows],
+              )
+            ).rowCount ?? 0,
+        )
+      : 0;
     return { deletedRequests, deletedRequestSecrets };
   }
 
-  async countExactOwnedForLifecycle(): Promise<{ total: number; statuses: Array<{ status: string; count: number }> }> {
+  async countExactOwnedForLifecycle(): Promise<{
+    total: number;
+    statuses: Array<{ status: string; count: number }>;
+    secrets: number;
+  }> {
     return withScopedClient(this.pool, this.scope, async (client) => {
       const rows = (
         await client.query<{ status: string; count: string }>(
@@ -720,8 +732,21 @@ export class PostgresConnectionRequestStore implements ConnectionRequestStore {
           this.values(),
         )
       ).rows;
+      const references = (
+        await client.query<{ count: string }>(
+          `WITH refs AS (
+          SELECT secret_ref AS ref FROM integration_runtime.connection_requests WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3
+          UNION SELECT candidate_ref FROM integration_runtime.connection_requests WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND candidate_ref IS NOT NULL
+          UNION SELECT unnest(retired_secret_refs) FROM integration_runtime.connection_requests WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3
+          UNION SELECT secret_ref FROM integration_runtime.secret_custody WHERE tenant_id=$1 AND workspace_id=$2 AND kind=ANY($4::text[])
+            AND (subject_user_id=$3 OR actor_user_id=$3 OR credential_owner_id=$3)
+        ) SELECT count(*) AS count FROM refs`,
+          [...this.values(), requestSecretKinds],
+        )
+      ).rows[0];
+      if (!references) throw new Error("Request secret reference inventory is unavailable");
       const statuses = rows.map((row) => ({ status: row.status, count: Number(row.count) }));
-      return { total: statuses.reduce((sum, row) => sum + row.count, 0), statuses };
+      return { total: statuses.reduce((sum, row) => sum + row.count, 0), statuses, secrets: Number(references.count) };
     });
   }
 }

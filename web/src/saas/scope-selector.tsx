@@ -23,6 +23,7 @@ interface ScopeSelectorProps {
   tenants: AdminTenant[];
   value: AdminScope;
   disabled?: boolean;
+  workspaceOnly?: boolean;
   onChange(scope: AdminScope): void;
 }
 
@@ -72,21 +73,23 @@ export function ScopeSelector(props: ScopeSelectorProps): ReactNode {
             </SelectItem>
           ))}
         </ScopeSelect>
-        <ScopeSelect
-          wide
-          label={t("scope.subject")}
-          placeholder={t("scope.selectSubject")}
-          value={props.value.subjectId}
-          disabled={props.disabled || !workspace}
-          onChange={(value) => update("subjectId", value)}
-        >
-          {workspace?.subjects.map((item) => (
-            <SelectItem key={item.id} value={item.id}>
-              {item.displayName}
-              {item.email ? ` · ${item.email}` : ""}
-            </SelectItem>
-          ))}
-        </ScopeSelect>
+        {!props.workspaceOnly ? (
+          <ScopeSelect
+            wide
+            label={t("scope.subject")}
+            placeholder={t("scope.selectSubject")}
+            value={props.value.subjectId}
+            disabled={props.disabled || !workspace}
+            onChange={(value) => update("subjectId", value)}
+          >
+            {workspace?.subjects.map((item) => (
+              <SelectItem key={item.id} value={item.id}>
+                {item.displayName}
+                {item.email ? ` · ${item.email}` : ""}
+              </SelectItem>
+            ))}
+          </ScopeSelect>
+        ) : null}
       </div>
     </section>
   );

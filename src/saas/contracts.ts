@@ -438,6 +438,18 @@ export interface ActionPolicyControlPrincipal extends RequestProcessingContext {
   requestId: string;
   requestHash?: string;
 }
+
+/** Workspace technical configuration uses operator authority, never a customer identity or role. */
+export interface ConfigurationControlPrincipal extends RequestProcessingContext {
+  subjectKind: "policy_control";
+  subject: string;
+  purpose: "configuration:read" | "configuration:write";
+  permissions: string[];
+  target: Readonly<Extract<ActionPolicyTarget, { kind: "workspace" }>>;
+  requestId: string;
+  requestHash?: string;
+}
+export type ConnectorControlPrincipal = ActionPolicyControlPrincipal | ConfigurationControlPrincipal;
 export interface ActionPolicyServicePrincipal extends RequestProcessingContext {
   subjectKind: "service";
   subject: string;
@@ -583,6 +595,11 @@ export type ActionPolicyControlIdentityClaims = Omit<
   "subject" | "requestId" | keyof RequestProcessingContext
 > &
   PolicyIdentityMetadata;
+export type ConfigurationControlIdentityClaims = Omit<
+  ConfigurationControlPrincipal,
+  "subject" | "requestId" | keyof RequestProcessingContext
+> &
+  PolicyIdentityMetadata;
 export type ActionPolicyServiceIdentityClaims = Omit<
   ActionPolicyServicePrincipal,
   "subject" | "requestId" | keyof RequestProcessingContext
@@ -608,6 +625,29 @@ export const actionPolicyControlClaimsSchema: z.ZodType<ActionPolicyControlIdent
     }
   })
   .transform((claims): ActionPolicyControlIdentityClaims => ({
+    iss: claims.iss,
+    aud: claims.aud,
+    sub: claims.sub,
+    jti: claims.jti,
+    iat: claims.iat,
+    nbf: claims.nbf,
+    exp: claims.exp,
+    subjectKind: claims.subject_kind,
+    purpose: claims.purpose,
+    permissions: claims.permissions,
+    target: claims.policy_target,
+    requestHash: claims.request_hash,
+  }));
+const configurationControlClaimsSchema: z.ZodType<ConfigurationControlIdentityClaims> = z
+  .object({
+    ...policyIdentityWire,
+    subject_kind: z.literal("policy_control"),
+    purpose: z.enum(["configuration:read", "configuration:write"]),
+    policy_target: z.object({ kind: z.literal("workspace"), tenantId: z.uuid(), workspaceId: z.uuid() }).strict(),
+  })
+  .strict()
+  .superRefine(validatePolicyClaims)
+  .transform((claims): ConfigurationControlIdentityClaims => ({
     iss: claims.iss,
     aud: claims.aud,
     sub: claims.sub,
@@ -694,13 +734,28 @@ function validatePolicyClaims(
   const write =
     claims.purpose === "action-policy:write" ||
     claims.purpose === "action-policy:purge" ||
-    claims.purpose === "lifecycle:configuration:purge";
+    claims.purpose === "lifecycle:configuration:purge" ||
+    claims.purpose === "configuration:write";
   if (write !== (claims.request_hash !== undefined)) {
-    context.addIssue({ code: "custom", message: "only policy mutations require request_hash" });
+    context.addIssue({ code: "custom", message: "only mutations require request_hash" });
   }
 }
 
 export function parseActionPolicyControlClaims(value: unknown): ActionPolicyControlIdentityClaims {
+  return actionPolicyControlClaimsSchema.parse(value);
+}
+
+/** Parse only control-profile capabilities; execution/service claims are never admitted here. */
+export function parseControlIdentityClaims(
+  value: unknown,
+): ActionPolicyControlIdentityClaims | ConfigurationControlIdentityClaims {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "purpose" in value &&
+    (value.purpose === "configuration:read" || value.purpose === "configuration:write")
+  )
+    return configurationControlClaimsSchema.parse(value);
   return actionPolicyControlClaimsSchema.parse(value);
 }
 

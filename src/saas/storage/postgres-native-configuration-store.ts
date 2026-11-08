@@ -31,6 +31,14 @@ interface ConfigurationRow {
   created_at: Date;
   updated_at: Date;
 }
+interface ProjectRemovalRow {
+  id: string;
+  tenant_id: string;
+  workspace_id: string;
+  secret_ref: string | null;
+  pending_secret_ref: string | null;
+  retired_secret_refs: string[];
+}
 /** Workspace technical state uses the actual SERVICE target, never a fabricated customer/role. */
 export class PostgresNativeConfigurationStore {
   private readonly pool: Pool;
@@ -94,57 +102,85 @@ export class PostgresNativeConfigurationStore {
   ): Promise<NativeConfigurationPurgeResult> {
     this.assertPrincipal(principal, "lifecycle:configuration:purge");
     lifecyclePurgeInputSchema.parse({ correlationId });
-    return withNativeLifecycleClient(this.pool, principal, async (client) => {
-      const values = [
-        principal.target.tenantId,
-        principal.target.kind === "workspace" ? principal.target.workspaceId : null,
-      ];
-      // The tenant-exclusive lifecycle fence already blocks every scoped configuration writer.
+    const values = [
+      principal.target.tenantId,
+      principal.target.kind === "workspace" ? principal.target.workspaceId : null,
+    ];
+    const fenced = await withNativeLifecycleClient(this.pool, principal, async (client) => {
+      // The exclusive tenant fence protects the complete preflight and inactivity commit.
+      // SERVICE has no UPDATE policy; only the narrow SQL transition may retire its active refs.
       const projects = (
-        await client.query<{
-          id: string;
-          tenant_id: string;
-          workspace_id: string;
-          secret_ref: string;
-          retired_secret_refs: string[];
-        }>(
-          `SELECT id,tenant_id,workspace_id,secret_ref,retired_secret_refs
-      FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND ($2::text IS NULL OR workspace_id=$2) ORDER BY workspace_id,id`,
+        await client.query<ProjectRemovalRow>(
+          `SELECT id,tenant_id,workspace_id,secret_ref,pending_secret_ref,retired_secret_refs
+           FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND ($2::text IS NULL OR workspace_id=$2) ORDER BY workspace_id,id`,
           values,
         )
       ).rows;
+      if (projects.some((project) => project.pending_secret_ref !== null))
+        throw new Error("Unresolved project key writes must be reconciled before technical configuration removal");
       const references = await client.query(
         `SELECT 1 FROM (${nativeCustomerOwnerRowsSql}) r
-      WHERE tenant_id=$1 AND ($2::text IS NULL OR workspace_id=$2) LIMIT 1`,
+         WHERE tenant_id=$1 AND ($2::text IS NULL OR workspace_id=$2) LIMIT 1`,
         values,
       );
       if (references.rowCount)
         throw new Error("Customer references and remote cleanup must be purged before technical configuration");
-      let deletedSecrets = 0;
       for (const project of projects) {
-        const codec = this.secretCodecForScope({
-          tenantId: project.tenant_id,
-          workspaceId: project.workspace_id,
-          requestSignal: principal.requestSignal,
-          processingDeadlineMs: principal.processingDeadlineMs,
-        });
-        for (const ref of new Set([project.secret_ref, ...project.retired_secret_refs]))
-          if (await codec.delete(ref)) deletedSecrets++;
+        const transition = (
+          await client.query<{ fenced: boolean }>(
+            "SELECT integration_runtime.fence_managed_project_removal($1::uuid) AS fenced",
+            [project.id],
+          )
+        ).rows[0]?.fenced;
+        if (transition !== true) throw new Error("Project removal admission changed before its inactive fence");
+        if (project.secret_ref !== null)
+          project.retired_secret_refs = [project.secret_ref, ...project.retired_secret_refs];
       }
       const sources = await client.query(
         `DELETE FROM integration_runtime.oauth_sources WHERE tenant_id=$1 AND ($2::text IS NULL OR workspace_id=$2)`,
         values,
       );
-      const removed = await client.query(
-        `DELETE FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND ($2::text IS NULL OR workspace_id=$2)`,
+      return { projects, deletedSources: sources.rowCount ?? 0 };
+    });
+    // Only an acknowledged inactivity commit permits erasure; no SQL session spans KV calls.
+    let deletedSecrets = 0;
+    for (const project of fenced.projects) {
+      const codec = this.secretCodecForScope({
+        tenantId: project.tenant_id,
+        workspaceId: project.workspace_id,
+        requestSignal: principal.requestSignal,
+        processingDeadlineMs: principal.processingDeadlineMs,
+      });
+      for (const ref of new Set(project.retired_secret_refs)) if (await codec.delete(ref)) deletedSecrets++;
+    }
+    return withNativeLifecycleClient(this.pool, principal, async (client) => {
+      const current = (
+        await client.query<{ id: string }>(
+          `SELECT id FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND ($2::text IS NULL OR workspace_id=$2)`,
+          values,
+        )
+      ).rows;
+      const expected = new Set(fenced.projects.map((project) => project.id));
+      if (current.length !== expected.size || current.some((project) => !expected.has(project.id)))
+        throw new Error("Technical configuration changed during project secret erasure");
+      const references = await client.query(
+        `SELECT 1 FROM (${nativeCustomerOwnerRowsSql}) r
+         WHERE tenant_id=$1 AND ($2::text IS NULL OR workspace_id=$2) LIMIT 1`,
         values,
       );
-      return {
-        correlationId,
-        deletedProjects: removed.rowCount ?? 0,
-        deletedSources: sources.rowCount ?? 0,
-        deletedSecrets,
-      };
+      if (references.rowCount) throw new Error("Customer references appeared during technical configuration erasure");
+      let deletedProjects = 0;
+      for (const project of fenced.projects) {
+        const removed = await client.query(
+          `DELETE FROM integration_runtime.managed_projects
+           WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND secret_ref IS NULL
+             AND pending_secret_ref IS NULL AND retired_secret_refs=$4::text[] RETURNING id`,
+          [project.tenant_id, project.workspace_id, project.id, project.retired_secret_refs],
+        );
+        if (removed.rowCount !== 1) throw new Error("Project removal lost its exact inactive secret custody");
+        deletedProjects++;
+      }
+      return { correlationId, deletedProjects, deletedSources: fenced.deletedSources, deletedSecrets };
     });
   }
   private assertPrincipal(

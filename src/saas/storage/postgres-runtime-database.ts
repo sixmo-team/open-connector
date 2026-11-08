@@ -6,7 +6,7 @@ import type {
   ProviderCredentialRevocationOutcome,
   SaasProviderCredentialRevoker,
 } from "../connections/provider-credential-revoker.ts";
-import type { SaasRequestScope } from "../contracts.ts";
+import type { ConfigurationControlPrincipal, SaasRequestScope } from "../contracts.ts";
 import type { SeaweedFsTransitFileOptions } from "../files/seaweedfs-transit-files.ts";
 import type { ITransitFileService } from "../files/transit-file-store.ts";
 import type { ISecretCodec, NativeSecretScope } from "../secrets/secret-codec.ts";
@@ -58,7 +58,7 @@ const requiredRuntimeTables = [
   "managed_account_retirements",
   "trigger_subscriptions",
   "trigger_source_applications",
-  "trigger_secret_cleanup",
+  "secret_custody",
   "trigger_execution_leases",
   "action_defaults",
   "action_grants",
@@ -288,6 +288,11 @@ export interface SaasRuntimeDatabase {
   transitFiles?: ITransitFileService;
 }
 
+export interface SaasConfigurationControlDatabase {
+  saasProjects: PostgresSaasProjectStore;
+  secretCodec: ISecretCodec;
+}
+
 export interface SaasRuntimeDatabaseFactoryOptions {
   pool: Pool;
   catalog: Pick<CatalogStore, "actionsById" | "providers">;
@@ -311,6 +316,26 @@ export class SaasRuntimeDatabaseFactory {
     this.actionPolicy = new PostgresActionPolicyStore(options.pool, options.catalog);
     this.nativeConfiguration = new PostgresNativeConfigurationStore(options.pool, options.secretCodecForScope);
     this.nativeLifecycleInventory = new PostgresNativeLifecycleInventory(options.pool);
+  }
+
+  forConfigurationControl(principal: Readonly<ConfigurationControlPrincipal>): SaasConfigurationControlDatabase {
+    const permissions = [...principal.permissions];
+    Object.freeze(permissions);
+    const captured = Object.freeze({
+      ...principal,
+      permissions,
+      target: Object.freeze({ ...principal.target }),
+    });
+    const codec = this.options.secretCodecForScope({
+      tenantId: captured.target.tenantId,
+      workspaceId: captured.target.workspaceId,
+      requestSignal: captured.requestSignal,
+      processingDeadlineMs: captured.processingDeadlineMs,
+    });
+    return {
+      saasProjects: new PostgresSaasProjectStore(this.options.pool, captured, codec),
+      secretCodec: codec,
+    };
   }
 
   forScope(scope: Readonly<SaasRequestScope>): SaasRuntimeDatabase {

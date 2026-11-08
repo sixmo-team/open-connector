@@ -62,7 +62,7 @@ async function setup() {
     baseUrl: "https://saas.example",
     apiKey: "actual-workspace-key",
   };
-  await db.saasProjects.saveProject(project);
+  await db.saasProjects.saveProject(project, null);
   const pending = {
     connectionRequestId: crypto.randomUUID(),
     connectionId: crypto.randomUUID(),
@@ -220,7 +220,7 @@ describe.skipIf(!harness.enabled)("scoped native managed execution", () => {
     const f = await setup();
     const execution = f.execution();
     await execution.run();
-    await f.db.saasProjects.saveProject({ ...f.project, apiKey: "rotated-workspace-key" });
+    await f.db.saasProjects.saveProject({ ...f.project, apiKey: "rotated-workspace-key" }, f.project.id);
     await execution.run();
     const actions = f.requests.filter((item) => nativePath(item.url).startsWith("/actions/"));
     expect(new Headers(actions[1].init?.headers).get("authorization")).toBe("Bearer rotated-workspace-key");

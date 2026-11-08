@@ -1,14 +1,12 @@
 import type { SaasConfig } from "../config.ts";
-import type { ActionPolicyControlPrincipal, SaasPrincipal } from "../contracts.ts";
+import type { ConnectorControlPrincipal, SaasPrincipal } from "../contracts.ts";
 
 import { createRemoteJWKSet, decodeProtectedHeader, jwtVerify } from "jose";
 import { open } from "node:fs/promises";
-import { parseActionPolicyControlClaims, parseConnectorIdentityClaims } from "../contracts.ts";
+import { parseControlIdentityClaims, parseConnectorIdentityClaims } from "../contracts.ts";
 
 export type SaasJwtVerifier = (authorization: string | undefined) => Promise<Readonly<SaasPrincipal>>;
-export type ActionPolicyJwtVerifier = (
-  authorization: string | undefined,
-) => Promise<Readonly<ActionPolicyControlPrincipal>>;
+export type ControlJwtVerifier = (authorization: string | undefined) => Promise<Readonly<ConnectorControlPrincipal>>;
 
 export class SaasAuthorizationError extends Error {
   readonly status: 401 | 403;
@@ -122,14 +120,14 @@ export function createSaasJwtVerifier(
 }
 
 /** Control public keys are resolved separately and can never authorize customer execution. */
-export function createActionPolicyJwtVerifier(
+export function createControlJwtVerifier(
   config: Pick<
     SaasConfig,
     "policyControlJwksUrl" | "policyControlIssuer" | "policyControlAudience" | "policyControlActiveKid"
   >,
-): { verify: ActionPolicyJwtVerifier; checkJwks: () => Promise<boolean> } {
+): { verify: ControlJwtVerifier; checkJwks: () => Promise<boolean> } {
   const jwks = createRemoteJWKSet(new URL(config.policyControlJwksUrl), { timeoutDuration: 3_000 });
-  const verify: ActionPolicyJwtVerifier = async (authorization) => {
+  const verify: ControlJwtVerifier = async (authorization) => {
     const token = readBearerToken(authorization);
     try {
       const header = decodeProtectedHeader(token);
@@ -143,9 +141,20 @@ export function createActionPolicyJwtVerifier(
         clockTolerance: 0,
         maxTokenAge: 120,
       });
-      const claims = parseActionPolicyControlClaims(payload);
+      const claims = parseControlIdentityClaims(payload);
       const permissions = [...claims.permissions];
       Object.freeze(permissions);
+      if (claims.purpose === "configuration:read" || claims.purpose === "configuration:write") {
+        return Object.freeze({
+          subjectKind: claims.subjectKind,
+          subject: claims.sub,
+          purpose: claims.purpose,
+          permissions,
+          target: Object.freeze({ ...claims.target }),
+          requestId: claims.jti,
+          requestHash: claims.requestHash,
+        });
+      }
       return Object.freeze({
         subjectKind: claims.subjectKind,
         subject: claims.sub,

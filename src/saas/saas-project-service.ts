@@ -157,7 +157,7 @@ export class SaasProjectService {
       baseUrl,
       apiKey: parsed.data.projectApiKey,
     };
-    if (!(await this.options.store.saveProject(project)))
+    if (!(await this.options.store.saveProject(project, current?.id ?? null)))
       throw new SaasError(
         "oauth_source_mismatch",
         "The project identity changed. Reload the configuration before retrying.",
@@ -175,8 +175,7 @@ export class SaasProjectService {
   }
 
   async remove(): Promise<void> {
-    const project = await this.options.store.getProject();
-    if (project && !(await this.options.store.deleteProject(project.id)))
+    if (!(await this.options.store.deleteProject()))
       throw new SaasError(
         "oauth_source_in_use",
         "Clear service defaults, connections, pending requests and cleanup tasks before removing this project.",

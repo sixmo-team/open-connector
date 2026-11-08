@@ -39,6 +39,7 @@ import {
 import { emptyAdminData } from "./admin-model";
 import { AdminConnectionsPage } from "./connections-page";
 import { adminLangs, persistAdminLang } from "./i18n";
+import { ManagedProjectPage } from "./managed-project-page";
 import { AdminOverviewPage } from "./overview-page";
 import { AdminProvidersPage } from "./providers-page";
 import { AdminRunsPage } from "./runs-page";
@@ -52,9 +53,10 @@ const navItems = [
   { path: "/actions", labelKey: "nav.actions", icon: TerminalSquare },
   { path: "/connections", labelKey: "nav.connections", icon: Link2 },
   { path: "/runs", labelKey: "nav.runs", icon: Activity },
+  { path: "/managed-project", labelKey: "nav.managedProject", icon: Cable },
 ] as const;
 
-type AdminHeading = "overview" | "providers" | "actions" | "connections" | "runs";
+type AdminHeading = "overview" | "providers" | "actions" | "connections" | "runs" | "managed-project";
 
 const themeOptions = [
   { value: "auto", labelKey: "shell.themeMode.auto", icon: Monitor },
@@ -68,6 +70,7 @@ export function AdminApp(): ReactNode {
   const location = useLocation();
   const [params] = useSearchParams();
   const actionsPage = location.pathname === "/actions";
+  const managedPage = location.pathname === "/managed-project";
   const mode: AdminActionMode | null =
     params.get("mode") === "defaults" ? "defaults" : params.get("mode") === "individual" ? "individual" : null;
   const [scopes, setScopes] = useState<AdminScopes | null>(null);
@@ -108,6 +111,11 @@ export function AdminApp(): ReactNode {
     const context = contextKey;
     const current = () => generation === requestGeneration.current && currentContext.current === context;
     setData(emptyAdminData);
+    if (managedPage) {
+      setLoadingData(false);
+      setError(null);
+      return;
+    }
     if (
       !scopes ||
       (actionsPage
@@ -145,7 +153,7 @@ export function AdminApp(): ReactNode {
     return () => {
       requestGeneration.current += 1;
     };
-  }, [scope, scopes, actionsPage, mode, contextKey, refreshGeneration, t]);
+  }, [scope, scopes, actionsPage, managedPage, mode, contextKey, refreshGeneration, t]);
 
   function changeScope(nextScope: AdminScope): void {
     requestGeneration.current += 1;
@@ -225,6 +233,7 @@ export function AdminApp(): ReactNode {
       scope={scope}
       data={loadedContext === contextKey ? data : emptyAdminData}
       mode={mode}
+      refreshVersion={refreshGeneration}
       theme={theme}
       loading={loadingData}
       error={error}
@@ -243,6 +252,7 @@ interface AdminShellProps {
   scope: AdminScope;
   data: AdminData;
   mode: AdminActionMode | null;
+  refreshVersion: number;
   theme: ThemeMode;
   loading: boolean;
   error: string | null;
@@ -260,7 +270,10 @@ function AdminShell(props: AdminShellProps): ReactNode {
   const heading = headingForPath(location.pathname);
   const currentNavItem = navItems.find((item) => item.path === `/${heading}`) ?? navItems[0];
   const CurrentNavIcon = currentNavItem.icon;
-  const completeScope = isCompleteAdminScope(props.scope);
+  const managedPage = heading === "managed-project";
+  const completeScope = managedPage
+    ? Boolean(props.scope.tenantId && props.scope.workspaceId)
+    : isCompleteAdminScope(props.scope);
   const actionsPage = heading === "actions";
   const globalActions = actionsPage && props.mode === "defaults";
   const chooseMode = actionsPage && props.mode === null;
@@ -355,6 +368,7 @@ function AdminShell(props: AdminShellProps): ReactNode {
                   tenants={props.scopes.tenants}
                   value={props.scope}
                   disabled={props.loading}
+                  workspaceOnly={managedPage}
                   onChange={props.onScopeChange}
                 />
               ) : null}
@@ -365,7 +379,11 @@ function AdminShell(props: AdminShellProps): ReactNode {
                 <EmptyState
                   title={t(props.scopes.tenants.length > 0 ? "scope.incompleteTitle" : "scope.emptyTitle")}
                   description={t(
-                    props.scopes.tenants.length > 0 ? "scope.incompleteDescription" : "scope.emptyDescription",
+                    props.scopes.tenants.length > 0
+                      ? managedPage
+                        ? "managed.selectWorkspace"
+                        : "scope.incompleteDescription"
+                      : "scope.emptyDescription",
                   )}
                   icon={null}
                 />
@@ -401,6 +419,15 @@ function AdminShell(props: AdminShellProps): ReactNode {
                   />
                   <Route path="/connections" element={<AdminConnectionsPage connections={props.data.connections} />} />
                   <Route path="/runs" element={<AdminRunsPage runs={props.data.runs} />} />
+                  <Route
+                    path="/managed-project"
+                    element={
+                      <ManagedProjectPage
+                        key={JSON.stringify([props.scope.tenantId, props.scope.workspaceId, props.refreshVersion])}
+                        target={{ tenantId: props.scope.tenantId, workspaceId: props.scope.workspaceId }}
+                      />
+                    }
+                  />
                   <Route path="*" element={<Navigate to="/overview" replace />} />
                 </Routes>
               )}
@@ -494,7 +521,11 @@ function LanguageSelect(): ReactNode {
 
 function headingForPath(pathname: string): AdminHeading {
   const section = pathname.split("/").filter(Boolean)[0];
-  return section === "providers" || section === "actions" || section === "connections" || section === "runs"
+  return section === "providers" ||
+    section === "actions" ||
+    section === "connections" ||
+    section === "runs" ||
+    section === "managed-project"
     ? section
     : "overview";
 }

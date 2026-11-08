@@ -1,6 +1,7 @@
 import type { ResourceDefinition } from "../../triggers/common/integration.ts";
 import type { ConnectorProxy } from "../../triggers/common/proxy.ts";
 import type { TriggerSubscription } from "../../triggers/store.ts";
+import type { ISecretCodec } from "../secrets/secret-codec.ts";
 import type { PoolClient } from "pg";
 
 import { randomUUID } from "node:crypto";
@@ -13,6 +14,7 @@ import { executeResourceSubscription } from "../../triggers/resources.ts";
 import { executePersistentSource } from "../../triggers/sources/persistent.ts";
 import { TriggerRunner } from "../../triggers/trigger-runner.ts";
 import { canonicalActionRequestHash } from "../actions/canonical-request.ts";
+import { OpenBaoError } from "../secrets/openbao-client.ts";
 import { PostgresActionPolicyStore } from "../storage/postgres-action-policy-store.ts";
 import { withScopedClient } from "../storage/scoped-query.ts";
 import { createNativePostgresHarness } from "../testing/native-store-fixtures.ts";
@@ -66,6 +68,247 @@ async function fixture() {
 }
 
 describe.skipIf(!db.enabled)("native scoped trigger persistence", () => {
+  it("retains unresolved private-state custody when the original write lands after a missing-secret cleanup", async () => {
+    const { scope, record } = await fixture();
+    const values = new Map<string, string>();
+    let completeOriginalWrite: (() => void) | undefined;
+    const codec: ISecretCodec = {
+      encrypted: true,
+      async encode(payload, beforeWrite) {
+        const ref = `secret:${randomUUID()}`;
+        await beforeWrite?.(ref);
+        completeOriginalWrite = () => {
+          values.set(ref, payload);
+        };
+        throw new OpenBaoError("OPENBAO_UNAVAILABLE", ref);
+      },
+      async decode(ref) {
+        const value = values.get(ref);
+        if (value === undefined) throw new Error("Secret missing");
+        return value;
+      },
+      async delete(ref) {
+        return values.delete(ref);
+      },
+    };
+    const store = new PostgresTriggerStore(db.pool, scope, codec);
+    await expect(store.insertFlowTrigger(record)).rejects.toMatchObject({ code: "OPENBAO_UNAVAILABLE" });
+    if (!completeOriginalWrite) throw new Error("The fixture did not dispatch the original secret write");
+    completeOriginalWrite();
+    expect(await store.getFlowTrigger(record.id)).toBeNull();
+    const lifecycle = new PostgresTriggerStore(
+      db.pool,
+      { ...scope, purpose: "lifecycle:delete", permissions: ["lifecycle:delete"] },
+      codec,
+    );
+    expect(await lifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 1, pendingSecrets: 1 });
+    await expect(lifecycle.purgeExactOwnedForLifecycle()).rejects.toThrow();
+    expect(await lifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 1, pendingSecrets: 1 });
+    const unrelated = randomUUID();
+    for (const foreign of [
+      { tenantId: randomUUID() },
+      { workspaceId: randomUUID() },
+      { subjectUserId: unrelated, actorUserId: unrelated },
+    ]) {
+      const foreignLifecycle = new PostgresTriggerStore(
+        db.pool,
+        { ...scope, ...foreign, purpose: "lifecycle:delete", permissions: ["lifecycle:delete"] },
+        codec,
+      );
+      expect(await foreignLifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 0, pendingSecrets: 0 });
+      await expect(foreignLifecycle.purgeExactOwnedForLifecycle()).resolves.toMatchObject({ deletedTriggerSecrets: 0 });
+    }
+    expect(await lifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 1, pendingSecrets: 1 });
+  });
+
+  it.each(["update", "source"] as const)(
+    "keeps late unknown %s writes pending without erasing the active owner",
+    async (operation) => {
+      const { scope, record } = await fixture();
+      const values = new Map<string, string>();
+      let unknown = false;
+      let land: (() => void) | undefined;
+      let erases = 0;
+      const codec: ISecretCodec = {
+        encrypted: true,
+        async encode(payload, beforeWrite) {
+          const ref = `secret:${randomUUID()}`;
+          await beforeWrite?.(ref);
+          if (unknown) {
+            land = () => {
+              values.set(ref, payload);
+            };
+            throw new OpenBaoError("OPENBAO_UNAVAILABLE", ref);
+          }
+          values.set(ref, payload);
+          return ref;
+        },
+        async decode(ref) {
+          const value = values.get(ref);
+          if (value === undefined) throw new Error("Secret missing");
+          return value;
+        },
+        async delete(ref) {
+          erases++;
+          return values.delete(ref);
+        },
+      };
+      const store = new PostgresTriggerStore(db.pool, scope, codec);
+      const namespace = JSON.stringify([record.ownerId, "deployment", record.triggerId]);
+      const application = { secrets: {}, state: {}, sources: {} };
+      const lease = randomUUID();
+      if (operation === "update") {
+        await store.insertFlowTrigger(record);
+        expect(await store.claimFlowTrigger(record.id, lease, Date.now(), Date.now() + 60000)).toBe(true);
+      } else expect(await store.saveSourceApplication(namespace, record.id, null, application)).toBe(true);
+      unknown = true;
+      await expect(
+        operation === "update"
+          ? store.saveFlowTrigger({ ...record, checkpoint: { cursor: "unknown-next" } }, lease, Date.now())
+          : store.saveSourceApplication(namespace, record.id, 1, { ...application, state: { next: true } }),
+      ).rejects.toMatchObject({ code: "OPENBAO_UNAVAILABLE" });
+      if (!land) throw new Error("Original write was not dispatched");
+      land();
+      expect(erases).toBe(0);
+      if (operation === "update")
+        expect(await store.getFlowTrigger(record.id)).toMatchObject({ checkpoint: record.checkpoint });
+      else expect(await store.getSourceApplication(namespace, record.id)).toEqual({ revision: 1, application });
+      const lifecycle = new PostgresTriggerStore(
+        db.pool,
+        { ...scope, purpose: "lifecycle:delete", permissions: ["lifecycle:delete"] },
+        codec,
+      );
+      expect(await lifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 2, pendingSecrets: 1 });
+      await expect(lifecycle.purgeExactOwnedForLifecycle()).rejects.toThrow();
+      expect(erases).toBe(0);
+    },
+  );
+
+  it("clears custody only on authoritative original write rejection without issuing an erase", async () => {
+    const { scope, record } = await fixture();
+    let erases = 0;
+    const codec: ISecretCodec = {
+      encrypted: true,
+      async encode(_payload, beforeWrite) {
+        const ref = `secret:${randomUUID()}`;
+        await beforeWrite?.(ref);
+        throw new OpenBaoError("OPENBAO_UNAVAILABLE", ref, 403);
+      },
+      async decode() {
+        throw new Error("No private state was published");
+      },
+      async delete() {
+        erases++;
+        return false;
+      },
+    };
+    const store = new PostgresTriggerStore(db.pool, scope, codec);
+    await expect(store.insertFlowTrigger(record)).rejects.toMatchObject({ status: 403 });
+    expect(erases).toBe(0);
+    expect(await store.getFlowTrigger(record.id)).toBeNull();
+    const lifecycle = new PostgresTriggerStore(
+      db.pool,
+      { ...scope, purpose: "lifecycle:delete", permissions: ["lifecycle:delete"] },
+      codec,
+    );
+    expect(await lifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 0, pendingSecrets: 0 });
+    await expect(lifecycle.purgeExactOwnedForLifecycle()).resolves.toMatchObject({ deletedTriggerSecrets: 0 });
+  });
+
+  it("releases the two-client pool while three private writes are paused and returns the complete concurrent insert winner", async () => {
+    const { scope, record } = await fixture();
+    const { promise: paused, resolve: allPaused } = Promise.withResolvers<void>();
+    const { promise: resume, resolve: release } = Promise.withResolvers<void>();
+    let dispatched = 0;
+    const codec: ISecretCodec = {
+      encrypted: true,
+      encode: (payload, beforeWrite) =>
+        db.codec.encode(payload, async (ref) => {
+          await beforeWrite?.(ref);
+          if (++dispatched === 3) allPaused();
+          await resume;
+        }),
+      decode: (ref) => db.codec.decode(ref),
+      delete: (ref) => db.codec.delete(ref),
+    };
+    const store = new PostgresTriggerStore(db.pool, scope, codec);
+    const writes = [0, 1, 2].map((index) => store.insertFlowTrigger({ ...record, checkpoint: { contender: index } }));
+    try {
+      await paused;
+      await withScopedClient(db.pool, scope, (client) => client.query("SELECT 1"));
+    } finally {
+      release();
+    }
+    const results = await Promise.all(writes);
+    expect(results[1]).toEqual(results[0]);
+    expect(results[2]).toEqual(results[0]);
+    expect(await store.getFlowTrigger(record.id)).toEqual(results[0]);
+    const lifecycle = new PostgresTriggerStore(
+      db.pool,
+      { ...scope, purpose: "lifecycle:delete", permissions: ["lifecycle:delete"] },
+      codec,
+    );
+    expect(await lifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 1, pendingSecrets: 0 });
+  });
+
+  it.each(["revision", "lease", "binding"] as const)(
+    "revalidates %s after an acknowledged private write without publishing stale state",
+    async (change) => {
+      const { scope, record, store: initial } = await fixture();
+      await initial.insertFlowTrigger(record);
+      const lease = randomUUID();
+      expect(await initial.claimFlowTrigger(record.id, lease, Date.now(), Date.now() + 60000)).toBe(true);
+      const { promise: paused, resolve: started } = Promise.withResolvers<void>();
+      const { promise: resume, resolve: release } = Promise.withResolvers<void>();
+      const codec: ISecretCodec = {
+        encrypted: true,
+        async encode(payload, beforeWrite) {
+          const ref = await db.codec.encode(payload, beforeWrite);
+          started();
+          await resume;
+          return ref;
+        },
+        decode: (ref) => db.codec.decode(ref),
+        delete: (ref) => db.codec.delete(ref),
+      };
+      const store = new PostgresTriggerStore(db.pool, scope, codec);
+      const write = store.saveFlowTrigger({ ...record, checkpoint: { cursor: "stale" } }, lease, Date.now());
+      const outcome = write.then(
+        (saved) => ({ saved }),
+        (error: unknown) => ({ error }),
+      );
+      try {
+        await paused;
+        if (change === "revision")
+          expect(
+            await initial.saveFlowTrigger({ ...record, checkpoint: { cursor: "winner" } }, lease, Date.now()),
+          ).toBe(true);
+        else if (change === "lease") await initial.releaseFlowTrigger(record.id, lease);
+        else
+          await withScopedClient(db.pool, scope, (client) =>
+            client.query("UPDATE integration_runtime.connections SET status='reconnect_required' WHERE id=$1", [
+              record.connectionId,
+            ]),
+          );
+      } finally {
+        release();
+      }
+      const result = await outcome;
+      if (change === "binding") expect(result).toHaveProperty("error");
+      else expect(result).toEqual({ saved: false });
+      if (change !== "binding")
+        expect(await initial.getFlowTrigger(record.id)).toMatchObject({
+          checkpoint: change === "revision" ? { cursor: "winner" } : record.checkpoint,
+        });
+      const lifecycle = new PostgresTriggerStore(
+        db.pool,
+        { ...scope, purpose: "lifecycle:delete", permissions: ["lifecycle:delete"] },
+        codec,
+      );
+      expect(await lifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 1, pendingSecrets: 0 });
+    },
+  );
+
   it("isolates actual native state across tenant, workspace, owner and actor and fences concurrent claims", async () => {
     const { scope, store, record } = await fixture();
     await store.insertFlowTrigger(record);
@@ -241,16 +484,34 @@ describe.skipIf(!db.enabled)("native scoped trigger persistence", () => {
       value.status = "deleted";
       await save();
     });
+    const purger = new PostgresTriggerStore(
+      db.pool,
+      { ...scope, purpose: "lifecycle:delete", permissions: ["lifecycle:delete"] },
+      {
+        encrypted: true,
+        encode: (payload, beforeWrite) => db.codec.encode(payload, beforeWrite),
+        decode: (ref) => db.codec.decode(ref),
+        async delete(ref) {
+          // The external effect must see the committed no-read fence, even when deletion fails.
+          expect(await store.getFlowTrigger(record.id)).toBeNull();
+          expect(await lifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 1, pendingSecrets: 1 });
+          return db.codec.delete(ref);
+        },
+      },
+    );
     db.codec.failDelete = true;
     try {
-      await expect(lifecycle.purgeExactOwnedForLifecycle()).rejects.toThrow("cleanup");
+      await expect(purger.purgeExactOwnedForLifecycle()).rejects.toThrow();
     } finally {
       db.codec.failDelete = false;
     }
-    expect((await lifecycle.listExactOwnedForLifecycle(undefined, 100)).subscriptions).toEqual([
-      { id: record.id, service: "slackbot", triggerId: slackBotEvents.snapshot.key, status: "deleted" },
-    ]);
-    await expect(lifecycle.purgeExactOwnedForLifecycle()).resolves.toMatchObject({ deletedSubscriptions: 1 });
+    expect((await lifecycle.listExactOwnedForLifecycle(undefined, 100)).subscriptions).toEqual([]);
+    expect(await store.getFlowTrigger(record.id)).toBeNull();
+    expect(await lifecycle.countExactOwnedForLifecycle()).toMatchObject({ secrets: 1, pendingSecrets: 1 });
+    await expect(purger.purgeExactOwnedForLifecycle()).resolves.toMatchObject({
+      deletedSubscriptions: 0,
+      deletedTriggerSecrets: 1,
+    });
     await expect(runtime.connectionStore.delete("slackbot", "trigger")).resolves.toBeUndefined();
   });
   it("runs the native provider Source through private authority and real stores, and revocation denies persisted request-key replay", async () => {
@@ -545,7 +806,7 @@ describe.skipIf(!db.enabled)("native scoped trigger persistence", () => {
       baseUrl: "https://source.example",
       apiKey: "private-project-key",
     };
-    await runtime.saasProjects.saveProject(project);
+    await runtime.saasProjects.saveProject(project, null);
     const pending = {
       connectionRequestId: randomUUID(),
       connectionId: randomUUID(),

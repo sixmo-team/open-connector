@@ -9,6 +9,7 @@
 - Operator-managed common action rules and explicit per-user overrides are owned and enforced by OpenConnector. Unconfigured actions remain denied; new users inherit common rules without copied grants.
 - Scoped native managed authorization polling/cancellation, custom OAuth options, actor-private trigger state and complete native lifecycle metadata preserve the existing provider protocols behind the private service.
 - Native Marketplace creation is reachable through a signed private API; its selected actions never grant execution permission. Existing backend recovery invokes one actor-bound OO maintenance pass without owning connector queues or data.
+- Operator-only workspace project discovery, key binding/removal and provider-source selection are reachable through the existing protected console. A separate signed configuration-control purpose never impersonates a customer or grants execution authority.
 
 ### Changed
 
@@ -22,6 +23,7 @@
 - Exact managed-account deletion accepts an already-absent account on retry after a lost local commit. Rejected credentials, mismatched responses and unknown authorization requests still fail closed.
 - Managed-connection lifecycle recognizes the no-local-secret marker instead of requesting an invalid vault revision and blocking workspace deletion. Positive local secret revisions keep their existing ownership checks.
 - Restored metadata-only Feishu permission export, provider generation and local action-search commands without restoring the retired global server or permission model.
+- Private scoped catalog readiness and all six native project/source controls have explicit, validated wire contracts. Removing an unused project can resume secret erasure without first decrypting an already-erased key.
 
 ### Security
 
@@ -32,6 +34,11 @@
 - Shopify client-credential tokens are partitioned by verified tenant, workspace, credential owner and connection lineage. Pending mints remain within their original bounded processing root, and cancelled work cannot populate the cache.
 - Gmail attachment reads honor processing cancellation before send/draft writes. Native OAuth accepts Amazon's authorization-code alias while rejecting duplicate or conflicting callback codes before consuming state.
 - Revocation follows the separate canonical Slack user and bot providers, and rejects oversized form-encoded bodies before network dispatch.
+- OOMOL member enrichment no longer reuses another credential's cached profile merely because an upstream user ID matches.
+- Existing actor-scoped maintenance now also erases expired native transit objects, preserving live/neighbor objects and retry state on failed or cancelled object-store deletion.
+- Workspace project keys have durable pre-dispatch custody and an inactive removal fence. Failed publication or partial erasure cannot recreate active configuration, admit stale managed requests, or discard unresolved key references.
+- Trigger and authorization envelopes share exact per-attempt native custody. Unknown writes remain purge-blocking; confirmed publication and deleting custody serialize on the same row, with no SQL client held across external writes or erasure.
+- Protected management reconciles every mutation attempt and clears typed keys even after response loss. Guarded removal remains reachable after a failed read; native callback URI schemes and valid request-sized keys are preserved.
 - Updated only transitive `ip-address` and `qs` within their existing parent ranges to fix [IPv6 boundary/parser defects](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5) and [hostile query serialization](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw). Existing transport APIs are unchanged; no new direct dependency or resolution override.
 
 - The egress guard now always blocks the Azure platform endpoint `168.63.129.16` and the

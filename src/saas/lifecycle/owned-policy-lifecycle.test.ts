@@ -81,12 +81,15 @@ describe.skipIf(!harness.enabled)("actual owned policy lifecycle", () => {
     const runtime = harness.forScope({ purpose: "connection:write", permissions: ["connection:write"] });
     const local = await runtime.connectionStore.set("public_data", "local-owned", { authType: "no_auth" });
     const projectId = randomUUID();
-    await runtime.saasProjects.saveProject({
-      id: projectId,
-      projectId: randomUUID(),
-      baseUrl: "https://saas.example",
-      apiKey: "private-test-key",
-    });
+    await runtime.saasProjects.saveProject(
+      {
+        id: projectId,
+        projectId: randomUUID(),
+        baseUrl: "https://saas.example",
+        apiKey: "private-test-key",
+      },
+      null,
+    );
     const managedId = randomUUID();
     await withScopedClient(harness.pool, runtime.scope, (client) =>
       client.query(

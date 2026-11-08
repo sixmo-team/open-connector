@@ -1,5 +1,5 @@
 import type {
-  ActionPolicyControlPrincipal,
+  ConnectorControlPrincipal,
   ActionPolicyServicePrincipal,
   NativeLifecycleServicePrincipal,
   SaasPrincipal,
@@ -16,7 +16,7 @@ export interface SaasHonoEnvironment {
   Variables: {
     saasRequestScope: Readonly<SaasRequestScope>;
     controlPrincipal: Readonly<
-      ActionPolicyControlPrincipal | ActionPolicyServicePrincipal | NativeLifecycleServicePrincipal
+      ConnectorControlPrincipal | ActionPolicyServicePrincipal | NativeLifecycleServicePrincipal
     >;
   };
 }
@@ -82,16 +82,20 @@ export function getSaasRequestScope(
 
 /** Policy management and lifecycle services do not masquerade as tenant execution scopes. */
 export function requireScopedControlPurpose(
-  verifier: (authorization: string | undefined) => Promise<Readonly<SaasPrincipal | ActionPolicyControlPrincipal>>,
+  verifier: (authorization: string | undefined) => Promise<Readonly<SaasPrincipal | ConnectorControlPrincipal>>,
   expectedPurpose:
-    | ActionPolicyControlPrincipal["purpose"]
+    | ConnectorControlPrincipal["purpose"]
     | ActionPolicyServicePrincipal["purpose"]
     | NativeLifecycleServicePrincipal["purpose"],
 ): MiddlewareHandler<SaasHonoEnvironment> {
   return async (context, next): Promise<Response | void> => {
     try {
       const principal = await verifier(context.req.header("authorization"));
-      const control = expectedPurpose === "action-policy:read" || expectedPurpose === "action-policy:write";
+      const control =
+        expectedPurpose === "action-policy:read" ||
+        expectedPurpose === "action-policy:write" ||
+        expectedPurpose === "configuration:read" ||
+        expectedPurpose === "configuration:write";
       if (
         !("subjectKind" in principal) ||
         (control ? principal.subjectKind !== "policy_control" : principal.subjectKind !== "service") ||
@@ -104,7 +108,7 @@ export function requireScopedControlPurpose(
       context.set(
         "controlPrincipal",
         captureRequestProcessing<
-          ActionPolicyControlPrincipal | ActionPolicyServicePrincipal | NativeLifecycleServicePrincipal
+          ConnectorControlPrincipal | ActionPolicyServicePrincipal | NativeLifecycleServicePrincipal
         >(principal),
       );
     } catch (error) {

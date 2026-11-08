@@ -155,7 +155,7 @@ function fixture() {
       if (!principal) throw new SaasAuthorizationError(401);
       return principal;
     },
-    verifyActionPolicyJwt: async (header: string | undefined) => {
+    verifyControlJwt: async (header: string | undefined) => {
       const principal = controls.get(header ?? "");
       if (!principal) throw new SaasAuthorizationError(401);
       return principal;

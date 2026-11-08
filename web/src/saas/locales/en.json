@@ -19,6 +19,7 @@
     "providers": "Providers",
     "actions": "Actions",
     "connections": "Connections",
+    "managedProject": "Managed project",
     "runs": "Runs"
   },
   "shell": {
@@ -37,6 +38,7 @@
       "providers": "Provider availability",
       "actions": "Action grants",
       "connections": "Safe connection metadata",
+      "managed-project": "Workspace managed project",
       "runs": "Action runs"
     }
   },
@@ -65,6 +67,37 @@
     "loadScopes": "Could not load authorized scopes.",
     "loadData": "Could not load this scope. It may no longer be authorized.",
     "grant": "Could not update the action grant."
+  },
+  "managed": {
+    "title": "Managed project and OAuth sources",
+    "description": "Operator-only technical configuration for this workspace. This does not grant customer action permissions.",
+    "selectWorkspace": "Choose a tenant and workspace; no customer user is required.",
+    "baseUrl": "Project base URL",
+    "key": "New project API key",
+    "keyHint": "The saved key is never loaded or displayed. Enter a key only to configure or replace the project.",
+    "configure": "Configure project",
+    "remove": "Remove project",
+    "status": "Project status",
+    "cleanup": "Cleanup pending / manual",
+    "paused": "Paused",
+    "sources": "Provider OAuth source",
+    "service": "Provider service",
+    "currentSource": "Current source",
+    "readSource": "Load source",
+    "selectSource": "Select OAuth source",
+    "local": "Local OAuth",
+    "managed": "Managed project",
+    "saveSource": "Save source",
+    "loadError": "Could not load the project or provider configurations. Refresh to retry.",
+    "sourceError": "Could not load this provider source. Check the service and refresh.",
+    "saveError": "Could not save the configuration. No secret details are displayed. Refresh before retrying.",
+    "conflict": "The configuration is in use or changed. Existing connections and pending cleanup must be resolved before removal or replacement.",
+    "statuses": {
+      "unconfigured": "Not configured",
+      "available": "Available",
+      "unavailable": "Unavailable",
+      "auth_error": "Project authentication failed"
+    }
   },
   "overview": {
     "scopeReady": "Scoped administration data",

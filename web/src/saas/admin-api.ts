@@ -19,6 +19,77 @@ let csrfToken = "";
 
 type ScopeResource = "overview" | "providers" | "actions" | "connections" | "runs";
 
+export type AdminWorkspaceTarget = Pick<AdminScope, "tenantId" | "workspaceId">;
+export interface ManagedProjectState {
+  configured: boolean;
+  managedProjectId: string | null;
+  projectId: string | null;
+  baseUrl: string | null;
+  status: "unconfigured" | "available" | "unavailable" | "auth_error";
+  cleanup: { pending: number; manual: number; paused: boolean };
+}
+export interface ManagedProviderConfig {
+  id: string;
+  service: string;
+  displayName: string;
+  callbackUrl: string;
+  effectiveScopes: string[];
+  actionIds: string[];
+  proxyAvailable: boolean;
+}
+export type ManagedSourceInput = { mode: "local" } | { mode: "saas"; providerConfigId: string };
+export type ManagedSource =
+  | { mode: "local" }
+  | { mode: "saas"; managedProjectId: string; projectId: string; providerConfigId: string };
+
+function managedPath(target: AdminWorkspaceTarget, suffix = ""): string {
+  return `${adminRoot}/managed-project${suffix}?${new URLSearchParams({ tenantId: target.tenantId, workspaceId: target.workspaceId })}`;
+}
+
+export async function readManagedProject(
+  target: AdminWorkspaceTarget,
+  fetcher: typeof fetch = fetch,
+): Promise<ManagedProjectState> {
+  return requestJson(managedPath(target), fetcher);
+}
+
+export async function configureManagedProject(
+  target: AdminWorkspaceTarget,
+  input: { baseUrl: string; projectApiKey: string },
+  reason: string,
+): Promise<ManagedProjectState> {
+  return mutateJson("PUT", managedPath(target), { ...input, reason: validateReason(reason) }, fetch, true);
+}
+
+export async function removeManagedProject(target: AdminWorkspaceTarget, reason: string): Promise<void> {
+  return mutateJson("DELETE", managedPath(target), { reason: validateReason(reason) }, fetch, false);
+}
+
+export async function listManagedProviderConfigs(
+  target: AdminWorkspaceTarget,
+): Promise<{ projectId: string; providerConfigs: ManagedProviderConfig[] }> {
+  return requestJson(managedPath(target, "/provider-configs"), fetch);
+}
+
+export async function readManagedSource(target: AdminWorkspaceTarget, service: string): Promise<ManagedSource> {
+  return requestJson(managedPath(target, `/sources/${encodeURIComponent(service)}`), fetch);
+}
+
+export async function setManagedSource(
+  target: AdminWorkspaceTarget,
+  service: string,
+  input: ManagedSourceInput,
+  reason: string,
+): Promise<ManagedSource> {
+  return mutateJson(
+    "PUT",
+    managedPath(target, `/sources/${encodeURIComponent(service)}`),
+    { ...input, reason: validateReason(reason) },
+    fetch,
+    true,
+  );
+}
+
 interface ScopeRow {
   tenantId: string;
   tenantName: string;
@@ -319,9 +390,19 @@ function validateReason(reason: string): string {
 }
 
 async function putActionChange(path: string, body: object, fetcher: typeof fetch): Promise<void> {
+  await mutateJson<void>("PUT", path, body, fetcher, false);
+}
+
+async function mutateJson<T>(
+  method: "PUT" | "DELETE",
+  path: string,
+  body: object,
+  fetcher: typeof fetch,
+  parseBody: boolean,
+): Promise<T> {
   if (!csrfToken) throw new Error("Admin CSRF token is unavailable");
   const response = await fetcher(path, {
-    method: "PUT",
+    method,
     credentials: "same-origin",
     mode: "same-origin",
     redirect: "error",
@@ -333,7 +414,7 @@ async function putActionChange(path: string, body: object, fetcher: typeof fetch
     },
     body: JSON.stringify(body),
   });
-  await readResponse<void>(response, false);
+  return readResponse<T>(response, parseBody);
 }
 
 function toAdminProvider(provider: RawProvider): AdminProvider {

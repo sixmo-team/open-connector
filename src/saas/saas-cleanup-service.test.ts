@@ -24,7 +24,7 @@ async function setup() {
     baseUrl: "https://saas.example",
     apiKey: "private-key",
   };
-  await db.saasProjects.saveProject(project);
+  await db.saasProjects.saveProject(project, null);
   let requestId = "";
   const behavior = {
     requestStatus: "connected",
@@ -205,7 +205,7 @@ it("pauses the project on a rejected key and resumes after key replacement", asy
   expect(f.fetcher).toHaveBeenCalledTimes(1);
   expect((await f.db.saasProjects.getCleanupStats()).paused).toBe(true);
   expect(JSON.stringify(f.warn.mock.calls)).not.toContain("private");
-  await f.db.saasProjects.saveProject({ ...f.project, apiKey: "new-key" });
+  await f.db.saasProjects.saveProject({ ...f.project, apiKey: "new-key" }, f.project.id);
   f.behavior.status = 200;
   f.advance(61_000);
   await worker.run();

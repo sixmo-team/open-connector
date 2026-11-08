@@ -24,8 +24,9 @@ export class MemorySecretCodec implements ISecretCodec {
   constructor(encrypted = true) {
     this.encrypted = encrypted;
   }
-  async encode(value: string): Promise<string> {
+  async encode(value: string, beforeWrite?: (allocatedRef: string) => Promise<void>): Promise<string> {
     const ref = `secret:${randomUUID()}`;
+    if (beforeWrite) await beforeWrite(ref);
     this.values.set(ref, value);
     return ref;
   }

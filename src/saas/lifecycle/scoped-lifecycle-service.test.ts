@@ -243,7 +243,7 @@ function createHarness(
         return { items: [] };
       },
       async countExactOwnedForLifecycle() {
-        return { total: 0, statuses: [] };
+        return { total: 0, statuses: [], secrets: 0 };
       },
       async purgeExactOwnedForLifecycle() {
         return { deletedRequests: 0, deletedRequestSecrets: 0 };
@@ -376,6 +376,7 @@ describe("ScopedLifecycleService export", () => {
       actionGrants: 0,
       actionPolicyAudit: 0,
       connectionRequests: { total: 0, statuses: [] },
+      requestSecrets: 0,
       saasCleanup: { total: 0, statuses: [] },
       connectionRetirements: 0,
       triggerSubscriptions: { total: 0, statuses: [] },

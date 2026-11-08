@@ -1,12 +1,16 @@
 import type { OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts";
 import type { NativeLifecycleServicePrincipal, SaasRequestScope } from "../contracts.ts";
+import type { ISecretCodec } from "../secrets/secret-codec.ts";
 import type { PendingConnectionRequest, PendingSaasRequest } from "./connection-request-store.ts";
 
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { SaasCleanupService } from "../saas-cleanup-service.ts";
 import { SaasClient } from "../saas-client.ts";
+import { OpenBaoError } from "../secrets/openbao-client.ts";
 import { createNativePostgresHarness } from "../testing/native-store-fixtures.ts";
+import { PostgresConnectionRequestStore } from "./postgres-connection-request-store.ts";
+import { PostgresConnectionStore } from "./postgres-connection-store.ts";
 import { scopedExternalUserId } from "./postgres-saas-project-store.ts";
 import { withScopedClient } from "./scoped-query.ts";
 const harness = createNativePostgresHarness();
@@ -19,7 +23,103 @@ const credential = {
   metadata: { providerAccountVerified: true },
 };
 
+function delayedSecretWrite(base: ISecretCodec): { codec: ISecretCodec; land(): void } {
+  const values = new Map<string, string>();
+  let complete: (() => void) | undefined;
+  return {
+    codec: {
+      encrypted: true,
+      async encode(payload, beforeWrite) {
+        const ref = `secret:${randomUUID()}`;
+        await beforeWrite?.(ref);
+        complete = () => {
+          values.set(ref, payload);
+        };
+        throw new OpenBaoError("OPENBAO_UNAVAILABLE", ref);
+      },
+      async decode(ref) {
+        const value = values.get(ref);
+        return value === undefined ? base.decode(ref) : value;
+      },
+      async delete(ref) {
+        return values.delete(ref) || (await base.delete(ref));
+      },
+    },
+    land() {
+      if (!complete) throw new Error("The fixture did not dispatch the original secret write");
+      complete();
+    },
+  };
+}
+
 describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () => {
+  it("keeps an unknown initial write in native inventory after expiry without publishing an incomplete request", async () => {
+    const db = harness.forScope();
+    const late = delayedSecretWrite(harness.codec);
+    if (!(db.connectionStore instanceof PostgresConnectionStore)) throw new Error("Expected native PostgreSQL fixture");
+    const store = new PostgresConnectionRequestStore(harness.pool, db.scope, late.codec, db.connectionStore);
+    const pending: PendingConnectionRequest = {
+      service: "example",
+      connectionName: "late-pending",
+      state: randomUUID(),
+      createdAt: new Date().toISOString(),
+      retirementGeneration: await db.connectionStore.getRetirementGeneration("example", "late-pending"),
+      connectionRequestId: randomUUID(),
+      owner: db.scope.subjectUserId,
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+    };
+    await expect(store.create(pending)).rejects.toMatchObject({ code: "OPENBAO_UNAVAILABLE" });
+    late.land();
+    await store.expireSaas(Date.now() + 2 * 86400000);
+    expect(await store.countExactOwnedForLifecycle()).toMatchObject({ total: 0, secrets: 1 });
+    await expect(store.purgeExactOwnedForLifecycle()).rejects.toThrow();
+    expect(await store.countExactOwnedForLifecycle()).toMatchObject({ total: 0, secrets: 1 });
+  });
+
+  it("retains an unknown candidate independently of its expired parent and preserves the ordinary managed return URI", async () => {
+    const db = harness.forScope();
+    const project = {
+      id: randomUUID(),
+      projectId: "candidate-project",
+      baseUrl: "https://saas.example",
+      apiKey: "private-project-key",
+    };
+    await db.saasProjects.saveProject(project, null);
+    const pending: PendingSaasRequest = {
+      connectionRequestId: randomUUID(),
+      connectionId: randomUUID(),
+      owner: db.scope.subjectUserId,
+      service: "example",
+      connectionName: "late-candidate",
+      managedProjectId: project.id,
+      providerConfigId: "config",
+      externalUserId: db.saasProjects.externalUserId(),
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      returnUri: "https://customer.example/finished",
+    };
+    const lease = await db.connectionRequests.createSaas(pending);
+    expect(await db.connectionRequests.saveSaasRequest(lease, "remote-request")).toBe(true);
+    const late = delayedSecretWrite(harness.codec);
+    if (!(db.connectionStore instanceof PostgresConnectionStore)) throw new Error("Expected native PostgreSQL fixture");
+    const store = new PostgresConnectionRequestStore(harness.pool, db.scope, late.codec, db.connectionStore);
+    await expect(
+      store.saveSaasCandidate(lease, {
+        connectedAccountId: "late-account",
+        profile: credential.profile,
+        status: "active",
+        comment: null,
+      }),
+    ).rejects.toMatchObject({ code: "OPENBAO_UNAVAILABLE" });
+    late.land();
+    await store.cancelSaas(pending.connectionRequestId, pending.owner);
+    expect(await store.getSaasReturnUri(pending.connectionRequestId, pending.owner)).toBe(pending.returnUri);
+    await store.expireSaas(Date.now() + 2 * 86400000);
+    expect(await store.getSaasReturnUri(pending.connectionRequestId, pending.owner)).toBeUndefined();
+    expect(await store.countExactOwnedForLifecycle()).toMatchObject({ total: 0, secrets: 1 });
+    await expect(store.purgeExactOwnedForLifecycle()).rejects.toThrow();
+  });
+
   it("binds a state to exact session, alias, owner and tenant before consuming private native state", async () => {
     const db = harness.forScope();
     const state: OAuthAuthorizationState = {
@@ -168,7 +268,7 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
     const claimed = await db.connectionRequests.claim(pending.state);
     harness.codec.failDelete = true;
     try {
-      await expect(db.connectionRequests.purgeExactOwnedForLifecycle()).rejects.toThrow("cleanup");
+      await expect(db.connectionRequests.purgeExactOwnedForLifecycle()).rejects.toThrow();
     } finally {
       harness.codec.failDelete = false;
     }
@@ -182,6 +282,93 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
     });
   });
 
+  it("lets an authorized lifecycle admin finish a user's failed terminal secret cleanup without replacing its audit actor", async () => {
+    const db = harness.forScope();
+    const pending: PendingConnectionRequest = {
+      service: "example",
+      connectionName: "admin-cleanup-retry",
+      state: randomUUID(),
+      createdAt: new Date().toISOString(),
+      retirementGeneration: await db.connectionStore.getRetirementGeneration("example", "admin-cleanup-retry"),
+      connectionRequestId: randomUUID(),
+      owner: db.scope.subjectUserId,
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+    };
+    await db.connectionRequests.create(pending);
+    expect(await db.connectionRequests.claim(pending.state)).toEqual(pending);
+    const admin = harness.forScope({
+      ...db.scope,
+      actorUserId: randomUUID(),
+      purpose: "lifecycle:delete",
+      permissions: ["lifecycle:delete"],
+      requestHash: "a".repeat(43),
+      localConnectionId: undefined,
+      oauthSessionId: undefined,
+    });
+    harness.codec.failDelete = true;
+    let ref = "";
+    try {
+      await expect(
+        db.connectionRequests.fail(pending.connectionRequestId, "provider_rejected", "Authorization failed"),
+      ).rejects.toThrow("Secret cleanup unavailable");
+      const custody = await withScopedClient(
+        harness.pool,
+        admin.scope,
+        async (client) =>
+          (
+            await client.query("SELECT * FROM integration_runtime.secret_custody WHERE target_id=$1", [
+              pending.connectionRequestId,
+            ])
+          ).rows,
+      );
+      expect(custody).toMatchObject([
+        {
+          actor_user_id: db.scope.actorUserId,
+          subject_user_id: db.scope.subjectUserId,
+          credential_owner_id: db.scope.subjectUserId,
+          state: "deleting",
+        },
+      ]);
+      ref = custody[0].secret_ref;
+      expect(JSON.parse(await harness.codec.decode(ref))).toEqual(pending);
+      expect(
+        await withScopedClient(
+          harness.pool,
+          admin.scope,
+          async (client) =>
+            (
+              await client.query("SELECT phase,secret_ref FROM integration_runtime.connection_requests WHERE id=$1", [
+                pending.connectionRequestId,
+              ])
+            ).rows,
+        ),
+      ).toEqual([{ phase: "purging", secret_ref: ref }]);
+      await expect(admin.connectionRequests.purgeExactOwnedForLifecycle()).rejects.toThrow(
+        "Secret cleanup unavailable",
+      );
+      expect(
+        await withScopedClient(
+          harness.pool,
+          admin.scope,
+          async (client) =>
+            (
+              await client.query("SELECT * FROM integration_runtime.secret_custody WHERE target_id=$1", [
+                pending.connectionRequestId,
+              ])
+            ).rows,
+        ),
+      ).toEqual(custody);
+    } finally {
+      harness.codec.failDelete = false;
+    }
+    expect(await admin.connectionRequests.purgeExactOwnedForLifecycle()).toEqual({
+      deletedRequests: 1,
+      deletedRequestSecrets: 1,
+    });
+    await expect(harness.codec.decode(ref)).rejects.toThrow("Secret missing");
+    expect(await admin.connectionRequests.countExactOwnedForLifecycle()).toMatchObject({ total: 0, secrets: 0 });
+  });
+
   it("keeps real scoped managed identity stable on transfer and uses fenced leases without local credentials", async () => {
     const db = harness.forScope();
     const project = {
@@ -190,7 +377,7 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
       baseUrl: "https://saas.example",
       apiKey: "private-project-key",
     };
-    await db.saasProjects.saveProject(project);
+    await db.saasProjects.saveProject(project, null);
     const pending: PendingSaasRequest = {
       connectionRequestId: randomUUID(),
       connectionId: randomUUID(),
@@ -253,7 +440,7 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
       baseUrl: "https://saas.example",
       apiKey: "private-project-key",
     };
-    await oldOwner.saasProjects.saveProject(project);
+    await oldOwner.saasProjects.saveProject(project, null);
     const pending: PendingSaasRequest = {
       connectionRequestId: randomUUID(),
       connectionId: randomUUID(),
@@ -319,7 +506,7 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
       baseUrl: "https://saas.example",
       apiKey: "private-project-key",
     };
-    await oldOwner.saasProjects.saveProject(project);
+    await oldOwner.saasProjects.saveProject(project, null);
     const pending: PendingSaasRequest = {
       connectionRequestId: randomUUID(),
       connectionId: randomUUID(),
@@ -395,7 +582,7 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
       baseUrl: "https://saas.example",
       apiKey: "private-project-key",
     };
-    await oldOwner.saasProjects.saveProject(project);
+    await oldOwner.saasProjects.saveProject(project, null);
     const pending: PendingSaasRequest = {
       connectionRequestId: randomUUID(),
       connectionId: randomUUID(),
@@ -478,8 +665,8 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
         apiKey: "private-project-key",
       };
       const peerProject = { ...project, id: randomUUID(), apiKey: "private-peer-key" };
-      await cleanupOwner.saasProjects.saveProject(project);
-      await liveOwner.saasProjects.saveProject(peerProject);
+      await cleanupOwner.saasProjects.saveProject(project, null);
+      await liveOwner.saasProjects.saveProject(peerProject, null);
       const pending: PendingSaasRequest = {
         connectionRequestId: randomUUID(),
         connectionId: randomUUID(),
@@ -554,8 +741,8 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
         apiKey: "private-project-key",
       };
       const peerProject = { ...project, id: randomUUID() };
-      await oldOwner.saasProjects.saveProject(project);
-      await newOwner.saasProjects.saveProject(peerProject);
+      await oldOwner.saasProjects.saveProject(project, null);
+      await newOwner.saasProjects.saveProject(peerProject, null);
       const pending: PendingSaasRequest = {
         connectionRequestId: randomUUID(),
         connectionId: randomUUID(),
@@ -618,8 +805,8 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
         apiKey: "private-project-key",
       };
       const peerProject = { ...project, id: randomUUID() };
-      await oldOwner.saasProjects.saveProject(project);
-      await newOwner.saasProjects.saveProject(peerProject);
+      await oldOwner.saasProjects.saveProject(project, null);
+      await newOwner.saasProjects.saveProject(peerProject, null);
       const pending: PendingSaasRequest = {
         connectionRequestId: randomUUID(),
         connectionId: randomUUID(),
@@ -692,7 +879,7 @@ describe.skipIf(!harness.enabled)("native scoped OAuth/request persistence", () 
       baseUrl: "https://saas.example",
       apiKey: "private-technical-key",
     };
-    await db.saasProjects.saveProject(project);
+    await db.saasProjects.saveProject(project, null);
     await db.saasProjects.setSource("example", { managedProjectId: project.id, providerConfigId: "config" });
     const secretRef = await withScopedClient(
       harness.pool,

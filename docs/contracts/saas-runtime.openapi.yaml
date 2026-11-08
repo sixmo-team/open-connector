@@ -10,6 +10,10 @@ paths:
     get:
       operationId: listSaasProviders
       summary: List safe provider catalog entries
+      description: >-
+        Platform catalog metadata and local OAuth application readiness only. No query
+        parameters are accepted. Use the scoped provider endpoint for selected workspace
+        managed-source readiness; neither endpoint grants product admission or action permission.
       tags: [Catalog]
       security:
         - SaasBearer: []
@@ -26,6 +30,35 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "400": { $ref: "#/components/responses/InvalidInput" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/catalog/providers/scoped:
+    get:
+      operationId: listSaasScopedProviders
+      summary: List safe providers with current scoped OAuth source readiness
+      description: >-
+        Requires connection:read in the verified tenant/workspace with actor equal to subject.
+        No query parameters or caller-supplied identities are accepted. Resolves the selected
+        workspace OAuth source against current project/key discovery, retaining local readiness
+        for providers without a managed selection. Returns metadata and safe readiness codes only,
+        never project keys, client secrets, provider tokens or secret references. This is not
+        product admission or an action grant. Storage/discovery failure is catalog_unavailable,
+        not a fabricated unavailable source or a local fallback.
+      tags: [Catalog]
+      security:
+        - SaasBearer: []
+      x-required-purpose: connection:read
+      responses:
+        "200":
+          description: Complete safe provider catalog with current scope-specific connection readiness.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SafeProviderCatalog" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /internal/saas/catalog/actions/search:
     get:
       operationId: searchSaasActions
@@ -161,7 +194,9 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "502": { $ref: "#/components/responses/BadGateway" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
   /internal/saas/connections/{connectionId}/credentials:
     put:
       operationId: replaceSaasConnectionCredentials
@@ -288,6 +323,10 @@ paths:
     post:
       operationId: startSaasOAuth
       summary: Start a platform-managed OAuth authorization
+      description: >-
+        No query parameters are accepted. The body localConnectionId and oauthSessionId
+        must match the original signed scope; actor equals subject. Managed source selection
+        rejects request-level client/scope overrides and requires the trusted backend continuation URI.
       tags: [OAuth]
       security:
         - SaasBearer: []
@@ -311,10 +350,14 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /internal/saas/oauth/complete:
     post:
       operationId: completeSaasOAuth
       summary: Complete a reserved OAuth authorization exactly once
+      description: >-
+        No query parameters are accepted. The body localConnectionId and oauthSessionId
+        must match the original signed scope; actor equals subject.
       tags: [OAuth]
       security:
         - SaasBearer: []
@@ -338,10 +381,15 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /internal/saas/oauth/requests/{requestId}:
     get:
       operationId: readSaasOAuthRequest
       summary: Read a managed authorization request belonging to the exact reserved connection and session
+      description: >-
+        Requires actor equal to subject and the original signed localConnectionId and
+        oauthSessionId. The stored request must match that exact owner/session/local lineage;
+        a request UUID alone grants no access. No query parameters are accepted.
       tags: [OAuth]
       security:
         - SaasBearer: []
@@ -366,6 +414,10 @@ paths:
     post:
       operationId: cancelSaasOAuthRequest
       summary: Cancel an owned managed authorization request without accepting a late connection
+      description: >-
+        Requires actor equal to subject and the original signed localConnectionId and
+        oauthSessionId, checked against the stored request lineage. Cancellation does not
+        prove an uncertain remote creation failed or authorize another attempt.
       tags: [OAuth]
       security:
         - SaasBearer: []
@@ -403,6 +455,14 @@ paths:
         connection, canonical input hash and output ceiling. This is not a public callback or
         anonymous subscription endpoint. Native trigger input validation and actor-private
         subscription state apply even when the credential connection is shared.
+        Supported native operations are sourceReference, options, read, reconcile, receive
+        and resource. Each operation has its strict native input schema; arbitrary JSON
+        is not executable merely because it has a valid request hash. Secret-bearing
+        stateless source operations are rejected; persistent sourceReference operations
+        resolve only actor-owned stored applications. Provider signature, account and
+        callback binding checks still apply to receive operations. Read checkpoints
+        are limited to 65536 serialized bytes, and duplicate case-insensitive receive
+        headers are rejected.
       tags: [Triggers]
       security:
         - SaasBearer: []
@@ -430,7 +490,10 @@ paths:
                 input: {}
       responses:
         "200":
-          description: The native trigger operation result, bounded by the signed output ceiling.
+          description: >-
+            Native operation result bounded by the signed output ceiling. Resource, reconcile
+            and receive receipts replace private subscription state with an opaque subscription
+            ID and omit checkpoints (including nested result checkpoints). Other output is native-operation-dependent.
           content:
             application/json:
               schema:
@@ -446,7 +509,9 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "502": { $ref: "#/components/responses/BadGateway" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
   /internal/saas/actions/{actionId}:
     post:
       operationId: executeSaasAction
@@ -927,6 +992,174 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/configuration/project:
+    get:
+      operationId: readWorkspaceManagedProject
+      summary: Read safe managed-project state for one operator-selected workspace
+      description: >-
+        Configuration control is operator-only and uses the signed workspace target, never a
+        customer identity or role. No query parameters are accepted. Project keys and secret
+        references are never returned. Cleanup counts are real workspace aggregates, not a
+        fabricated customer queue.
+      tags: [Configuration]
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: configuration:read
+      x-policy-target: workspace
+      responses:
+        "200":
+          description: Current safe project state and bounded cleanup counters.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedProjectState" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    put:
+      operationId: configureWorkspaceManagedProject
+      summary: Validate and bind or rotate the workspace project key
+      description: >-
+        The exact method, pathname, workspace target and original parsed body are bound by
+        request_hash before normalization. Native guarded discovery verifies the project before
+        persistence. Replacement must retain the established origin and project identity.
+        The key is stored only through the workspace OpenBao codec, never returned or logged.
+        No query parameters or customer scope fields are accepted; the JSON body is bounded to
+        262144 bytes. Configuration does not enable any provider action or bypass product admission.
+      tags: [Configuration]
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: configuration:write
+      x-policy-target: workspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ManagedProjectInput" }
+      responses:
+        "200":
+          description: Validated safe state after the scoped key binding committed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedProjectState" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { description: The external project service rate-limited discovery. }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+    delete:
+      operationId: removeWorkspaceManagedProject
+      summary: Erase an unused workspace project without discarding unresolved references
+      description: >-
+        Requires a signed mutation over exactly an empty JSON object and accepts no query
+        parameters. Existing sources, connections, requests or cleanup tasks prevent removal.
+        Secret deletion failure retains metadata for a genuine retry without decrypting an
+        already-deleted key. An absent project is an idempotent success. This does not revoke
+        customer credentials or purge another workspace.
+      tags: [Configuration]
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: configuration:write
+      x-policy-target: workspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        "204": { description: The unused project is absent and its retained secret references were erased. }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /internal/saas/configuration/provider-configs:
+    get:
+      operationId: listWorkspaceManagedProviderConfigurations
+      summary: Discover the bound project's provider configurations supported by the native catalog
+      tags: [Configuration]
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: configuration:read
+      x-policy-target: workspace
+      description: >-
+        No query parameters are accepted. Uses current scoped project/key discovery and returns
+        only safe native configurations and their catalog-known action IDs, never a key.
+      responses:
+        "200":
+          description: Actual project identity and supported provider configurations.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedProviderConfigurations" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { description: The external project service rate-limited discovery. }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+  /internal/saas/configuration/sources/{service}:
+    parameters:
+      - name: service
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+    get:
+      operationId: readWorkspaceOAuthSource
+      summary: Read the current local or managed source for one declared provider
+      tags: [Configuration]
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: configuration:read
+      x-policy-target: workspace
+      description: No query parameters are accepted. Source selection never exposes project credentials.
+      responses:
+        "200":
+          description: The actual selected source; no persisted managed selection means local.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedOAuthSource" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    put:
+      operationId: selectWorkspaceOAuthSource
+      summary: Explicitly select local authorization or a verified managed provider configuration
+      description: >-
+        Requires request_hash over the exact method, pathname, workspace target and original
+        parsed JSON body. No query parameters or caller-selected customer identity are accepted.
+        Managed selection validates the current bound project/configuration against the native
+        provider catalog. Existing connections retain their captured source on reconnect.
+        Selecting a source never enables product admission or OpenConnector function permission.
+      tags: [Configuration]
+      security: [{ ActionPolicyControlBearer: [] }]
+      x-required-purpose: configuration:write
+      x-policy-target: workspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ManagedOAuthSourceInput" }
+      responses:
+        "200":
+          description: The committed provider source.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagedOAuthSource" }
+        "400": { $ref: "#/components/responses/InvalidInput" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { description: The external project service rate-limited discovery. }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
   /internal/saas/maintenance:
     post:
       operationId: maintainSaasNativeResources
@@ -981,11 +1214,12 @@ components:
         OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_AUDIENCE and OPEN_CONNECTOR_ACTION_POLICY_CONTROL_JWT_ACTIVE_KID.
         Control kid and JWKS URL must differ from execution profile. Control JWKS serves public key
         material; it is not a static administrative bearer. Claims require iss/aud/sub/jti/iat/nbf/exp,
-        subject_kind=policy_control, exact action-policy:read/write purpose and one identical permission,
-        strict policy_target (platform or user) and real verified operator sub; maximum lifetime 60 seconds.
-        Write/purge request_hash is SHA-256 base64url of canonical JSON {method,path,target,body};
-        method uppercase, path exact pathname without query, body actual received parsed JSON before
-        trimming reason. No fake action/connection IDs, operation wrapper or customer identities.
+        subject_kind=policy_control, one exact purpose and identical permission, and a real verified
+        operator sub; maximum lifetime 60 seconds. action-policy:read/write require a strict platform
+        or user target; configuration:read/write require exactly a workspace target. Neither accepts
+        customer execution identity, role or resource bindings. Writes require request_hash: SHA-256
+        base64url of canonical JSON {method,path,target,body}; method uppercase, path exact pathname
+        without query, body actual received parsed JSON before normalization. Read tokens have no hash.
   parameters:
     PolicyCursor:
       name: cursor
@@ -1079,7 +1313,17 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/SafeError" }
     PayloadTooLarge:
-      description: JSON body or declared Content-Length exceeds 262144 bytes.
+      description: JSON body or declared Content-Length exceeds the operation's stated byte limit.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SafeError" }
+    BadGateway:
+      description: The upstream provider returned an invalid or failed response.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SafeError" }
+    GatewayTimeout:
+      description: The provider operation timed out within the original processing budget; an external mutation may remain uncertain.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/SafeError" }
@@ -1251,6 +1495,101 @@ components:
     JsonSchema:
       type: object
       additionalProperties: true
+    ManagedProjectInput:
+      type: object
+      additionalProperties: false
+      required: [baseUrl, projectApiKey]
+      properties:
+        baseUrl: { type: string, minLength: 1, format: uri }
+        projectApiKey:
+          type: string
+          minLength: 1
+          writeOnly: true
+          description: A nonblank project key, normalized and validated before native discovery.
+    ManagedProjectState:
+      type: object
+      additionalProperties: false
+      required: [configured, managedProjectId, projectId, baseUrl, status, cleanup]
+      properties:
+        configured: { type: boolean }
+        managedProjectId: { type: [string, "null"], format: uuid }
+        projectId: { type: [string, "null"], minLength: 1 }
+        baseUrl: { type: [string, "null"], format: uri }
+        status: { type: string, enum: [unconfigured, available, unavailable, auth_error] }
+        cleanup:
+          type: object
+          additionalProperties: false
+          required: [pending, manual, paused]
+          properties:
+            pending: { type: integer, minimum: 0 }
+            manual: { type: integer, minimum: 0 }
+            paused: { type: boolean }
+      oneOf:
+        - properties:
+            configured: { const: false }
+            managedProjectId: { type: "null" }
+            projectId: { type: "null" }
+            baseUrl: { type: "null" }
+            status: { const: unconfigured }
+        - properties:
+            configured: { const: true }
+            managedProjectId: { type: string, format: uuid }
+            projectId: { type: string, minLength: 1 }
+            baseUrl: { type: string, format: uri }
+            status: { enum: [available, unavailable, auth_error] }
+    ManagedProviderConfigurations:
+      type: object
+      additionalProperties: false
+      required: [projectId, providerConfigs]
+      properties:
+        projectId: { type: string, minLength: 1 }
+        providerConfigs:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, service, displayName, callbackUrl, effectiveScopes, actionIds, proxyAvailable]
+            properties:
+              id: { type: string, minLength: 1 }
+              service: { type: string, minLength: 1 }
+              displayName: { type: string }
+              callbackUrl:
+                {
+                  type: string,
+                  format: uri,
+                  description: HTTP(S) callback registered with the managed provider; not the product return URI.,
+                }
+              effectiveScopes: { type: array, items: { type: string, minLength: 1 } }
+              actionIds: { type: array, items: { type: string, minLength: 1 } }
+              proxyAvailable: { type: boolean }
+    ManagedOAuthSourceInput:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: { const: local }
+        - type: object
+          additionalProperties: false
+          required: [mode, providerConfigId]
+          properties:
+            mode: { const: saas }
+            providerConfigId: { type: string, minLength: 1 }
+    ManagedOAuthSource:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: { const: local }
+        - type: object
+          additionalProperties: false
+          required: [mode, managedProjectId, projectId, providerConfigId]
+          properties:
+            mode: { const: saas }
+            managedProjectId: { type: string, format: uuid }
+            projectId: { type: string, minLength: 1 }
+            providerConfigId: { type: string, minLength: 1 }
     SafeProviderCatalog:
       type: object
       additionalProperties: false
@@ -1273,12 +1612,25 @@ components:
     ConnectionMethod:
       type: object
       additionalProperties: false
-      required: [type, fields]
+      required: [type, fields, status]
       properties:
-        type: { type: string, enum: [oauth2, api_key, custom_credential] }
+        type: { type: string, enum: [no_auth, oauth2, api_key, custom_credential] }
         fields:
           type: array
           items: { $ref: "#/components/schemas/CredentialField" }
+        status: { type: string, enum: [operational, unavailable] }
+        reasonCode:
+          type: string
+          enum: [oauth_client_config_missing, oauth_client_config_invalid, oauth_client_config_access_denied]
+      oneOf:
+        - properties:
+            status: { const: operational }
+          not:
+            required: [reasonCode]
+        - required: [reasonCode]
+          properties:
+            type: { const: oauth2 }
+            status: { const: unavailable }
     CredentialField:
       type: object
       additionalProperties: false
@@ -1429,7 +1781,12 @@ components:
         localConnectionId: { type: string, format: uuid }
         service: { type: string, minLength: 1, maxLength: 128 }
         connectionName: { type: string, minLength: 1, maxLength: 255 }
-        apiKey: { type: string, minLength: 1, maxLength: 8192, writeOnly: true }
+        apiKey:
+          type: string
+          minLength: 1
+          maxLength: 8192
+          pattern: '^(?![\s\S]*[\r\n])(?=[\s\S]*\S)[\s\S]+$'
+          writeOnly: true
         discoveryUrl: { type: string, format: uri, maxLength: 4096 }
         actionIds:
           type: array
@@ -1697,6 +2054,7 @@ components:
           actionGrants,
           actionPolicyAudit,
           connectionRequests,
+          requestSecrets,
           saasCleanup,
           connectionRetirements,
           triggerSubscriptions,
@@ -1713,6 +2071,7 @@ components:
         actionGrants: { type: integer, minimum: 0 }
         actionPolicyAudit: { type: integer, minimum: 0 }
         connectionRequests: { $ref: "#/components/schemas/LifecycleStatusSummary" }
+        requestSecrets: { type: integer, minimum: 0 }
         saasCleanup: { $ref: "#/components/schemas/LifecycleStatusSummary" }
         connectionRetirements: { type: integer, minimum: 0 }
         triggerSubscriptions: { $ref: "#/components/schemas/LifecycleStatusSummary" }

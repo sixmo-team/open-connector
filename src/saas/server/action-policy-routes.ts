@@ -23,7 +23,7 @@ import { exactQuery, readBoundedJson, readBoundedPage, runScopedHttpOperation } 
 
 type Options = Pick<
   SaasConnectServerOptions,
-  "verifyJwt" | "verifyActionPolicyJwt" | "policyControlActiveKid" | "runtimeDatabaseFactory"
+  "verifyJwt" | "verifyControlJwt" | "policyControlActiveKid" | "runtimeDatabaseFactory"
 >;
 type PolicyPurpose = ActionPolicyControlPrincipal["purpose"] | ActionPolicyServicePrincipal["purpose"];
 const prefix = "/internal/saas/action-policy";
@@ -39,15 +39,16 @@ export function registerActionPolicyRoutes(app: Hono<SaasHonoEnvironment>, optio
       try {
         const header = decodeProtectedHeader(readBearerToken(authorization));
         if (options.policyControlActiveKid && header.kid === options.policyControlActiveKid) {
-          if (!options.verifyActionPolicyJwt) return unavailable(context);
-          control = captureRequestProcessing(await options.verifyActionPolicyJwt(authorization));
+          if (!options.verifyControlJwt) return unavailable(context);
+          const verified = captureRequestProcessing(await options.verifyControlJwt(authorization));
           if (
-            control.purpose !== "action-policy:read" ||
-            control.permissions.length !== 1 ||
-            control.permissions[0] !== control.purpose ||
-            !["platform", "user"].includes(control.target.kind)
+            verified.purpose !== "action-policy:read" ||
+            verified.permissions.length !== 1 ||
+            verified.permissions[0] !== verified.purpose ||
+            !["platform", "user"].includes(verified.target.kind)
           )
             throw new SaasAuthorizationError(403);
+          control = verified;
         } else {
           const verified = await options.verifyJwt(authorization);
           if (
@@ -130,7 +131,7 @@ export function registerActionPolicyRoutes(app: Hono<SaasHonoEnvironment>, optio
 function authority(options: Options, purpose: PolicyPurpose): MiddlewareHandler<SaasHonoEnvironment> {
   const verifier =
     purpose === "action-policy:read" || purpose === "action-policy:write"
-      ? options.verifyActionPolicyJwt
+      ? options.verifyControlJwt
       : options.verifyJwt;
   return verifier ? requireScopedControlPurpose(verifier, purpose) : async (context) => unavailable(context);
 }
@@ -139,7 +140,11 @@ function controlPrincipal(
   kind: "platform" | "user",
 ): Readonly<ActionPolicyControlPrincipal> {
   const principal = context.get("controlPrincipal");
-  if (principal.subjectKind !== "policy_control" || principal.target.kind !== kind)
+  if (
+    principal.subjectKind !== "policy_control" ||
+    (principal.purpose !== "action-policy:read" && principal.purpose !== "action-policy:write") ||
+    principal.target.kind !== kind
+  )
     throw new SaasAuthorizationError(403);
   return principal;
 }

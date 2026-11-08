@@ -162,7 +162,7 @@ describe.skipIf(!harness.enabled)("SaasProjectService", () => {
     await service.configure(input);
     const previous = (await database.saasProjects.getProject())!;
     await service.resolveExecutionConfig("example", "config", undefined);
-    await database.saasProjects.saveProject({ ...previous, apiKey: "rotated-key" });
+    await database.saasProjects.saveProject({ ...previous, apiKey: "rotated-key" }, previous.id);
     fetcher.mockClear();
 
     const current = await service.resolveExecutionConfig("example", "config", undefined);
@@ -202,7 +202,7 @@ describe.skipIf(!harness.enabled)("SaasProjectService", () => {
     await expect(service.resolveExecutionConfig("example", "config", previous.id)).rejects.toMatchObject({
       code: "oauth_source_not_configured",
     });
-    await database.saasProjects.saveProject({ ...previous, id: crypto.randomUUID() });
+    await database.saasProjects.saveProject({ ...previous, id: crypto.randomUUID() }, null);
     await expect(service.resolveExecutionConfig("example", "config", previous.id)).rejects.toMatchObject({
       code: "oauth_source_mismatch",
     });
@@ -298,7 +298,7 @@ describe.skipIf(!harness.enabled)("SaasProjectService", () => {
     });
     const pending = service.resolveExecutionConfig("example", "config", undefined);
     await started.promise;
-    await database.saasProjects.saveProject({ ...previous, apiKey: "new-key" });
+    await database.saasProjects.saveProject({ ...previous, apiKey: "new-key" }, previous.id);
     fetcher.mockResolvedValueOnce(
       Response.json({
         success: true,

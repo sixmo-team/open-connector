@@ -3,6 +3,7 @@ import type {
   ActionPolicyControlPrincipal,
   ActionPolicyServicePrincipal,
   ActionPolicyTarget,
+  ConfigurationControlPrincipal,
   NativeLifecycleServicePrincipal,
   SaasRequestScope,
 } from "../contracts.ts";
@@ -102,9 +103,37 @@ export async function withNativeLifecycleClient<T>(
   return withTargetClient(pool, principal, target, fn);
 }
 
+/** Operator workspace configuration has no customer identity, role or execution authority. */
+export async function withConfigurationControlClient<T>(
+  pool: Pool,
+  principal: Readonly<ConfigurationControlPrincipal>,
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const target = actionPolicyTargetSchema.parse(principal.target);
+  const write = principal.purpose === "configuration:write";
+  if (
+    principal.subjectKind !== "policy_control" ||
+    !principal.subject?.trim() ||
+    !principal.requestId?.trim() ||
+    target.kind !== "workspace" ||
+    !["configuration:read", "configuration:write"].includes(principal.purpose) ||
+    principal.permissions.length !== 1 ||
+    principal.permissions[0] !== principal.purpose ||
+    write !== (principal.requestHash !== undefined) ||
+    (write && !/^[A-Za-z0-9_-]{43}$/.test(principal.requestHash ?? ""))
+  )
+    throw new Error("Workspace configuration requires exact operator control authority");
+  return withTargetClient(pool, principal, target, fn);
+}
+
 function withTargetClient<T>(
   pool: Pool,
-  principal: Readonly<ActionPolicyControlPrincipal | ActionPolicyServicePrincipal | NativeLifecycleServicePrincipal>,
+  principal: Readonly<
+    | ActionPolicyControlPrincipal
+    | ActionPolicyServicePrincipal
+    | NativeLifecycleServicePrincipal
+    | ConfigurationControlPrincipal
+  >,
   target: Readonly<ActionPolicyTarget>,
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {

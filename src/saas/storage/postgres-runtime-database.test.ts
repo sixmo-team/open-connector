@@ -17,6 +17,7 @@ import type { RunLog } from "./run-store.ts";
 
 import { Buffer } from "node:buffer";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vitest";
 import { createCatalogStore } from "../../catalog-store.ts";
@@ -1099,6 +1100,137 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
     ).resolves.toBe(false);
   });
 });
+
+describe.skipIf(!testPostgresUrl)("PostgreSQL 0015 secret custody upgrade", () => {
+  it("upgrades an empty original cleanup queue and removes its original grants", async () => {
+    await withBase0015Database(async (database, owner, runtime) => {
+      const originalLedger = (await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations ORDER BY name")).rows;
+      expect((await runtime.query("SELECT integration_runtime.is_trigger_secret_referenced('unused') AS referenced")).rows).toEqual([{ referenced: false }]);
+      await expect(migratePostgres({
+        migratorConnectionString: database.migratorConnectionString,
+        runtimeConnectionString: database.runtimeConnectionString,
+      })).resolves.toEqual([
+        "0016_workspace_configuration_control.sql",
+        "0017_project_secret_custody.sql",
+        "0018_managed_project_removal_fence.sql",
+        "0019_scoped_secret_custody.sql",
+      ]);
+      expect((await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations WHERE name < '0016' ORDER BY name")).rows).toEqual(originalLedger);
+      expect((await owner.query(`SELECT to_regclass('integration_runtime.trigger_secret_cleanup')::text AS queue,
+        to_regprocedure('integration_runtime.is_trigger_secret_referenced(text)')::text AS function`)).rows).toEqual([{ queue: null, function: null }]);
+      expect((await owner.query("SELECT count(*)::int AS count FROM integration_runtime.secret_custody")).rows).toEqual([{ count: 0 }]);
+      await expect(probeSaasRuntimeDatabase(runtime)).resolves.toBeUndefined();
+      await expect(migratePostgres({
+        migratorConnectionString: database.migratorConnectionString,
+        runtimeConnectionString: database.runtimeConnectionString,
+      })).resolves.toEqual([]);
+    });
+  }, 30_000);
+
+  it("reaches the 0019 reconciliation guard without losing a nonempty original queue, grants or forced RLS", async () => {
+    await withBase0015Database(async (database, owner, runtime) => {
+      const originalLedger = (await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations ORDER BY name")).rows;
+      const boundarySql = `SELECT relowner, relacl::text, relrowsecurity, relforcerowsecurity
+        FROM pg_class WHERE oid='integration_runtime.trigger_secret_cleanup'::regclass`;
+      const originalBoundary = (await owner.query(boundarySql)).rows;
+      const functionSql = `SELECT proowner, proacl::text, prosecdef, proconfig
+        FROM pg_proc WHERE oid='integration_runtime.is_trigger_secret_referenced(text)'::regprocedure`;
+      const originalFunction = (await owner.query(functionSql)).rows;
+      const row = { tenant_id: tenantAUserA.tenantId, workspace_id: tenantAUserA.workspaceId,
+        subject_user_id: tenantAUserA.subjectUserId, secret_ref: "bao:unknown-original-write-outcome" };
+      await withScopedClient(runtime, tenantAUserA, (client) => client.query(
+        "INSERT INTO integration_runtime.trigger_secret_cleanup (tenant_id,workspace_id,subject_user_id,secret_ref) VALUES ($1,$2,$3,$4)",
+        [row.tenant_id, row.workspace_id, row.subject_user_id, row.secret_ref],
+      ));
+      await expect(migratePostgres({
+        migratorConnectionString: database.migratorConnectionString,
+        runtimeConnectionString: database.runtimeConnectionString,
+      })).rejects.toThrow("Secret custody cutover requires reconciliation");
+      expect((await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations WHERE name < '0016' ORDER BY name")).rows).toEqual(originalLedger);
+      expect((await owner.query("SELECT name FROM integration_runtime_migrations.schema_migrations WHERE name >= '0016' ORDER BY name")).rows).toEqual([
+        { name: "0016_workspace_configuration_control.sql" },
+        { name: "0017_project_secret_custody.sql" },
+        { name: "0018_managed_project_removal_fence.sql" },
+      ]);
+      expect((await owner.query(boundarySql)).rows).toEqual(originalBoundary);
+      expect((await owner.query(functionSql)).rows).toEqual(originalFunction);
+      expect((await owner.query("SELECT to_regclass('integration_runtime.secret_custody')::text AS custody")).rows).toEqual([{ custody: null }]);
+      expect(await withScopedClient(runtime, tenantAUserA, async (client) =>
+        (await client.query("SELECT * FROM integration_runtime.trigger_secret_cleanup")).rows,
+      )).toEqual([row]);
+      expect(await withScopedClient(runtime, tenantBUserA, async (client) =>
+        (await client.query("SELECT * FROM integration_runtime.trigger_secret_cleanup")).rows,
+      )).toEqual([]);
+      expect((await runtime.query("SELECT integration_runtime.is_trigger_secret_referenced('unused') AS referenced")).rows).toEqual([{ referenced: false }]);
+    });
+  }, 30_000);
+});
+
+async function withBase0015Database(
+  run: (database: PostgresTestDatabase, owner: Pool, runtime: Pool) => Promise<void>,
+): Promise<void> {
+  if (!testPostgresUrl) throw new Error("TEST_POSTGRES_URL is required");
+  const database = await createPostgresTestDatabase(testPostgresUrl);
+  const owner = new Pool({ connectionString: database.migratorConnectionString, max: 1 });
+  const runtime = new Pool({ connectionString: database.runtimeConnectionString, max: 1 });
+  try {
+    // Migrations 0001–0015 are unchanged from c33aa709. Apply that SQL and its original
+    // grants directly: the current migrator must not manufacture its own upgrade fixture.
+    const directory = new URL("./migrations/", import.meta.url);
+    const names = (await readdir(directory)).filter((name) => /^\d+.*\.sql$/.test(name) && name < "0016").sort();
+    await owner.query(`CREATE SCHEMA integration_runtime_migrations;
+      REVOKE ALL ON SCHEMA integration_runtime_migrations FROM PUBLIC;
+      CREATE TABLE integration_runtime_migrations.schema_migrations (
+        name text PRIMARY KEY, checksum text NOT NULL CHECK (length(checksum)=64),
+        applied_at timestamptz NOT NULL DEFAULT now());
+      REVOKE ALL ON integration_runtime_migrations.schema_migrations FROM PUBLIC`);
+    for (const name of names) {
+      const sql = await readFile(new URL(name, directory), "utf8");
+      await owner.query("BEGIN");
+      try {
+        await owner.query(sql);
+        await owner.query("INSERT INTO integration_runtime_migrations.schema_migrations (name,checksum) VALUES ($1,$2)", [name, createHash("sha256").update(sql).digest("hex")]);
+        await owner.query("COMMIT");
+      } catch (error) {
+        await owner.query("ROLLBACK");
+        throw error;
+      }
+    }
+    const role = `"${database.runtimeRole}"`;
+    await owner.query(`REVOKE ALL ON SCHEMA integration_runtime FROM PUBLIC;
+      REVOKE CREATE ON SCHEMA integration_runtime FROM ${role};
+      GRANT USAGE ON SCHEMA integration_runtime, integration_runtime_migrations TO ${role};
+      GRANT SELECT (name,checksum) ON integration_runtime_migrations.schema_migrations TO ${role};
+      GRANT SELECT,INSERT,UPDATE,DELETE ON
+        integration_runtime.connections,integration_runtime.oauth_states,integration_runtime.run_intents,
+        integration_runtime.idempotency_records,integration_runtime.refresh_leases,integration_runtime.transit_files,
+        integration_runtime.connection_revocation_receipts,integration_runtime.connection_retirements,
+        integration_runtime.connection_requests,integration_runtime.managed_projects,integration_runtime.oauth_sources,
+        integration_runtime.saas_cleanup,integration_runtime.managed_account_retirements,
+        integration_runtime.trigger_subscriptions,integration_runtime.trigger_source_applications,
+        integration_runtime.trigger_secret_cleanup,integration_runtime.trigger_execution_leases TO ${role};
+      GRANT SELECT,INSERT,UPDATE ON integration_runtime.action_defaults TO ${role};
+      GRANT SELECT,INSERT,UPDATE,DELETE ON integration_runtime.action_grants TO ${role};
+      GRANT SELECT,INSERT,DELETE ON integration_runtime.action_policy_audit TO ${role};
+      GRANT EXECUTE ON FUNCTION integration_runtime.lock_managed_account(uuid,text),
+        integration_runtime.retire_managed_account(uuid,text),
+        integration_runtime.is_managed_account_referenced(uuid,text),
+        integration_runtime.is_managed_account_cleanup_pending(uuid,text),
+        integration_runtime.is_managed_account_retired(uuid,text,bigint),
+        integration_runtime.can_cleanup_trigger_connection(uuid),
+        integration_runtime.trigger_cleanup_connection(uuid),
+        integration_runtime.is_trigger_secret_referenced(text) TO ${role};
+      REVOKE ALL ON SEQUENCE integration_runtime.managed_account_fence_seq FROM PUBLIC,${role};
+      GRANT USAGE ON SEQUENCE integration_runtime.managed_account_fence_seq TO ${role};
+      ALTER DEFAULT PRIVILEGES IN SCHEMA integration_runtime
+        REVOKE SELECT,INSERT,UPDATE,DELETE ON TABLES FROM ${role}`);
+    await run(database, owner, runtime);
+  } finally {
+    await Promise.all([owner.end(), runtime.end()]);
+    await database.dispose();
+  }
+}
+
 describe("SaaS per-request runtime binding", () => {
   it("verifies JWT before creating a fresh scoped bundle for every request", async () => {
     const captured: SaasRequestScope[] = [];

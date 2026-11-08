@@ -1,10 +1,10 @@
-import type { ActionPolicyJwtVerifier, SaasJwtVerifier } from "./saas-jwt-verifier.ts";
+import type { ControlJwtVerifier, SaasJwtVerifier } from "./saas-jwt-verifier.ts";
 import type { AddressInfo } from "node:net";
 
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { createServer } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createActionPolicyJwtVerifier, createSaasJwtVerifier } from "./saas-jwt-verifier.ts";
+import { createControlJwtVerifier, createSaasJwtVerifier } from "./saas-jwt-verifier.ts";
 
 const target = {
   kind: "user",
@@ -16,7 +16,7 @@ let executionKey: CryptoKey;
 let controlKey: CryptoKey;
 let close: () => Promise<void>;
 let execution: { verify: SaasJwtVerifier; checkJwks: () => Promise<boolean> };
-let control: { verify: ActionPolicyJwtVerifier; checkJwks: () => Promise<boolean> };
+let control: { verify: ControlJwtVerifier; checkJwks: () => Promise<boolean> };
 const fetched: Array<{ path: string; authorization?: string }> = [];
 beforeAll(async () => {
   const exec = await generateKeyPair("EdDSA");
@@ -47,7 +47,7 @@ beforeAll(async () => {
     },
     "bootstrap",
   );
-  control = createActionPolicyJwtVerifier({
+  control = createControlJwtVerifier({
     policyControlJwksUrl: `${base}/control`,
     policyControlIssuer: "operators",
     policyControlAudience: "custom-policy-audience",
@@ -126,6 +126,40 @@ describe("separate action policy JWT profile", () => {
       subject: "verified-operator",
     });
   });
+  it.each(["configuration:read", "configuration:write"] as const)(
+    "admits only exact workspace configuration control without customer execution authority: %s",
+    async (purpose) => {
+      const workspaceTarget = { kind: "workspace", tenantId: crypto.randomUUID(), workspaceId: crypto.randomUUID() };
+      const body = {
+        ...claims(),
+        sub: `operator:${crypto.randomUUID()}`,
+        jti: crypto.randomUUID(),
+        purpose,
+        permissions: [purpose],
+        policy_target: workspaceTarget,
+        ...(purpose === "configuration:write" ? { request_hash: "a".repeat(43) } : {}),
+      };
+      const principal = await control.verify(await signed(body));
+      expect(principal).toMatchObject({ purpose, subject: body.sub, target: workspaceTarget });
+      expect(principal).not.toHaveProperty("actorUserId");
+      expect(principal).not.toHaveProperty("workspaceRole");
+      await expect(
+        execution.verify(
+          await signed({ ...body, iss: "backend", aud: "open-connector-saas" }, executionKey, "execution"),
+        ),
+      ).rejects.toThrow("unauthorized");
+      for (const extra of [
+        { policy_target: { kind: "tenant", tenantId: workspaceTarget.tenantId } },
+        { policy_target: { ...workspaceTarget, kind: "user", userId: crypto.randomUUID() } },
+        { workspace_role: "owner" },
+        { actor_user_id: crypto.randomUUID() },
+        { permissions: [purpose, "action:execute:v2"] },
+        { request_hash: purpose === "configuration:write" ? undefined : "a".repeat(43) },
+      ]) {
+        await expect(control.verify(await signed({ ...body, ...extra }))).rejects.toThrow("unauthorized");
+      }
+    },
+  );
   it("rejects a forged execution signed by control key even when its kid claims execution", async () => {
     const body = {
       ...claims(),

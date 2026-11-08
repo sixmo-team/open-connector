@@ -32,7 +32,7 @@ export async function withSecretCleanup<T extends NativeSecretScope, R>(
 
 export interface ISecretCodec {
   readonly encrypted: boolean;
-  encode(plaintext: string): Promise<string>;
+  encode(plaintext: string, beforeWrite?: (allocatedRef: string) => Promise<void>): Promise<string>;
   decode(stored: string): Promise<string>;
   delete(stored: string): Promise<boolean>;
 }
@@ -50,9 +50,13 @@ export class OpenBaoSecretCodec implements ISecretCodec {
     }
     this.prefix = `client-secrets/data/tenants/${scope.tenantId}/workspaces/${scope.workspaceId}/integrations/oauth-sessions/`;
   }
-  async encode(plaintext: string): Promise<string> {
+  async encode(plaintext: string, beforeWrite?: (allocatedRef: string) => Promise<void>): Promise<string> {
     assertProcessingActive(this.scope);
     const path = `${this.prefix}${randomUUID()}`;
+    if (beforeWrite) {
+      await beforeWrite(path);
+      assertProcessingActive(this.scope);
+    }
     await this.client.write(path, { payload: plaintext }, 0, this.scope.requestSignal);
     return path;
   }

@@ -69,6 +69,7 @@ export interface LifecycleRecordCounts {
   actionGrants: number;
   actionPolicyAudit: number;
   connectionRequests: LifecycleStatusSummary;
+  requestSecrets: number;
   saasCleanup: LifecycleStatusSummary;
   connectionRetirements: number;
   triggerSubscriptions: LifecycleStatusSummary;
@@ -507,7 +508,8 @@ export class ScopedLifecycleService {
     return {
       ...core,
       ...policy,
-      connectionRequests: requests,
+      connectionRequests: { total: requests.total, statuses: requests.statuses },
+      requestSecrets: requests.secrets,
       saasCleanup: cleanup,
       connectionRetirements: retirements,
       triggerSubscriptions: triggers.subscriptions,

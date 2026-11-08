@@ -1286,6 +1286,7 @@ describe("SaasConnectServer", () => {
             actionPolicyAudit: 0,
             connectionRetirements: 0,
             connectionRequests: { total: 0, statuses: [] },
+            requestSecrets: 0,
             saasCleanup: { total: 0, statuses: [] },
             triggerSubscriptions: { total: 0, statuses: [] },
             triggerSourceApplications: 0,

@@ -15,17 +15,14 @@ import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.generated.ts";
 import { TriggerMaintenance } from "../triggers/maintenance.ts";
 import { TriggerRunner } from "../triggers/trigger-runner.ts";
-import {
-  createActionPolicyJwtVerifier,
-  createSaasJwtVerifier,
-  readJwksBearerTokenFile,
-} from "./auth/saas-jwt-verifier.ts";
+import { createControlJwtVerifier, createSaasJwtVerifier, readJwksBearerTokenFile } from "./auth/saas-jwt-verifier.ts";
 import { readSaasConfig } from "./config.ts";
 import { ProviderSaasCredentialRevoker } from "./connections/provider-credential-revoker.ts";
 import { createScopedConnectionService } from "./connections/scoped-connection-service.ts";
 import { createSeaweedFsS3Client } from "./files/seaweedfs-transit-files.ts";
 import { SaasOAuthService } from "./oauth/saas-oauth-service.ts";
 import { SaasCleanupService } from "./saas-cleanup-service.ts";
+import { SaasProjectService } from "./saas-project-service.ts";
 import { createScopedNativeServices } from "./scoped-native-services.ts";
 import { OpenBaoClient } from "./secrets/openbao-client.ts";
 import { OpenBaoConnectionSecretStore } from "./secrets/openbao-connection-store.ts";
@@ -35,6 +32,7 @@ import { OpenBaoSecretCodec } from "./secrets/secret-codec.ts";
 import { SaasConnectServer } from "./server/saas-connect-server.ts";
 import { createPostgresPool } from "./storage/postgres-pool.ts";
 import { probeSaasRuntimeDatabase, SaasRuntimeDatabaseFactory } from "./storage/postgres-runtime-database.ts";
+import { PostgresSecretCustodyStore } from "./storage/postgres-secret-custody.ts";
 import { SaasTriggerRunner } from "./triggers/saas-trigger-runner.ts";
 import { triggerCapability } from "./triggers/trigger-capability.ts";
 
@@ -110,7 +108,7 @@ for (const readiness of oauthClientReadiness.values()) {
 console.info(JSON.stringify({ event: "oauth_client_readiness", ...oauthReadinessSummary }));
 const oauthCredentials = new OAuthCredentialRefreshService(oauthClientConfigService, providerLoader);
 const authentication = createSaasJwtVerifier(config, jwksBearerToken);
-const policyAuthentication = createActionPolicyJwtVerifier(config);
+const policyAuthentication = createControlJwtVerifier(config);
 if (!(await authentication.checkJwks()) || !(await policyAuthentication.checkJwks())) {
   throw new Error("Both execution and action-policy trust profiles must provide usable keys before listening");
 }
@@ -118,7 +116,7 @@ const server = new SaasConnectServer({
   catalog,
   providerLoader,
   verifyJwt: authentication.verify,
-  verifyActionPolicyJwt: policyAuthentication.verify,
+  verifyControlJwt: policyAuthentication.verify,
   policyControlActiveKid: config.policyControlActiveKid,
   readiness: async () =>
     Object.freeze({
@@ -134,6 +132,15 @@ const server = new SaasConnectServer({
   refreshOAuthClientReadiness: () => oauthClientConfigs.probeAll(oauthProviders),
   scopedOAuthClientReadiness: (scope, local) => nativeServices(scope).getOAuthReadiness(local),
   nativeExecutionForScope: (scope, runtime) => nativeServices(scope, runtime),
+  projectsForControl(principal) {
+    const runtime = runtimeDatabaseFactory.forConfigurationControl(principal);
+    return new SaasProjectService({
+      catalog,
+      store: runtime.saasProjects,
+      secretCodec: runtime.secretCodec,
+      configuredOrigin: oauthCallbackOrigin,
+    });
+  },
   triggerRunnerForScope(scope) {
     const { database, runner } = scopedTriggerRunner(scope);
     return new SaasTriggerRunner({
@@ -179,6 +186,14 @@ const server = new SaasConnectServer({
         return decisions[0].enabled && (await database.triggers.hasCurrentConnection(record));
       },
     }).run(signal);
+    assertProcessingActive(scope);
+    await new PostgresSecretCustodyStore(pool, scope, database.secretCodec).drain([
+      "trigger-subscription",
+      "trigger-source",
+    ]);
+    assertProcessingActive(scope);
+    if (!database.transitFiles) throw new Error("Native transit-file maintenance is unavailable");
+    await database.transitFiles.cleanupExpired();
     assertProcessingActive(scope);
   },
   credentialRevoker: new ProviderSaasCredentialRevoker(),

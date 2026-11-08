@@ -29,7 +29,7 @@ const runtimeTables = [
   "managed_account_retirements",
   "trigger_subscriptions",
   "trigger_source_applications",
-  "trigger_secret_cleanup",
+  "secret_custody",
   "trigger_execution_leases",
   ...Object.keys(policyTablePrivileges),
 ] as const;
@@ -42,7 +42,9 @@ export const scopedRuntimeFunctions = [
   { signature: "integration_runtime.is_managed_account_retired(uuid,text,bigint)", definer: true },
   { signature: "integration_runtime.can_cleanup_trigger_connection(uuid)", definer: true },
   { signature: "integration_runtime.trigger_cleanup_connection(uuid)", definer: true },
-  { signature: "integration_runtime.is_trigger_secret_referenced(text)", definer: true },
+  { signature: "integration_runtime.lock_active_managed_project(uuid)", definer: true },
+  { signature: "integration_runtime.fence_managed_project_removal(uuid)", definer: true },
+  { signature: "integration_runtime.configuration_workspace_state(text,text)", definer: true },
 ] as const;
 
 export interface PostgresMigrationOptions {
@@ -129,6 +131,14 @@ export async function migratePostgres(options: PostgresMigrationOptions): Promis
     const applied: string[] = [];
     const runtimeRoleIdentifier = quoteIdentifier(runtimeRole.rolname);
     const migratorRoleIdentifier = quoteIdentifier(migratorRole.rolname);
+    const secretCustodyCutover = "0019_scoped_secret_custody.sql";
+    const pendingSecretCustodyCutover =
+      names.includes(secretCustodyCutover) &&
+      !(
+        await migrator.query("SELECT 1 FROM integration_runtime_migrations.schema_migrations WHERE name = $1", [
+          secretCustodyCutover,
+        ])
+      ).rowCount;
 
     for (const name of names) {
       const sql = await readFile(new URL(name, directoryUrl(directory)), "utf8");
@@ -145,11 +155,29 @@ export async function migratePostgres(options: PostgresMigrationOptions): Promis
       }
 
       await migrator.query("BEGIN");
+      // Preserve the original queue's existing grants only while advancing to its guarded drop.
+      // The cutover and final boundary never approve this retired relation or grant it new access.
+      const approvedTables =
+        pendingSecretCustodyCutover && name < secretCustodyCutover
+          ? [...runtimeTables, "trigger_secret_cleanup"]
+          : runtimeTables;
       try {
         await migrator.query(sql);
-        await verifyRuntimeBoundary(migrator, migratorRole.rolname, runtimeRole.rolname);
+        await verifyRuntimeBoundary(
+          migrator,
+          migratorRole.rolname,
+          runtimeRole.rolname,
+          baselineRuntimeTables,
+          approvedTables,
+        );
         await grantRuntimeAccess(migrator, runtimeRoleIdentifier, migratorRoleIdentifier);
-        await verifyRuntimeBoundary(migrator, migratorRole.rolname, runtimeRole.rolname);
+        await verifyRuntimeBoundary(
+          migrator,
+          migratorRole.rolname,
+          runtimeRole.rolname,
+          baselineRuntimeTables,
+          approvedTables,
+        );
         await migrator.query(
           "INSERT INTO integration_runtime_migrations.schema_migrations (name, checksum) VALUES ($1, $2)",
           [name, checksum],
@@ -250,6 +278,7 @@ async function verifyRuntimeBoundary(
   migratorRole: string,
   runtimeRole: string,
   requiredTables: readonly string[] = baselineRuntimeTables,
+  approvedTables: readonly string[] = runtimeTables,
 ): Promise<void> {
   await assertExistingSaasOwners(client, migratorRole);
   const tables = await client.query<{
@@ -307,7 +336,7 @@ async function verifyRuntimeBoundary(
          OR NOT class.relforcerowsecurity
        )
      LIMIT 1`,
-    [runtimeRole, runtimeTables],
+    [runtimeRole, approvedTables],
   );
   if (unsafeAccess.rows[0]) {
     throw new Error(`Runtime role can access unapproved relation ${unsafeAccess.rows[0].relname}`);

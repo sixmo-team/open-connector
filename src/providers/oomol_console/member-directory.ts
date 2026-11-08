@@ -4,18 +4,10 @@ import type { OomolConsoleEndpoints } from "./request.ts";
 import { ProviderRequestError } from "../provider-runtime.ts";
 import { requestOomolConsole } from "./request.ts";
 
-const userSummaryCacheMaxEntries = 10_000;
-const userSummaryCacheTtlMs = 30 * 60 * 1000;
-
 interface UserSummary {
   nickname: string;
   username: string;
   avatarUrl: string;
-}
-
-interface CachedUserSummary {
-  expiresAt: number;
-  value: UserSummary;
 }
 
 export interface OomolTeamMemberIdentity {
@@ -34,8 +26,6 @@ export interface OomolConsoleMemberDirectory {
 }
 
 export function createOomolConsoleMemberDirectory(endpoints: OomolConsoleEndpoints): OomolConsoleMemberDirectory {
-  const userSummaryCache = new Map<string, CachedUserSummary>();
-
   return {
     async enrichMembers<TMember extends OomolTeamMemberIdentity>(
       members: readonly TMember[],
@@ -55,7 +45,7 @@ export function createOomolConsoleMemberDirectory(endpoints: OomolConsoleEndpoin
       );
 
       const [userSummaries, serviceAccountNames] = await Promise.all([
-        loadUserSummaries(unresolvedUserIds, apiKey, fetcher, endpoints, userSummaryCache).catch((error: unknown) => {
+        loadUserSummaries(unresolvedUserIds, apiKey, fetcher, endpoints).catch((error: unknown) => {
           logger?.warn(enrichmentErrorLog(error), "OOMOL Console user-summary enrichment failed");
           return new Map<string, UserSummary>();
         }),
@@ -82,22 +72,9 @@ async function loadUserSummaries(
   apiKey: string,
   fetcher: typeof fetch,
   endpoints: OomolConsoleEndpoints,
-  cache: Map<string, CachedUserSummary>,
 ) {
   const summaries = new Map<string, UserSummary>();
-  const missingUserIds: string[] = [];
-  for (const userId of userIds) {
-    const cached = cache.get(userId);
-    if (cached && cached.expiresAt > Date.now()) {
-      summaries.set(userId, cached.value);
-    } else {
-      cache.delete(userId);
-      missingUserIds.push(userId);
-    }
-  }
-  if (missingUserIds.length === 0) {
-    return summaries;
-  }
+  if (userIds.length === 0) return summaries;
 
   const payload = asRecord(
     await requestOomolConsole({
@@ -106,18 +83,13 @@ async function loadUserSummaries(
       path: "/v1/users/summaries",
       apiKey,
       fetcher,
-      query: { user_ids: missingUserIds },
+      query: { user_ids: userIds },
     }),
   );
-  for (const userId of missingUserIds) {
+  for (const userId of userIds) {
     const summary = parseUserSummary(payload[userId]);
     if (summary) {
       summaries.set(userId, summary);
-      cache.set(userId, { expiresAt: Date.now() + userSummaryCacheTtlMs, value: summary });
-      if (cache.size > userSummaryCacheMaxEntries) {
-        const oldestKey = cache.keys().next().value;
-        if (oldestKey !== undefined) cache.delete(oldestKey);
-      }
     }
   }
   return summaries;

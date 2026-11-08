@@ -50,3 +50,43 @@ it("rejects billing requests without a team before making any network request", 
   }
   expect(calls).toBe(0);
 });
+
+it("resolves member names through the current credential instead of reusing another caller's summary", async () => {
+  const userId = crypto.randomUUID();
+  const firstKey = crypto.randomUUID();
+  const secondKey = crypto.randomUUID();
+  const firstTeam = crypto.randomUUID();
+  const secondTeam = crypto.randomUUID();
+  let firstSummaryAllowed = true;
+  const fetcher: typeof fetch = async (url, init) => {
+    const address = new URL(String(url));
+    const authorization = new Headers(init?.headers).get("authorization");
+    if (authorization !== `Bearer ${firstKey}` && authorization !== `Bearer ${secondKey}`) {
+      return new Response(null, { status: 401 });
+    }
+    const first = authorization === `Bearer ${firstKey}`;
+    if (address.pathname === `/v1/teams/${first ? firstTeam : secondTeam}/members`) {
+      return Response.json({ members: [{ user_id: userId, user_type: "user", role: "member" }] });
+    }
+    if (address.pathname === "/v1/users/summaries" && address.searchParams.get("user_ids") === userId) {
+      if (first && !firstSummaryAllowed) return new Response(null, { status: 403 });
+      return Response.json({
+        [userId]: { nickname: first ? "First credential profile" : "Second credential profile" },
+      });
+    }
+    throw new Error("Unexpected member-directory request");
+  };
+  const list = (apiKey: string, teamId: string) =>
+    executeOomolConsoleAction("list_members", {}, { apiKey, teamId, fetcher }, fetcher, deps);
+
+  await expect(list(firstKey, firstTeam)).resolves.toMatchObject({
+    members: [{ userId, name: "First credential profile" }],
+  });
+  await expect(list(secondKey, secondTeam)).resolves.toMatchObject({
+    members: [{ userId, name: "Second credential profile" }],
+  });
+  firstSummaryAllowed = false;
+  await expect(list(firstKey, firstTeam)).resolves.toEqual(
+    expect.objectContaining({ members: [expect.not.objectContaining({ name: expect.any(String) })] }),
+  );
+});

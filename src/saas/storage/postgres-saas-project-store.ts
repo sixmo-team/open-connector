@@ -1,12 +1,15 @@
-import type { SaasRequestScope } from "../contracts.ts";
-import type { ISecretCodec } from "../secrets/secret-codec.ts";
+import type { ConfigurationControlPrincipal, SaasRequestScope } from "../contracts.ts";
+import type { ISecretCodec, NativeSecretScope } from "../secrets/secret-codec.ts";
 import type { Pool, PoolClient } from "pg";
 
 import { createHash, randomUUID } from "node:crypto";
 import { assertProcessingActive } from "../../core/cancellation.ts";
-import { OpenBaoError } from "../secrets/openbao-client.ts";
 import { withSecretCleanup } from "../secrets/secret-codec.ts";
-import { withScopedClient } from "./scoped-query.ts";
+import { lockActiveManagedProject } from "./managed-project-admission.ts";
+import { isOriginalSecretWriteRejected } from "./postgres-secret-custody.ts";
+import { withConfigurationControlClient, withScopedClient } from "./scoped-query.ts";
+
+type ProjectCleanupContext = NativeSecretScope & (SaasRequestScope | ConfigurationControlPrincipal);
 
 export interface ManagedProject {
   id: string;
@@ -35,8 +38,8 @@ export interface SaasCleanup {
 export interface SaasProjectStore {
   externalUserId(): string;
   getProject(): Promise<ManagedProject | undefined>;
-  saveProject(project: ManagedProject): Promise<boolean>;
-  deleteProject(id: string): Promise<boolean>;
+  saveProject(project: ManagedProject, expectedProjectId: string | null): Promise<boolean>;
+  deleteProject(id?: string): Promise<boolean>;
   listSources(): Promise<OAuthSourceRecord[]>;
   getSource(service: string): Promise<{ managedProjectId: string; providerConfigId: string } | undefined>;
   setSource(
@@ -58,25 +61,41 @@ export interface SaasProjectStore {
 /** Configuration is workspace technical state; cleanup tasks remain exact customer-owner state. */
 export class PostgresSaasProjectStore implements SaasProjectStore {
   private readonly pool: Pool;
-  private readonly scope: Readonly<SaasRequestScope>;
+  private readonly context: Readonly<SaasRequestScope | ConfigurationControlPrincipal>;
   private readonly codec: ISecretCodec;
-  constructor(pool: Pool, scope: Readonly<SaasRequestScope>, codec: ISecretCodec) {
+  constructor(pool: Pool, context: Readonly<SaasRequestScope | ConfigurationControlPrincipal>, codec: ISecretCodec) {
     this.pool = pool;
-    this.scope = scope;
+    this.context = context;
     this.codec = codec;
+  }
+  private get scope(): Readonly<SaasRequestScope> {
+    if ("subjectKind" in this.context) throw new Error("Customer cleanup requires a verified customer scope");
+    return this.context;
+  }
+  private get tenantId(): string {
+    return "subjectKind" in this.context ? this.context.target.tenantId : this.context.tenantId;
+  }
+  private get workspaceId(): string {
+    return "subjectKind" in this.context ? this.context.target.workspaceId : this.context.workspaceId;
+  }
+  private get creatorId(): string | null {
+    return "subjectKind" in this.context ? null : this.context.subjectUserId;
+  }
+  private withClient<T>(work: (client: PoolClient) => Promise<T>, context = this.context): Promise<T> {
+    return "subjectKind" in context
+      ? withConfigurationControlClient(this.pool, context, work)
+      : withScopedClient(this.pool, context, work);
   }
   externalUserId(): string {
     return scopedExternalUserId(this.scope);
   }
   async getProject(): Promise<ManagedProject | undefined> {
-    const row = await withScopedClient(
-      this.pool,
-      this.scope,
+    const row = await this.withClient(
       async (client) =>
         (
           await client.query<{ id: string; project_id: string; base_url: string; secret_ref: string }>(
-            `SELECT id,project_id,base_url,secret_ref FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND workspace_id=$2`,
-            [this.scope.tenantId, this.scope.workspaceId],
+            `SELECT id,project_id,base_url,secret_ref FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND workspace_id=$2 AND secret_ref IS NOT NULL`,
+            [this.tenantId, this.workspaceId],
           )
         ).rows[0],
     );
@@ -89,106 +108,164 @@ export class PostgresSaasProjectStore implements SaasProjectStore {
         }
       : undefined;
   }
-  async saveProject(project: ManagedProject): Promise<boolean> {
+  async saveProject(project: ManagedProject, expectedProjectId: string | null): Promise<boolean> {
     this.assertTechnicalWrite();
-    assertProcessingActive(this.scope);
-    let ref: string;
+    if (expectedProjectId !== null && expectedProjectId !== project.id) return false;
+    let reservationRejected = false;
+    let reservedRef: string | undefined;
     try {
-      ref = await this.codec.encode(project.apiKey);
+      await this.codec.encode(project.apiKey, async (ref) => {
+        const reserved = await this.withClient(async (client) => {
+          const values = [this.tenantId, this.workspaceId, project.id, project.projectId, project.baseUrl, ref];
+          return (
+            (
+              await client.query(
+                expectedProjectId === null
+                  ? `INSERT INTO integration_runtime.managed_projects
+                   (tenant_id,workspace_id,id,project_id,base_url,pending_secret_ref,subject_user_id,secret_ref)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,NULL) ON CONFLICT (tenant_id,workspace_id) DO NOTHING RETURNING id`
+                  : `UPDATE integration_runtime.managed_projects SET pending_secret_ref=$6,updated_at=now()
+                   WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND project_id=$4 AND base_url=$5
+                     AND pending_secret_ref IS NULL AND secret_ref IS NOT NULL RETURNING id`,
+                expectedProjectId === null ? [...values, this.creatorId] : values,
+              )
+            ).rowCount === 1
+          );
+        });
+        if (!reserved) {
+          reservationRejected = true;
+          throw new Error("The project state changed before the key write");
+        }
+        // Only an acknowledged commit authorizes dispatch; uncertain reservations remain fenced.
+        reservedRef = ref;
+      });
     } catch (error) {
-      if (error instanceof OpenBaoError && error.code !== "OPENBAO_CONFLICT")
-        await this.retainOrphanProjectRef(project, error.path);
+      if (reservationRejected) return false;
+      if (reservedRef && isOriginalSecretWriteRejected(error, reservedRef))
+        await this.settleProjectReservation(project, reservedRef, false);
+      // Network, cancellation and malformed/oversized acknowledgements cannot prove no write.
       throw error;
     }
-    let saved = false;
+    if (!reservedRef) throw new Error("Secret codec did not reserve the project key before writing");
+    let saved: boolean;
     try {
-      saved = await withScopedClient(
-        this.pool,
-        this.scope,
+      assertProcessingActive(this.context);
+      saved = await this.withClient(
         async (client) =>
           (
             await client.query(
-              `INSERT INTO integration_runtime.managed_projects (id,tenant_id,workspace_id,subject_user_id,project_id,base_url,secret_ref)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id,workspace_id) DO UPDATE
-       SET secret_ref=EXCLUDED.secret_ref,retired_secret_refs=array_append(managed_projects.retired_secret_refs,managed_projects.secret_ref),cleanup_paused=false,updated_at=now()
-       WHERE managed_projects.id=EXCLUDED.id AND managed_projects.project_id=EXCLUDED.project_id AND managed_projects.base_url=EXCLUDED.base_url RETURNING id`,
-              [
-                project.id,
-                this.scope.tenantId,
-                this.scope.workspaceId,
-                this.scope.subjectUserId,
-                project.projectId,
-                project.baseUrl,
-                ref,
-              ],
+              `UPDATE integration_runtime.managed_projects
+               SET secret_ref=$6,pending_secret_ref=NULL,
+                 retired_secret_refs=CASE WHEN secret_ref IS NULL THEN retired_secret_refs ELSE array_append(retired_secret_refs,secret_ref) END,
+                 cleanup_paused=false,updated_at=now()
+               WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND project_id=$4 AND base_url=$5
+                 AND pending_secret_ref=$6 RETURNING id`,
+              [this.tenantId, this.workspaceId, project.id, project.projectId, project.baseUrl, reservedRef],
             )
           ).rowCount === 1,
       );
     } catch (error) {
-      await this.retainOrphanProjectRef(project, ref);
+      await this.settleProjectReservation(project, reservedRef, true);
       throw error;
     }
-    if (!saved) {
-      try {
-        await withSecretCleanup(this.scope, () => this.codec.delete(ref));
-      } catch {
-        await this.retainOrphanProjectRef(project, ref);
-      }
-    }
+    if (!saved) await this.settleProjectReservation(project, reservedRef, true);
     return saved;
   }
-  private async retainOrphanProjectRef(project: ManagedProject, ref: string): Promise<void> {
-    await withSecretCleanup(this.scope, (cleanupScope) =>
-      withScopedClient(this.pool, cleanupScope, async (client) => {
-        await client.query(
-          `INSERT INTO integration_runtime.managed_projects
-      (id,tenant_id,workspace_id,subject_user_id,project_id,base_url,secret_ref)
-      VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id,workspace_id)
-      DO UPDATE SET retired_secret_refs=array_append(managed_projects.retired_secret_refs,EXCLUDED.secret_ref),updated_at=now()`,
-          [
-            project.id,
-            this.scope.tenantId,
-            this.scope.workspaceId,
-            this.scope.subjectUserId,
-            project.projectId,
-            project.baseUrl,
-            ref,
-          ],
-        );
-      }),
+  private async settleProjectReservation(project: ManagedProject, ref: string, written: boolean): Promise<void> {
+    await withSecretCleanup<ProjectCleanupContext, void>(
+      { ...this.context, tenantId: this.tenantId, workspaceId: this.workspaceId },
+      (cleanupScope) =>
+        this.withClient(async (client) => {
+          const values = [this.tenantId, this.workspaceId, project.id, project.projectId, project.baseUrl, ref];
+          const guard = `tenant_id=$1 AND workspace_id=$2 AND id=$3 AND project_id=$4 AND base_url=$5 AND pending_secret_ref=$6`;
+          if (written) {
+            // A late publication and compensation race on the same pending ref; only one can win.
+            await client.query(
+              `UPDATE integration_runtime.managed_projects SET pending_secret_ref=NULL,
+               retired_secret_refs=array_append(retired_secret_refs,$6),updated_at=now() WHERE ${guard}`,
+              values,
+            );
+          } else {
+            const reservation = (
+              await client.query<{ secret_ref: string | null; retired_secret_refs: string[] }>(
+                `SELECT secret_ref,retired_secret_refs FROM integration_runtime.managed_projects WHERE ${guard} FOR UPDATE`,
+                values,
+              )
+            ).rows[0];
+            if (!reservation) return;
+            await client.query(
+              reservation.secret_ref === null && reservation.retired_secret_refs.length === 0
+                ? `DELETE FROM integration_runtime.managed_projects WHERE ${guard}`
+                : `UPDATE integration_runtime.managed_projects SET pending_secret_ref=NULL,updated_at=now() WHERE ${guard}`,
+              values,
+            );
+          }
+        }, cleanupScope),
     );
   }
-  async deleteProject(id: string): Promise<boolean> {
+  async deleteProject(id?: string): Promise<boolean> {
     this.assertTechnicalWrite();
-    return await withScopedClient(this.pool, this.scope, async (client) => {
-      const row = (
-        await client.query<{ secret_ref: string; retired_secret_refs: string[] }>(
-          `DELETE FROM integration_runtime.managed_projects
-      WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3
-      AND NOT EXISTS (SELECT 1 FROM integration_runtime.oauth_sources WHERE managed_project_id=$3)
-      AND NOT EXISTS (SELECT 1 FROM integration_runtime.connections WHERE managed_project_id=$3)
-      AND NOT EXISTS (SELECT 1 FROM integration_runtime.connection_requests WHERE managed_project_id=$3)
-      AND NOT EXISTS (SELECT 1 FROM integration_runtime.saas_cleanup WHERE managed_project_id=$3)
-      RETURNING secret_ref,retired_secret_refs`,
-          [this.scope.tenantId, this.scope.workspaceId, id],
-        )
-      ).rows[0];
-      if (!row) return false;
-      for (const ref of [row.secret_ref, ...row.retired_secret_refs]) await this.codec.delete(ref);
-      return true;
-    });
+    try {
+      const project = await this.withClient(async (client) => {
+        const current = (
+          await client.query<{ id: string; secret_ref: string | null; retired_secret_refs: string[] }>(
+            `SELECT id,secret_ref,retired_secret_refs FROM integration_runtime.managed_projects
+             WHERE tenant_id=$1 AND workspace_id=$2 AND ($3::uuid IS NULL OR id=$3) FOR UPDATE`,
+            [this.tenantId, this.workspaceId, id ?? null],
+          )
+        ).rows[0];
+        if (!current) return id === undefined;
+        const fenced = (
+          await client.query<{ fenced: boolean }>(
+            "SELECT integration_runtime.fence_managed_project_removal($1::uuid) AS fenced",
+            [current.id],
+          )
+        ).rows[0]?.fenced;
+        if (fenced !== true) return false;
+        return {
+          id: current.id,
+          refs:
+            current.secret_ref === null
+              ? current.retired_secret_refs
+              : [current.secret_ref, ...current.retired_secret_refs],
+        };
+      });
+      if (typeof project === "boolean") return project;
+      // Admission is durably closed before irreversible erasure; no SQL client spans KV work.
+      for (const ref of new Set(project.refs)) {
+        assertProcessingActive(this.context);
+        await this.codec.delete(ref);
+      }
+      return await this.withClient(
+        async (client) =>
+          (
+            await client.query(
+              `DELETE FROM integration_runtime.managed_projects
+             WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND secret_ref IS NULL AND pending_secret_ref IS NULL
+               AND retired_secret_refs=$4::text[]
+               AND NOT EXISTS (SELECT 1 FROM integration_runtime.oauth_sources WHERE managed_project_id=$3)
+               AND NOT EXISTS (SELECT 1 FROM integration_runtime.connections WHERE managed_project_id=$3)
+               AND NOT EXISTS (SELECT 1 FROM integration_runtime.connection_requests WHERE managed_project_id=$3)
+               AND NOT EXISTS (SELECT 1 FROM integration_runtime.saas_cleanup WHERE managed_project_id=$3)
+             RETURNING id`,
+              [this.tenantId, this.workspaceId, project.id, project.refs],
+            )
+          ).rowCount === 1,
+      );
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "23503") return false;
+      throw error;
+    }
   }
   async listSources(): Promise<OAuthSourceRecord[]> {
-    return await withScopedClient(
-      this.pool,
-      this.scope,
+    return await this.withClient(
       async (client) =>
         (
           await client.query<OAuthSourceRecord>(
             `SELECT s.service,s.managed_project_id AS "managedProjectId",p.project_id AS "projectId",s.provider_config_id AS "providerConfigId"
      FROM integration_runtime.oauth_sources s JOIN integration_runtime.managed_projects p ON p.id=s.managed_project_id
      WHERE s.tenant_id=$1 AND s.workspace_id=$2`,
-            [this.scope.tenantId, this.scope.workspaceId],
+            [this.tenantId, this.workspaceId],
           )
         ).rows,
     );
@@ -201,24 +278,25 @@ export class PostgresSaasProjectStore implements SaasProjectStore {
     source: { managedProjectId: string; providerConfigId: string } | undefined,
   ): Promise<boolean> {
     this.assertTechnicalWrite();
-    return await withScopedClient(this.pool, this.scope, async (client) => {
+    return await this.withClient(async (client) => {
       if (!source) {
         await client.query(
           `DELETE FROM integration_runtime.oauth_sources WHERE tenant_id=$1 AND workspace_id=$2 AND service=$3`,
-          [this.scope.tenantId, this.scope.workspaceId, service],
+          [this.tenantId, this.workspaceId, service],
         );
         return true;
       }
+      if (!(await lockActiveManagedProject(client, source.managedProjectId))) return false;
       return (
         (
           await client.query(
             `INSERT INTO integration_runtime.oauth_sources (tenant_id,workspace_id,subject_user_id,service,managed_project_id,provider_config_id)
-      SELECT $1,$2,$3,$4,$5,$6 WHERE EXISTS (SELECT 1 FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND workspace_id=$2 AND id=$5)
+      VALUES ($1,$2,$3,$4,$5,$6)
       ON CONFLICT (tenant_id,workspace_id,service) DO UPDATE SET managed_project_id=EXCLUDED.managed_project_id,provider_config_id=EXCLUDED.provider_config_id,updated_at=now() RETURNING service`,
             [
-              this.scope.tenantId,
-              this.scope.workspaceId,
-              this.scope.subjectUserId,
+              this.tenantId,
+              this.workspaceId,
+              this.creatorId,
               service,
               source.managedProjectId,
               source.providerConfigId,
@@ -229,6 +307,12 @@ export class PostgresSaasProjectStore implements SaasProjectStore {
     });
   }
   async getCleanupStats(): Promise<{ pending: number; manual: number; paused: boolean }> {
+    if ("subjectKind" in this.context) {
+      return this.withClient(async (client) => {
+        const state = await this.configurationState(client);
+        return { pending: Number(state.pending), manual: Number(state.manual), paused: state.paused };
+      });
+    }
     return await withScopedClient(this.pool, this.scope, async (client) => {
       const counts = (
         await client.query<{ status: string; count: string }>(
@@ -237,17 +321,29 @@ export class PostgresSaasProjectStore implements SaasProjectStore {
         )
       ).rows;
       const project = (
-        await client.query<{ cleanup_paused: boolean }>(
-          `SELECT cleanup_paused FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND workspace_id=$2`,
+        await client.query<{ paused: boolean }>(
+          `SELECT cleanup_paused OR pending_secret_ref IS NOT NULL OR secret_ref IS NULL AS paused FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND workspace_id=$2`,
           this.values().slice(0, 2),
         )
       ).rows[0];
       return {
         pending: Number(counts.find((row) => row.status === "pending")?.count ?? 0),
         manual: Number(counts.find((row) => row.status === "manual")?.count ?? 0),
-        paused: project?.cleanup_paused ?? false,
+        paused: project?.paused ?? false,
       };
     });
+  }
+  private async configurationState(
+    client: PoolClient,
+  ): Promise<{ pending: string; manual: string; paused: boolean; referenced: boolean }> {
+    const state = (
+      await client.query<{ pending: string; manual: string; paused: boolean; referenced: boolean }>(
+        "SELECT * FROM integration_runtime.configuration_workspace_state($1::text,$2::text)",
+        [this.tenantId, this.workspaceId],
+      )
+    ).rows[0];
+    if (!state) throw new Error("Workspace configuration dependency guard is unavailable");
+    return state;
   }
   async claimCleanup(now: number, leaseMs = 45000): Promise<SaasCleanup | undefined> {
     const leaseId = randomUUID();
@@ -261,7 +357,7 @@ export class PostgresSaasProjectStore implements SaasProjectStore {
      WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND c.subject_user_id=$3 AND c.id=(SELECT id FROM integration_runtime.saas_cleanup
        WHERE tenant_id=$1 AND workspace_id=$2 AND subject_user_id=$3 AND status='pending' AND next_attempt_at<=$6
        AND (lease_until IS NULL OR lease_until<=to_timestamp($6::double precision/1000))
-       AND EXISTS (SELECT 1 FROM integration_runtime.managed_projects p WHERE p.id=managed_project_id AND NOT p.cleanup_paused)
+       AND EXISTS (SELECT 1 FROM integration_runtime.managed_projects p WHERE p.id=managed_project_id AND NOT p.cleanup_paused AND p.secret_ref IS NOT NULL AND p.pending_secret_ref IS NULL)
        ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED)
      RETURNING c.id,c.managed_project_id AS "managedProjectId",c.provider_config_id AS "providerConfigId",c.external_user_id AS "externalUserId",
        c.remote_request_id AS "remoteRequestId",c.remote_account_id AS "connectedAccountId",c.lease_id AS "leaseId",c.attempts,c.service,c.request_expires_at::text AS "requestExpiresAt"`,
@@ -342,7 +438,7 @@ export class PostgresSaasProjectStore implements SaasProjectStore {
       async (client) =>
         (
           await client.query<{ id: string; secret_ref: string }>(
-            `SELECT id,secret_ref FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3`,
+            `SELECT id,secret_ref FROM integration_runtime.managed_projects WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND secret_ref IS NOT NULL`,
             [this.scope.tenantId, this.scope.workspaceId, task.managedProjectId],
           )
         ).rows[0],
@@ -426,7 +522,11 @@ export class PostgresSaasProjectStore implements SaasProjectStore {
     return { deletedCleanup: before.total };
   }
   private assertTechnicalWrite(): void {
-    assertProcessingActive(this.scope);
+    assertProcessingActive(this.context);
+    if ("subjectKind" in this.context) {
+      if (this.context.purpose !== "configuration:write") throw new Error("Configuration write authority is required");
+      return;
+    }
     if (this.scope.actorUserId !== this.scope.subjectUserId || !["owner", "admin"].includes(this.scope.workspaceRole))
       throw new Error("Technical source configuration requires the verified workspace owner or admin");
   }
