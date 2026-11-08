@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Accepted multitenant adaptation, whose history contains the separately reviewed upstream source. */
-export const APPROVED_UPSTREAM_BASE = "7e2c03177b61580579edfea94acd51c2fbf37b8a";
+export const APPROVED_UPSTREAM_BASE = "aa2d026003d6cc974ee75b552432e39c5197c92c";
 
 const lowercaseShaPattern = /^[0-9a-f]{40}$/;
 
