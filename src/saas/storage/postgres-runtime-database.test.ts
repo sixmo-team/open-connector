@@ -1104,64 +1104,118 @@ describe.skipIf(!testPostgresUrl)("SaaS scoped PostgreSQL runtime database", () 
 describe.skipIf(!testPostgresUrl)("PostgreSQL 0015 secret custody upgrade", () => {
   it("upgrades an empty original cleanup queue and removes its original grants", async () => {
     await withBase0015Database(async (database, owner, runtime) => {
-      const originalLedger = (await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations ORDER BY name")).rows;
-      expect((await runtime.query("SELECT integration_runtime.is_trigger_secret_referenced('unused') AS referenced")).rows).toEqual([{ referenced: false }]);
-      await expect(migratePostgres({
-        migratorConnectionString: database.migratorConnectionString,
-        runtimeConnectionString: database.runtimeConnectionString,
-      })).resolves.toEqual([
+      const originalLedger = (
+        await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations ORDER BY name")
+      ).rows;
+      expect(
+        (await runtime.query("SELECT integration_runtime.is_trigger_secret_referenced('unused') AS referenced")).rows,
+      ).toEqual([{ referenced: false }]);
+      await expect(
+        migratePostgres({
+          migratorConnectionString: database.migratorConnectionString,
+          runtimeConnectionString: database.runtimeConnectionString,
+        }),
+      ).resolves.toEqual([
         "0016_workspace_configuration_control.sql",
         "0017_project_secret_custody.sql",
         "0018_managed_project_removal_fence.sql",
         "0019_scoped_secret_custody.sql",
       ]);
-      expect((await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations WHERE name < '0016' ORDER BY name")).rows).toEqual(originalLedger);
-      expect((await owner.query(`SELECT to_regclass('integration_runtime.trigger_secret_cleanup')::text AS queue,
-        to_regprocedure('integration_runtime.is_trigger_secret_referenced(text)')::text AS function`)).rows).toEqual([{ queue: null, function: null }]);
-      expect((await owner.query("SELECT count(*)::int AS count FROM integration_runtime.secret_custody")).rows).toEqual([{ count: 0 }]);
+      expect(
+        (
+          await owner.query(
+            "SELECT name, checksum FROM integration_runtime_migrations.schema_migrations WHERE name < '0016' ORDER BY name",
+          )
+        ).rows,
+      ).toEqual(originalLedger);
+      expect(
+        (
+          await owner.query(`SELECT to_regclass('integration_runtime.trigger_secret_cleanup')::text AS queue,
+        to_regprocedure('integration_runtime.is_trigger_secret_referenced(text)')::text AS function`)
+        ).rows,
+      ).toEqual([{ queue: null, function: null }]);
+      expect((await owner.query("SELECT count(*)::int AS count FROM integration_runtime.secret_custody")).rows).toEqual(
+        [{ count: 0 }],
+      );
       await expect(probeSaasRuntimeDatabase(runtime)).resolves.toBeUndefined();
-      await expect(migratePostgres({
-        migratorConnectionString: database.migratorConnectionString,
-        runtimeConnectionString: database.runtimeConnectionString,
-      })).resolves.toEqual([]);
+      await expect(
+        migratePostgres({
+          migratorConnectionString: database.migratorConnectionString,
+          runtimeConnectionString: database.runtimeConnectionString,
+        }),
+      ).resolves.toEqual([]);
     });
   }, 30_000);
 
   it("reaches the 0019 reconciliation guard without losing a nonempty original queue, grants or forced RLS", async () => {
     await withBase0015Database(async (database, owner, runtime) => {
-      const originalLedger = (await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations ORDER BY name")).rows;
+      const originalLedger = (
+        await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations ORDER BY name")
+      ).rows;
       const boundarySql = `SELECT relowner, relacl::text, relrowsecurity, relforcerowsecurity
         FROM pg_class WHERE oid='integration_runtime.trigger_secret_cleanup'::regclass`;
       const originalBoundary = (await owner.query(boundarySql)).rows;
       const functionSql = `SELECT proowner, proacl::text, prosecdef, proconfig
         FROM pg_proc WHERE oid='integration_runtime.is_trigger_secret_referenced(text)'::regprocedure`;
       const originalFunction = (await owner.query(functionSql)).rows;
-      const row = { tenant_id: tenantAUserA.tenantId, workspace_id: tenantAUserA.workspaceId,
-        subject_user_id: tenantAUserA.subjectUserId, secret_ref: "bao:unknown-original-write-outcome" };
-      await withScopedClient(runtime, tenantAUserA, (client) => client.query(
-        "INSERT INTO integration_runtime.trigger_secret_cleanup (tenant_id,workspace_id,subject_user_id,secret_ref) VALUES ($1,$2,$3,$4)",
-        [row.tenant_id, row.workspace_id, row.subject_user_id, row.secret_ref],
-      ));
-      await expect(migratePostgres({
-        migratorConnectionString: database.migratorConnectionString,
-        runtimeConnectionString: database.runtimeConnectionString,
-      })).rejects.toThrow("Secret custody cutover requires reconciliation");
-      expect((await owner.query("SELECT name, checksum FROM integration_runtime_migrations.schema_migrations WHERE name < '0016' ORDER BY name")).rows).toEqual(originalLedger);
-      expect((await owner.query("SELECT name FROM integration_runtime_migrations.schema_migrations WHERE name >= '0016' ORDER BY name")).rows).toEqual([
+      const row = {
+        tenant_id: tenantAUserA.tenantId,
+        workspace_id: tenantAUserA.workspaceId,
+        subject_user_id: tenantAUserA.subjectUserId,
+        secret_ref: "bao:unknown-original-write-outcome",
+      };
+      await withScopedClient(runtime, tenantAUserA, (client) =>
+        client.query(
+          "INSERT INTO integration_runtime.trigger_secret_cleanup (tenant_id,workspace_id,subject_user_id,secret_ref) VALUES ($1,$2,$3,$4)",
+          [row.tenant_id, row.workspace_id, row.subject_user_id, row.secret_ref],
+        ),
+      );
+      await expect(
+        migratePostgres({
+          migratorConnectionString: database.migratorConnectionString,
+          runtimeConnectionString: database.runtimeConnectionString,
+        }),
+      ).rejects.toThrow("Secret custody cutover requires reconciliation");
+      expect(
+        (
+          await owner.query(
+            "SELECT name, checksum FROM integration_runtime_migrations.schema_migrations WHERE name < '0016' ORDER BY name",
+          )
+        ).rows,
+      ).toEqual(originalLedger);
+      expect(
+        (
+          await owner.query(
+            "SELECT name FROM integration_runtime_migrations.schema_migrations WHERE name >= '0016' ORDER BY name",
+          )
+        ).rows,
+      ).toEqual([
         { name: "0016_workspace_configuration_control.sql" },
         { name: "0017_project_secret_custody.sql" },
         { name: "0018_managed_project_removal_fence.sql" },
       ]);
       expect((await owner.query(boundarySql)).rows).toEqual(originalBoundary);
       expect((await owner.query(functionSql)).rows).toEqual(originalFunction);
-      expect((await owner.query("SELECT to_regclass('integration_runtime.secret_custody')::text AS custody")).rows).toEqual([{ custody: null }]);
-      expect(await withScopedClient(runtime, tenantAUserA, async (client) =>
-        (await client.query("SELECT * FROM integration_runtime.trigger_secret_cleanup")).rows,
-      )).toEqual([row]);
-      expect(await withScopedClient(runtime, tenantBUserA, async (client) =>
-        (await client.query("SELECT * FROM integration_runtime.trigger_secret_cleanup")).rows,
-      )).toEqual([]);
-      expect((await runtime.query("SELECT integration_runtime.is_trigger_secret_referenced('unused') AS referenced")).rows).toEqual([{ referenced: false }]);
+      expect(
+        (await owner.query("SELECT to_regclass('integration_runtime.secret_custody')::text AS custody")).rows,
+      ).toEqual([{ custody: null }]);
+      expect(
+        await withScopedClient(
+          runtime,
+          tenantAUserA,
+          async (client) => (await client.query("SELECT * FROM integration_runtime.trigger_secret_cleanup")).rows,
+        ),
+      ).toEqual([row]);
+      expect(
+        await withScopedClient(
+          runtime,
+          tenantBUserA,
+          async (client) => (await client.query("SELECT * FROM integration_runtime.trigger_secret_cleanup")).rows,
+        ),
+      ).toEqual([]);
+      expect(
+        (await runtime.query("SELECT integration_runtime.is_trigger_secret_referenced('unused') AS referenced")).rows,
+      ).toEqual([{ referenced: false }]);
     });
   }, 30_000);
 });
@@ -1189,7 +1243,10 @@ async function withBase0015Database(
       await owner.query("BEGIN");
       try {
         await owner.query(sql);
-        await owner.query("INSERT INTO integration_runtime_migrations.schema_migrations (name,checksum) VALUES ($1,$2)", [name, createHash("sha256").update(sql).digest("hex")]);
+        await owner.query(
+          "INSERT INTO integration_runtime_migrations.schema_migrations (name,checksum) VALUES ($1,$2)",
+          [name, createHash("sha256").update(sql).digest("hex")],
+        );
         await owner.query("COMMIT");
       } catch (error) {
         await owner.query("ROLLBACK");
